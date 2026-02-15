@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/tmp/axi-interconnect-kit/build/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

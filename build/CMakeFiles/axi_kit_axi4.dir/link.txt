@@ -1,2 +1,0 @@
-/usr/bin/ar qc libaxi_kit_axi4.a CMakeFiles/axi_kit_axi4.dir/axi_interconnect/AXI_Interconnect.cpp.o CMakeFiles/axi_kit_axi4.dir/sim_ddr/SimDDR.cpp.o
-/usr/bin/ranlib libaxi_kit_axi4.a

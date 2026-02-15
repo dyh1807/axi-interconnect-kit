@@ -1,1 +1,0 @@
-/usr/bin/c++ CMakeFiles/sim_ddr_test.dir/sim_ddr/sim_ddr_test.cpp.o -o sim_ddr_test  libaxi_kit_axi4.a

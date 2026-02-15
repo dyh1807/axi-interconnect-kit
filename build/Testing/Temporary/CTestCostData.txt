@@ -1,6 +1,0 @@
-sim_ddr_test 1 0.0101139
-axi_interconnect_test 1 0.00229506
-sim_ddr_axi3_test 1 0.00385816
-axi_interconnect_axi3_test 1 0.0621018
-mmio_router_axi3_test 1 0.00365295
----
