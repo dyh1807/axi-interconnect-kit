@@ -1,0 +1,2 @@
+/usr/bin/ar qc libaxi_kit_axi3.a CMakeFiles/axi_kit_axi3.dir/axi_interconnect/AXI_Interconnect_AXI3.cpp.o CMakeFiles/axi_kit_axi3.dir/axi_interconnect/AXI_Router_AXI3.cpp.o CMakeFiles/axi_kit_axi3.dir/sim_ddr/SimDDR_AXI3.cpp.o CMakeFiles/axi_kit_axi3.dir/mmio/MMIO_Bus_AXI3.cpp.o CMakeFiles/axi_kit_axi3.dir/mmio/UART16550_Device.cpp.o
+/usr/bin/ranlib libaxi_kit_axi3.a

@@ -1,0 +1,178 @@
+Start testing: Feb 15 15:54 CST
+----------------------------------------------------------
+1/5 Testing: sim_ddr_test
+1/5 Test: sim_ddr_test
+Command: "/tmp/axi-interconnect-kit/build/sim_ddr_test"
+Directory: /tmp/axi-interconnect-kit/build
+"sim_ddr_test" start time: Feb 15 15:54 CST
+Output:
+----------------------------------------------------------
+====================================
+SimDDR AXI4 Module Test Suite
+====================================
+
+=== Test 1: Single Word Write ===
+PASS: Single write test completed. mem[0x1000] = 0xdeadbeef
+=== Test 2: Single Word Read ===
+PASS: Single read test completed. read(0x2000) = 0xcafebabe
+=== Test 3: Burst Write (4 beats) ===
+PASS: Burst write test completed
+=== Test 4: Burst Read (4 beats) ===
+PASS: Burst read test completed
+=== Test 5: Partial Write Strobe ===
+PASS: Partial strobe test completed. mem[0x5000] = 0xabcd5678
+=== Test 6: Back-to-back Transactions ===
+PASS: Back-to-back test completed
+=== Test 7: ID Signal Verification ===
+PASS: ID signal test completed. bid=0x5, rid=0xa
+=== Test 8: Stress Test (100 sequential transactions) ===
+PASS: Stress test completed (100 writes + 100 reads)
+=== Test 9: Outstanding Read Transactions ===
+  Issuing 8 outstanding read requests...
+  All AR requests accepted. Waiting for R responses...
+PASS: Outstanding reads test completed (8 in-flight)
+=== Test 10: Read Interleaving ===
+  Issuing 2 burst read requests (len=4 each)...
+  Waiting for R responses (total 8 beats)...
+  Interleave switches: 5
+PASS: Interleaving test completed (switches=5)
+=== Test 11: R channel backpressure (rready) ===
+PASS: rready backpressure test completed
+=== Test 12: B channel backpressure (bready) ===
+PASS: bready backpressure test completed
+=== Test 13: Max outstanding read limit ===
+PASS: max outstanding limit test completed
+
+====================================
+Test Results: 13 passed, 0 failed
+====================================
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"sim_ddr_test" end time: Feb 15 15:54 CST
+"sim_ddr_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/5 Testing: axi_interconnect_test
+2/5 Test: axi_interconnect_test
+Command: "/tmp/axi-interconnect-kit/build/axi_interconnect_test"
+Directory: /tmp/axi-interconnect-kit/build
+"axi_interconnect_test" start time: Feb 15 15:54 CST
+Output:
+----------------------------------------------------------
+====================================
+AXI-Interconnect Test Suite
+====================================
+
+=== Test 1: AR latching (mocked arready) ===
+PASS
+=== Test 2: Multi-master reads (sizes/ids) ===
+PASS
+=== Test 3: Write burst splitting + resp backpressure ===
+PASS
+=== Test 4: Read/write parallel ===
+PASS
+=== Test 5: Read resp backpressure ===
+PASS
+
+====================================
+Results: 5 passed, 0 failed
+====================================
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"axi_interconnect_test" end time: Feb 15 15:54 CST
+"axi_interconnect_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/5 Testing: sim_ddr_axi3_test
+3/5 Test: sim_ddr_axi3_test
+Command: "/tmp/axi-interconnect-kit/build/sim_ddr_axi3_test"
+Directory: /tmp/axi-interconnect-kit/build
+"sim_ddr_axi3_test" start time: Feb 15 15:54 CST
+Output:
+----------------------------------------------------------
+=== Test 1: Single-beat partial write ===
+PASS
+=== Test 2: Single-beat read + rready backpressure ===
+PASS
+=== Test 3: Two-beat burst read/write ===
+PASS
+PASS: sim_ddr_axi3_test
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"sim_ddr_axi3_test" end time: Feb 15 15:54 CST
+"sim_ddr_axi3_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/5 Testing: axi_interconnect_axi3_test
+4/5 Test: axi_interconnect_axi3_test
+Command: "/tmp/axi-interconnect-kit/build/axi_interconnect_axi3_test"
+Directory: /tmp/axi-interconnect-kit/build
+"axi_interconnect_axi3_test" start time: Feb 15 15:54 CST
+Output:
+----------------------------------------------------------
+=== Test 1: AR latching (mocked arready) ===
+PASS
+=== Test 2: Multi-master reads (unaligned offsets) ===
+PASS
+=== Test 3: Write split + resp backpressure ===
+PASS
+=== Test 4: Read/write parallel ===
+PASS
+=== Test 5: Randomized read/write stress ===
+PASS
+=== Test 6: AW latching + W gate (mocked awready) ===
+PASS
+=== Test 7: W backpressure holds data stable (mocked wready) ===
+PASS
+=== Test 8: Randomized write stress (AW/W backpressure) ===
+PASS
+=== Test 9: AW/W same-cycle when awready=1 ===
+PASS
+=== Test 10: MMIO uses FIXED burst ===
+PASS
+PASS: axi_interconnect_axi3_test
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"axi_interconnect_axi3_test" end time: Feb 15 15:54 CST
+"axi_interconnect_axi3_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/5 Testing: mmio_router_axi3_test
+5/5 Test: mmio_router_axi3_test
+Command: "/tmp/axi-interconnect-kit/build/mmio_router_axi3_test"
+Directory: /tmp/axi-interconnect-kit/build
+"mmio_router_axi3_test" start time: Feb 15 15:54 CST
+Output:
+----------------------------------------------------------
+=== Test 1: Router RAM read ===
+PASS
+=== Test 2: Router MMIO read ===
+PASS
+=== Test 3: Router MMIO write ===
+PASS
+=== Test 4: Router MMIO UART print (sentences) ===
+NOTE: UART should print the next sentence:
+UART0: MMIO over AXI3 path is alive.
+PASS
+The quick brown fox jumps over the lazy dog.
+PASS
+=== Test 5: Router MMIO UART LSR ready ===
+PASS
+PASS: mmio_router_axi3_test
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"mmio_router_axi3_test" end time: Feb 15 15:54 CST
+"mmio_router_axi3_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Feb 15 15:54 CST

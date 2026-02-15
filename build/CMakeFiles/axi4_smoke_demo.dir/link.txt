@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/axi4_smoke_demo.dir/demos/axi4_smoke.cpp.o -o axi4_smoke_demo  libaxi_kit_axi4.a
