@@ -124,6 +124,48 @@ Demo 用途：
 - `axi4_smoke_demo`：AXI4 路径单读主设备冒烟测试，检查请求被接收、AR 通道发出、读响应返回。
 - `axi3_smoke_demo`：AXI3 路径同类冒烟测试，覆盖带 ID 的读路径握手与响应闭环。
 
+## 单周期 RV32 Case
+
+源码组织：
+
+```text
+demos/single_cycle/
+  include/                # 单周期本地头文件/API/配置
+  src/                    # 运行时与 CPU 模型
+  third_party/softfloat/  # 预编译 softfloat 静态库
+```
+
+构建目标：
+
+```bash
+cmake -S . -B build
+cmake --build build -j --target single_cycle_axi4_demo
+```
+
+延迟说明：
+- `single_cycle_axi4_demo` 使用单独的 AXI4+SimDDR 库变体，默认
+  `AXI_KIT_SINGLE_CYCLE_DDR_LATENCY=8`（避免 demo 运行过慢）。
+- 可通过 CMake 参数覆盖，例如：
+  `cmake -S . -B build -DAXI_KIT_SINGLE_CYCLE_DDR_LATENCY=16`
+
+运行示例（使用父仓库中的程序镜像）：
+
+```bash
+./build/single_cycle_axi4_demo ../baremetal/new_dhrystone/dhrystone.bin
+./build/single_cycle_axi4_demo ../baremetal/new_coremark/coremark.bin
+./build/single_cycle_axi4_demo ../baremetal/linux.bin --max-inst 20000000
+```
+
+该 case 保持“模拟器逻辑”和“互连/内存子系统”分离，并且所有内存相关访问都通过 AXI 上游主设备端口发起（不是直接读写内存数组）：
+- `fetch` -> 读主设备 `M0 (icache)`
+- `load` + `amo read` -> 读主设备 `M1 (dcache_r)`
+- `ptw/va2pa` 页表访问 -> 读主设备 `M2 (mmu)`
+- `store` + `amo writeback`（含 UART MMIO 写）-> 写主设备 `M0 (dcache_w)`
+
+在该单周期 case 中保留但未使用的端口：
+- 读主设备 `M3 (extra_r)`
+- 写主设备 `M1 (extra_w)`
+
 ## 回接到父仓库
 
 父仓库可将此项目作为外部依赖，包含以下目录：

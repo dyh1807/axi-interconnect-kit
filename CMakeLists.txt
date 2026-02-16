@@ -3,6 +3,9 @@ project(axi_interconnect_kit LANGUAGES CXX)
 
 option(AXI_KIT_BUILD_TESTS "Build AXI kit unit tests" ON)
 option(AXI_KIT_BUILD_DEMOS "Build AXI kit demos" ON)
+option(AXI_KIT_BUILD_SINGLE_CYCLE "Build single-cycle RV32 AXI demo" ON)
+set(AXI_KIT_SINGLE_CYCLE_DDR_LATENCY 8 CACHE STRING
+    "SimDDR latency for single_cycle_axi4_demo")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -105,4 +108,72 @@ if(AXI_KIT_BUILD_DEMOS)
 
   add_executable(axi3_smoke_demo demos/axi3_smoke.cpp)
   target_link_libraries(axi3_smoke_demo PRIVATE axi_kit_axi3)
+endif()
+
+if(AXI_KIT_BUILD_SINGLE_CYCLE)
+  set(AXI_KIT_SINGLE_CYCLE_COMPILE_OPTS
+      -O3
+      -march=native
+      -funroll-loops
+      -mtune=native
+  )
+
+  set(AXI_KIT_SINGLE_CYCLE_DIR
+      ${CMAKE_CURRENT_SOURCE_DIR}/demos/single_cycle
+  )
+
+  set(AXI_KIT_SINGLE_CYCLE_INCLUDE_DIRS
+      ${AXI_KIT_INCLUDE_DIRS}
+      ${AXI_KIT_SINGLE_CYCLE_DIR}/include
+  )
+
+  add_library(axi_kit_axi4_sc STATIC
+      axi_interconnect/AXI_Interconnect.cpp
+      axi_interconnect/AXI_Router_AXI4.cpp
+      sim_ddr/SimDDR.cpp
+      mmio/MMIO_Bus_AXI4.cpp
+      mmio/UART16550_Device.cpp
+  )
+  target_include_directories(axi_kit_axi4_sc PUBLIC ${AXI_KIT_INCLUDE_DIRS})
+  target_compile_features(axi_kit_axi4_sc PUBLIC cxx_std_20)
+  target_compile_definitions(axi_kit_axi4_sc PRIVATE
+      AXI_KIT_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+  )
+
+  add_library(axi_kit_single_cycle_core STATIC
+      ${AXI_KIT_SINGLE_CYCLE_DIR}/src/sc_axi4_sim_api.cpp
+      ${AXI_KIT_SINGLE_CYCLE_DIR}/src/single_cycle_cpu.cpp
+  )
+  target_include_directories(axi_kit_single_cycle_core PUBLIC
+      ${AXI_KIT_SINGLE_CYCLE_INCLUDE_DIRS}
+  )
+  target_compile_options(axi_kit_single_cycle_core PRIVATE
+      ${AXI_KIT_SINGLE_CYCLE_COMPILE_OPTS}
+  )
+  target_compile_definitions(axi_kit_single_cycle_core PRIVATE
+      AXI_KIT_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+      ICACHE_MISS_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+  )
+  target_link_libraries(axi_kit_single_cycle_core PUBLIC axi_kit_axi4_sc)
+
+  add_executable(single_cycle_axi4_demo
+      ${AXI_KIT_SINGLE_CYCLE_DIR}/src/main.cpp
+  )
+  target_include_directories(single_cycle_axi4_demo PRIVATE
+      ${AXI_KIT_SINGLE_CYCLE_INCLUDE_DIRS}
+  )
+  target_compile_options(single_cycle_axi4_demo PRIVATE
+      ${AXI_KIT_SINGLE_CYCLE_COMPILE_OPTS}
+  )
+  target_compile_definitions(single_cycle_axi4_demo PRIVATE
+      AXI_KIT_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+      ICACHE_MISS_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+  )
+  target_link_libraries(single_cycle_axi4_demo PRIVATE
+      axi_kit_single_cycle_core
+      axi_kit_axi4_sc
+      ${AXI_KIT_SINGLE_CYCLE_DIR}/third_party/softfloat/softfloat.a
+      z
+      stdc++fs
+  )
 endif()

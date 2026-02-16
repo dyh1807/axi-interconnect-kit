@@ -125,6 +125,50 @@ Demo intent:
 - `axi4_smoke_demo`: single read-master smoke flow over AXI4 path; checks request acceptance, AR handshake issuance, and read response return.
 - `axi3_smoke_demo`: same smoke intent over AXI3 path, including ID-carrying read path handshake.
 
+## Single-Cycle RV32 Case
+
+Source layout:
+
+```text
+demos/single_cycle/
+  include/                # single-cycle local headers/API/config
+  src/                    # simulator runtime + CPU model
+  third_party/softfloat/  # prebuilt softfloat archive
+```
+
+Build target:
+
+```bash
+cmake -S . -B build
+cmake --build build -j --target single_cycle_axi4_demo
+```
+
+Latency note:
+- `single_cycle_axi4_demo` uses a dedicated AXI4+SimDDR library variant with
+  default `AXI_KIT_SINGLE_CYCLE_DDR_LATENCY=8` (to keep demo runtime practical).
+- You can override it by configuring CMake, for example:
+  `cmake -S . -B build -DAXI_KIT_SINGLE_CYCLE_DDR_LATENCY=16`
+
+Run examples (using images from parent simulator repo):
+
+```bash
+./build/single_cycle_axi4_demo ../baremetal/new_dhrystone/dhrystone.bin
+./build/single_cycle_axi4_demo ../baremetal/new_coremark/coremark.bin
+./build/single_cycle_axi4_demo ../baremetal/linux.bin --max-inst 20000000
+```
+
+This case keeps the simulator and interconnect separated, and all memory-like
+operations are issued through AXI upstream master ports (not direct memory
+peek/poke):
+- `fetch` -> read master `M0 (icache)`
+- `load` + `amo read` -> read master `M1 (dcache_r)`
+- `ptw/va2pa` reads -> read master `M2 (mmu)`
+- `store` + `amo writeback` (+ UART MMIO write) -> write master `M0 (dcache_w)`
+
+Reserved-but-unused in this single-cycle case:
+- read master `M3 (extra_r)`
+- write master `M1 (extra_w)`
+
 ## Integration Back to Parent Simulator
 
 Parent project can consume this repository as an external dependency and include:
