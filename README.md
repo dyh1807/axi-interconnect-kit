@@ -182,3 +182,67 @@ and link either:
 
 - `axi_kit_axi4`
 - `axi_kit_axi3`
+
+## Git Submodule Workflow
+
+If another repository wants to consume this kit as a submodule:
+
+```bash
+# run in parent repo root
+git submodule add git@github.com:dyh1807/axi-interconnect-kit.git axi-interconnect-kit
+git commit -m "chore(submodule): add axi-interconnect-kit"
+```
+
+What this does:
+- creates `.gitmodules` entry (submodule URL/path metadata)
+- records a fixed commit pointer for `axi-interconnect-kit` in parent repo
+
+Clone parent repo + initialize submodules:
+
+```bash
+git clone --recurse-submodules <parent-repo-url>
+# or if already cloned:
+git submodule update --init --recursive
+```
+
+What this does:
+- checks out submodule content at the exact commit pinned by parent repo
+
+Update submodule to latest remote branch (example: `main`):
+
+```bash
+cd axi-interconnect-kit
+git fetch origin
+git checkout main
+git pull --ff-only origin main
+cd ..
+git add axi-interconnect-kit
+git commit -m "chore(submodule): bump axi-interconnect-kit"
+```
+
+What this does:
+- updates submodule working tree to newer commit
+- updates parent repo pointer to that new commit
+
+Pin submodule to a specific commit:
+
+```bash
+cd axi-interconnect-kit
+git checkout <commit-sha>
+cd ..
+git add axi-interconnect-kit
+git commit -m "chore(submodule): pin axi-interconnect-kit to <sha>"
+```
+
+Useful maintenance commands:
+
+```bash
+git submodule status
+git submodule sync --recursive
+git submodule foreach --recursive 'git status --short --branch'
+```
+
+What they do:
+- `git submodule status`: show current checked-out SHA for each submodule
+- `git submodule sync --recursive`: refresh URL/path config from `.gitmodules`
+- `git submodule foreach ...`: run command in each submodule for quick inspection

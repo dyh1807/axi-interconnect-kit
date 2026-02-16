@@ -179,3 +179,67 @@ cmake --build build -j --target single_cycle_axi4_demo
 
 - `axi_kit_axi4`
 - `axi_kit_axi3`
+
+## Git Submodule 使用流程
+
+如果要在其他仓库中以 submodule 方式接入本项目：
+
+```bash
+# 在父仓库根目录执行
+git submodule add git@github.com:dyh1807/axi-interconnect-kit.git axi-interconnect-kit
+git commit -m "chore(submodule): add axi-interconnect-kit"
+```
+
+上述命令作用：
+- 在父仓库写入 `.gitmodules`（记录 submodule 的 URL 与路径）
+- 在父仓库记录 `axi-interconnect-kit` 的固定提交指针
+
+克隆父仓库并初始化 submodule：
+
+```bash
+git clone --recurse-submodules <parent-repo-url>
+# 如果父仓库已克隆：
+git submodule update --init --recursive
+```
+
+上述命令作用：
+- 按父仓库锁定的提交，检出对应 submodule 内容
+
+将 submodule 更新到远端最新分支（例如 `main`）：
+
+```bash
+cd axi-interconnect-kit
+git fetch origin
+git checkout main
+git pull --ff-only origin main
+cd ..
+git add axi-interconnect-kit
+git commit -m "chore(submodule): bump axi-interconnect-kit"
+```
+
+上述命令作用：
+- 更新 submodule 工作树到新提交
+- 同步更新父仓库中的 submodule 指针
+
+将 submodule 固定到指定提交：
+
+```bash
+cd axi-interconnect-kit
+git checkout <commit-sha>
+cd ..
+git add axi-interconnect-kit
+git commit -m "chore(submodule): pin axi-interconnect-kit to <sha>"
+```
+
+常用维护命令：
+
+```bash
+git submodule status
+git submodule sync --recursive
+git submodule foreach --recursive 'git status --short --branch'
+```
+
+命令说明：
+- `git submodule status`：查看每个 submodule 当前检出的提交 SHA
+- `git submodule sync --recursive`：根据 `.gitmodules` 刷新 URL/路径配置
+- `git submodule foreach ...`：在每个 submodule 中执行命令，便于批量检查状态
