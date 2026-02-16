@@ -38,7 +38,7 @@ struct WEvent {
 };
 
 struct TestEnv {
-  axi_interconnect::AXI_Interconnect intlv;
+  axi_interconnect::AXI_Interconnect interconnect;
   sim_ddr::SimDDR ddr;
   std::vector<ArEvent> ar_events;
   std::vector<AwEvent> aw_events;
@@ -59,92 +59,92 @@ uint8_t calc_burst_len(uint8_t total_size) {
 
 uint8_t calc_total_beats(uint8_t total_size) { return calc_burst_len(total_size) + 1; }
 
-void clear_upstream_inputs(axi_interconnect::AXI_Interconnect &intlv) {
+void clear_upstream_inputs(axi_interconnect::AXI_Interconnect &interconnect) {
   for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
-    intlv.read_ports[i].req.valid = false;
-    intlv.read_ports[i].req.addr = 0;
-    intlv.read_ports[i].req.total_size = 0;
-    intlv.read_ports[i].req.id = 0;
-    intlv.read_ports[i].resp.ready = false;
+    interconnect.read_ports[i].req.valid = false;
+    interconnect.read_ports[i].req.addr = 0;
+    interconnect.read_ports[i].req.total_size = 0;
+    interconnect.read_ports[i].req.id = 0;
+    interconnect.read_ports[i].resp.ready = false;
   }
-  intlv.write_port.req.valid = false;
-  intlv.write_port.req.addr = 0;
-  intlv.write_port.req.wdata.clear();
-  intlv.write_port.req.wstrb = 0;
-  intlv.write_port.req.total_size = 0;
-  intlv.write_port.req.id = 0;
-  intlv.write_port.resp.ready = false;
+  interconnect.write_port.req.valid = false;
+  interconnect.write_port.req.addr = 0;
+  interconnect.write_port.req.wdata.clear();
+  interconnect.write_port.req.wstrb = 0;
+  interconnect.write_port.req.total_size = 0;
+  interconnect.write_port.req.id = 0;
+  interconnect.write_port.resp.ready = false;
 }
 
 void cycle_outputs(TestEnv &env) {
-  clear_upstream_inputs(env.intlv);
+  clear_upstream_inputs(env.interconnect);
 
   // Phase 1: DDR outputs → interconnect inputs → interconnect outputs
   env.ddr.comb_outputs();
-  env.intlv.axi_io.ar.arready = env.ddr.io.ar.arready;
-  env.intlv.axi_io.r.rvalid = env.ddr.io.r.rvalid;
-  env.intlv.axi_io.r.rid = env.ddr.io.r.rid;
-  env.intlv.axi_io.r.rdata = env.ddr.io.r.rdata;
-  env.intlv.axi_io.r.rlast = env.ddr.io.r.rlast;
-  env.intlv.axi_io.r.rresp = env.ddr.io.r.rresp;
-  env.intlv.axi_io.aw.awready = env.ddr.io.aw.awready;
-  env.intlv.axi_io.w.wready = env.ddr.io.w.wready;
-  env.intlv.axi_io.b.bvalid = env.ddr.io.b.bvalid;
-  env.intlv.axi_io.b.bid = env.ddr.io.b.bid;
-  env.intlv.axi_io.b.bresp = env.ddr.io.b.bresp;
+  env.interconnect.axi_io.ar.arready = env.ddr.io.ar.arready;
+  env.interconnect.axi_io.r.rvalid = env.ddr.io.r.rvalid;
+  env.interconnect.axi_io.r.rid = env.ddr.io.r.rid;
+  env.interconnect.axi_io.r.rdata = env.ddr.io.r.rdata;
+  env.interconnect.axi_io.r.rlast = env.ddr.io.r.rlast;
+  env.interconnect.axi_io.r.rresp = env.ddr.io.r.rresp;
+  env.interconnect.axi_io.aw.awready = env.ddr.io.aw.awready;
+  env.interconnect.axi_io.w.wready = env.ddr.io.w.wready;
+  env.interconnect.axi_io.b.bvalid = env.ddr.io.b.bvalid;
+  env.interconnect.axi_io.b.bid = env.ddr.io.b.bid;
+  env.interconnect.axi_io.b.bresp = env.ddr.io.b.bresp;
 
-  env.intlv.comb_outputs();
+  env.interconnect.comb_outputs();
 }
 
 void cycle_inputs(TestEnv &env) {
   // Phase 2: interconnect inputs → DDR inputs
-  env.intlv.comb_inputs();
+  env.interconnect.comb_inputs();
 
   // Record DDR-side handshakes for protocol/beat-splitting checks
-  if (env.intlv.axi_io.ar.arvalid && env.intlv.axi_io.ar.arready) {
+  if (env.interconnect.axi_io.ar.arvalid && env.interconnect.axi_io.ar.arready) {
     env.ar_events.push_back(
-        {.addr = env.intlv.axi_io.ar.araddr,
-         .id = static_cast<uint8_t>(env.intlv.axi_io.ar.arid),
-         .len = static_cast<uint8_t>(env.intlv.axi_io.ar.arlen)});
+        {.addr = env.interconnect.axi_io.ar.araddr,
+         .id = static_cast<uint8_t>(env.interconnect.axi_io.ar.arid),
+         .len = static_cast<uint8_t>(env.interconnect.axi_io.ar.arlen)});
   }
-  if (env.intlv.axi_io.aw.awvalid && env.intlv.axi_io.aw.awready) {
+  if (env.interconnect.axi_io.aw.awvalid && env.interconnect.axi_io.aw.awready) {
     env.aw_events.push_back(
-        {.addr = env.intlv.axi_io.aw.awaddr,
-         .id = static_cast<uint8_t>(env.intlv.axi_io.aw.awid),
-         .len = static_cast<uint8_t>(env.intlv.axi_io.aw.awlen)});
+        {.addr = env.interconnect.axi_io.aw.awaddr,
+         .id = static_cast<uint8_t>(env.interconnect.axi_io.aw.awid),
+         .len = static_cast<uint8_t>(env.interconnect.axi_io.aw.awlen)});
   }
-  if (env.intlv.axi_io.w.wvalid && env.intlv.axi_io.w.wready) {
+  if (env.interconnect.axi_io.w.wvalid && env.interconnect.axi_io.w.wready) {
     env.w_events.push_back(
-        {.data = env.intlv.axi_io.w.wdata,
-         .strb = static_cast<uint8_t>(env.intlv.axi_io.w.wstrb),
-         .last = env.intlv.axi_io.w.wlast});
+        {.data = env.interconnect.axi_io.w.wdata,
+         .strb = static_cast<uint8_t>(env.interconnect.axi_io.w.wstrb),
+         .last = env.interconnect.axi_io.w.wlast});
   }
 
-  env.ddr.io.ar.arvalid = env.intlv.axi_io.ar.arvalid;
-  env.ddr.io.ar.araddr = env.intlv.axi_io.ar.araddr;
-  env.ddr.io.ar.arid = env.intlv.axi_io.ar.arid;
-  env.ddr.io.ar.arlen = env.intlv.axi_io.ar.arlen;
-  env.ddr.io.ar.arsize = env.intlv.axi_io.ar.arsize;
-  env.ddr.io.ar.arburst = env.intlv.axi_io.ar.arburst;
+  env.ddr.io.ar.arvalid = env.interconnect.axi_io.ar.arvalid;
+  env.ddr.io.ar.araddr = env.interconnect.axi_io.ar.araddr;
+  env.ddr.io.ar.arid = env.interconnect.axi_io.ar.arid;
+  env.ddr.io.ar.arlen = env.interconnect.axi_io.ar.arlen;
+  env.ddr.io.ar.arsize = env.interconnect.axi_io.ar.arsize;
+  env.ddr.io.ar.arburst = env.interconnect.axi_io.ar.arburst;
 
-  env.ddr.io.aw.awvalid = env.intlv.axi_io.aw.awvalid;
-  env.ddr.io.aw.awaddr = env.intlv.axi_io.aw.awaddr;
-  env.ddr.io.aw.awid = env.intlv.axi_io.aw.awid;
-  env.ddr.io.aw.awlen = env.intlv.axi_io.aw.awlen;
-  env.ddr.io.aw.awsize = env.intlv.axi_io.aw.awsize;
-  env.ddr.io.aw.awburst = env.intlv.axi_io.aw.awburst;
+  env.ddr.io.aw.awvalid = env.interconnect.axi_io.aw.awvalid;
+  env.ddr.io.aw.awaddr = env.interconnect.axi_io.aw.awaddr;
+  env.ddr.io.aw.awid = env.interconnect.axi_io.aw.awid;
+  env.ddr.io.aw.awlen = env.interconnect.axi_io.aw.awlen;
+  env.ddr.io.aw.awsize = env.interconnect.axi_io.aw.awsize;
+  env.ddr.io.aw.awburst = env.interconnect.axi_io.aw.awburst;
 
-  env.ddr.io.w.wvalid = env.intlv.axi_io.w.wvalid;
-  env.ddr.io.w.wdata = env.intlv.axi_io.w.wdata;
-  env.ddr.io.w.wstrb = env.intlv.axi_io.w.wstrb;
-  env.ddr.io.w.wlast = env.intlv.axi_io.w.wlast;
+  env.ddr.io.w.wvalid = env.interconnect.axi_io.w.wvalid;
+  env.ddr.io.w.wdata = env.interconnect.axi_io.w.wdata;
+  env.ddr.io.w.wstrb = env.interconnect.axi_io.w.wstrb;
+  env.ddr.io.w.wlast = env.interconnect.axi_io.w.wlast;
 
-  env.ddr.io.r.rready = env.intlv.axi_io.r.rready;
-  env.ddr.io.b.bready = env.intlv.axi_io.b.bready;
+  env.ddr.io.r.rready = env.interconnect.axi_io.r.rready;
+  env.ddr.io.b.bready = env.interconnect.axi_io.b.bready;
 
   env.ddr.comb_inputs();
   env.ddr.seq();
-  env.intlv.seq();
+  env.interconnect.seq();
   sim_time++;
 }
 
@@ -155,8 +155,8 @@ void cycle_inputs(TestEnv &env) {
 bool test_ar_latching_ready_first() {
   printf("=== Test 1: AR latching (mocked arready) ===\n");
 
-  axi_interconnect::AXI_Interconnect intlv;
-  intlv.init();
+  axi_interconnect::AXI_Interconnect interconnect;
+  interconnect.init();
 
   // Drive a request and force arready low; interconnect should latch AR and
   // keep arvalid asserted even if req.valid drops.
@@ -164,30 +164,30 @@ bool test_ar_latching_ready_first() {
   bool saw_ready = false;
 
   for (int cyc = 0; cyc < 8; cyc++) {
-    clear_upstream_inputs(intlv);
+    clear_upstream_inputs(interconnect);
 
     // Mock AXI slave (no R channel activity)
-    intlv.axi_io.ar.arready = (cyc >= 5); // backpressure for first 5 cycles
-    intlv.axi_io.r.rvalid = false;
-    intlv.axi_io.r.rid = 0;
-    intlv.axi_io.r.rdata = 0;
-    intlv.axi_io.r.rlast = false;
-    intlv.axi_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
-    intlv.axi_io.aw.awready = true;
-    intlv.axi_io.w.wready = true;
-    intlv.axi_io.b.bvalid = false;
-    intlv.axi_io.b.bid = 0;
-    intlv.axi_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+    interconnect.axi_io.ar.arready = (cyc >= 5); // backpressure for first 5 cycles
+    interconnect.axi_io.r.rvalid = false;
+    interconnect.axi_io.r.rid = 0;
+    interconnect.axi_io.r.rdata = 0;
+    interconnect.axi_io.r.rlast = false;
+    interconnect.axi_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+    interconnect.axi_io.aw.awready = true;
+    interconnect.axi_io.w.wready = true;
+    interconnect.axi_io.b.bvalid = false;
+    interconnect.axi_io.b.bid = 0;
+    interconnect.axi_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
 
-    intlv.comb_outputs();
-    bool req_ready = intlv.read_ports[0].req.ready;
+    interconnect.comb_outputs();
+    bool req_ready = interconnect.read_ports[0].req.ready;
 
     // Keep valid asserted until we see ready (ready-first handshake)
     if (req_valid) {
-      intlv.read_ports[0].req.valid = true;
-      intlv.read_ports[0].req.addr = 0x2000;
-      intlv.read_ports[0].req.total_size = 3;
-      intlv.read_ports[0].req.id = 1;
+      interconnect.read_ports[0].req.valid = true;
+      interconnect.read_ports[0].req.addr = 0x2000;
+      interconnect.read_ports[0].req.total_size = 3;
+      interconnect.read_ports[0].req.id = 1;
     }
 
     if (req_valid && req_ready) {
@@ -195,17 +195,17 @@ bool test_ar_latching_ready_first() {
       req_valid = false; // drop after handshake
     }
 
-    intlv.comb_inputs();
+    interconnect.comb_inputs();
 
     if (saw_ready && cyc >= 2 && cyc < 5 && !req_valid) {
       // After req.valid drops, arvalid must stay asserted while arready=0.
-      if (!intlv.axi_io.ar.arvalid) {
+      if (!interconnect.axi_io.ar.arvalid) {
         printf("FAIL: arvalid dropped under backpressure\n");
         return false;
       }
     }
 
-    intlv.seq();
+    interconnect.seq();
     sim_time++;
   }
 
@@ -222,7 +222,7 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
   printf("=== Test 2: Multi-master reads (sizes/ids) ===\n");
 
   env.clear_events();
-  env.intlv.init();
+  env.interconnect.init();
   env.ddr.init();
 
   // master 0: 4B, master 1: 8B, master 2: 32B, master 3: 16B
@@ -259,20 +259,20 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
     cycle_outputs(env);
     bool ready_snapshot[axi_interconnect::NUM_READ_MASTERS];
     for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
-      ready_snapshot[i] = env.intlv.read_ports[i].req.ready;
+      ready_snapshot[i] = env.interconnect.read_ports[i].req.ready;
     }
 
     for (const auto &r : reqs) {
       if (issued[r.master])
         continue;
-      env.intlv.read_ports[r.master].req.valid = true;
-      env.intlv.read_ports[r.master].req.addr = r.addr;
-      env.intlv.read_ports[r.master].req.total_size = r.total_size;
-      env.intlv.read_ports[r.master].req.id = r.id;
+      env.interconnect.read_ports[r.master].req.valid = true;
+      env.interconnect.read_ports[r.master].req.addr = r.addr;
+      env.interconnect.read_ports[r.master].req.total_size = r.total_size;
+      env.interconnect.read_ports[r.master].req.id = r.id;
     }
 
     for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
-      env.intlv.read_ports[i].resp.ready = true;
+      env.interconnect.read_ports[i].resp.ready = true;
     }
 
     cycle_inputs(env);
@@ -334,32 +334,32 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
     for (const auto &r : reqs) {
       if (done[r.master])
         continue;
-      if (!env.intlv.read_ports[r.master].resp.valid)
+      if (!env.interconnect.read_ports[r.master].resp.valid)
         continue;
 
       uint8_t exp_beats = calc_total_beats(r.total_size);
-      if (env.intlv.read_ports[r.master].resp.id != r.id) {
+      if (env.interconnect.read_ports[r.master].resp.id != r.id) {
         printf("FAIL: master %u resp.id mismatch exp=%u got=%u\n", r.master,
-               r.id, env.intlv.read_ports[r.master].resp.id);
+               r.id, env.interconnect.read_ports[r.master].resp.id);
         return false;
       }
 
       for (int b = 0; b < exp_beats; b++) {
         uint32_t exp = p_memory[(r.addr >> 2) + b];
-        if (env.intlv.read_ports[r.master].resp.data[b] != exp) {
+        if (env.interconnect.read_ports[r.master].resp.data[b] != exp) {
           printf("FAIL: master %u beat %d exp=0x%08x got=0x%08x\n", r.master, b,
-                 exp, env.intlv.read_ports[r.master].resp.data[b]);
+                 exp, env.interconnect.read_ports[r.master].resp.data[b]);
           return false;
         }
       }
       for (int b = exp_beats; b < axi_interconnect::CACHELINE_WORDS; b++) {
-        if (env.intlv.read_ports[r.master].resp.data[b] != 0) {
+        if (env.interconnect.read_ports[r.master].resp.data[b] != 0) {
           printf("FAIL: master %u beat %d expected 0 padding\n", r.master, b);
           return false;
         }
       }
 
-      env.intlv.read_ports[r.master].resp.ready = true;
+      env.interconnect.read_ports[r.master].resp.ready = true;
       done[r.master] = true;
     }
 
@@ -381,7 +381,7 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
   printf("=== Test 3: Write burst splitting + resp backpressure ===\n");
 
   env.clear_events();
-  env.intlv.init();
+  env.interconnect.init();
   env.ddr.init();
 
   // Case A: 32B full-line write (8 beats)
@@ -400,14 +400,14 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
   int issue_timeout = 200;
   while (!issued && issue_timeout-- > 0) {
     cycle_outputs(env);
-    bool ready_snapshot = env.intlv.write_port.req.ready;
+    bool ready_snapshot = env.interconnect.write_port.req.ready;
 
-    env.intlv.write_port.req.valid = true;
-    env.intlv.write_port.req.addr = base_addr;
-    env.intlv.write_port.req.wdata = wdata;
-    env.intlv.write_port.req.wstrb = wstrb;
-    env.intlv.write_port.req.total_size = total_size;
-    env.intlv.write_port.req.id = req_id;
+    env.interconnect.write_port.req.valid = true;
+    env.interconnect.write_port.req.addr = base_addr;
+    env.interconnect.write_port.req.wdata = wdata;
+    env.interconnect.write_port.req.wstrb = wstrb;
+    env.interconnect.write_port.req.total_size = total_size;
+    env.interconnect.write_port.req.id = req_id;
 
     cycle_inputs(env);
     if (ready_snapshot) {
@@ -424,7 +424,7 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
   int resp_timeout = sim_ddr::SIM_DDR_LATENCY * 40;
   while (!saw_resp && resp_timeout-- > 0) {
     cycle_outputs(env);
-    if (env.intlv.write_port.resp.valid) {
+    if (env.interconnect.write_port.resp.valid) {
       saw_resp = true;
       break;
     }
@@ -438,15 +438,15 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
   // Backpressure upstream for 5 cycles; resp.valid must remain asserted.
   for (int i = 0; i < 5; i++) {
     cycle_outputs(env);
-    if (!env.intlv.write_port.resp.valid) {
+    if (!env.interconnect.write_port.resp.valid) {
       printf("FAIL: resp.valid dropped under backpressure\n");
       return false;
     }
-    if (env.intlv.axi_io.b.bready) {
+    if (env.interconnect.axi_io.b.bready) {
       printf("FAIL: expected DDR bready=0 while resp pending\n");
       return false;
     }
-    if (env.intlv.write_port.req.ready) {
+    if (env.interconnect.write_port.req.ready) {
       printf("FAIL: write req.ready should stay low while resp pending\n");
       return false;
     }
@@ -455,22 +455,22 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
 
   // Now accept the response.
   cycle_outputs(env);
-  if (!env.intlv.write_port.resp.valid) {
+  if (!env.interconnect.write_port.resp.valid) {
     printf("FAIL: resp.valid unexpectedly low before accept\n");
     return false;
   }
-  if (env.intlv.write_port.resp.id != req_id ||
-      env.intlv.write_port.resp.resp != sim_ddr::AXI_RESP_OKAY) {
+  if (env.interconnect.write_port.resp.id != req_id ||
+      env.interconnect.write_port.resp.resp != sim_ddr::AXI_RESP_OKAY) {
     printf("FAIL: write resp mismatch id=%u resp=%u\n",
-           env.intlv.write_port.resp.id, env.intlv.write_port.resp.resp);
+           env.interconnect.write_port.resp.id, env.interconnect.write_port.resp.resp);
     return false;
   }
-  env.intlv.write_port.resp.ready = true;
+  env.interconnect.write_port.resp.ready = true;
   cycle_inputs(env);
 
   // Next cycle: resp.valid should be cleared.
   cycle_outputs(env);
-  if (env.intlv.write_port.resp.valid) {
+  if (env.interconnect.write_port.resp.valid) {
     printf("FAIL: resp.valid not cleared after handshake\n");
     return false;
   }
@@ -514,7 +514,7 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
 
   // Case B: partial strobe single-beat write
   env.clear_events();
-  env.intlv.init();
+  env.interconnect.init();
   env.ddr.init();
 
   uint32_t paddr = 0x9000;
@@ -527,15 +527,15 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
   issue_timeout = 200;
   while (!issued && issue_timeout-- > 0) {
     cycle_outputs(env);
-    bool ready_snapshot = env.intlv.write_port.req.ready;
+    bool ready_snapshot = env.interconnect.write_port.req.ready;
 
-    env.intlv.write_port.req.valid = true;
-    env.intlv.write_port.req.addr = paddr;
-    env.intlv.write_port.req.wdata = pwdata;
-    env.intlv.write_port.req.wstrb = 0x5; // byte0 + byte2
-    env.intlv.write_port.req.total_size = 3;
-    env.intlv.write_port.req.id = 1;
-    env.intlv.write_port.resp.ready = true;
+    env.interconnect.write_port.req.valid = true;
+    env.interconnect.write_port.req.addr = paddr;
+    env.interconnect.write_port.req.wdata = pwdata;
+    env.interconnect.write_port.req.wstrb = 0x5; // byte0 + byte2
+    env.interconnect.write_port.req.total_size = 3;
+    env.interconnect.write_port.req.id = 1;
+    env.interconnect.write_port.resp.ready = true;
 
     cycle_inputs(env);
     if (ready_snapshot) {
@@ -552,8 +552,8 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
   bool consumed = false;
   while (resp_timeout-- > 0) {
     cycle_outputs(env);
-    env.intlv.write_port.resp.ready = true;
-    bool done = env.intlv.write_port.resp.valid;
+    env.interconnect.write_port.resp.ready = true;
+    bool done = env.interconnect.write_port.resp.valid;
     cycle_inputs(env);
     if (done) {
       consumed = true;
@@ -579,7 +579,7 @@ bool test_read_write_parallel(TestEnv &env) {
   printf("=== Test 4: Read/write parallel ===\n");
 
   env.clear_events();
-  env.intlv.init();
+  env.interconnect.init();
   env.ddr.init();
 
   uint32_t r_addr = 0x10000;
@@ -599,26 +599,26 @@ bool test_read_write_parallel(TestEnv &env) {
       break;
 
     cycle_outputs(env);
-    bool r_ready_snapshot = env.intlv.read_ports[0].req.ready;
-    bool w_ready_snapshot = env.intlv.write_port.req.ready;
+    bool r_ready_snapshot = env.interconnect.read_ports[0].req.ready;
+    bool w_ready_snapshot = env.interconnect.write_port.req.ready;
 
     if (!r_issued) {
-      env.intlv.read_ports[0].req.valid = true;
-      env.intlv.read_ports[0].req.addr = r_addr;
-      env.intlv.read_ports[0].req.total_size = 3;
-      env.intlv.read_ports[0].req.id = 3;
+      env.interconnect.read_ports[0].req.valid = true;
+      env.interconnect.read_ports[0].req.addr = r_addr;
+      env.interconnect.read_ports[0].req.total_size = 3;
+      env.interconnect.read_ports[0].req.id = 3;
     }
     if (!w_issued) {
-      env.intlv.write_port.req.valid = true;
-      env.intlv.write_port.req.addr = w_addr;
-      env.intlv.write_port.req.wdata = wdata;
-      env.intlv.write_port.req.wstrb = 0xF;
-      env.intlv.write_port.req.total_size = 3;
-      env.intlv.write_port.req.id = 0;
+      env.interconnect.write_port.req.valid = true;
+      env.interconnect.write_port.req.addr = w_addr;
+      env.interconnect.write_port.req.wdata = wdata;
+      env.interconnect.write_port.req.wstrb = 0xF;
+      env.interconnect.write_port.req.total_size = 3;
+      env.interconnect.write_port.req.id = 0;
     }
 
-    env.intlv.read_ports[0].resp.ready = true;
-    env.intlv.write_port.resp.ready = true;
+    env.interconnect.read_ports[0].resp.ready = true;
+    env.interconnect.write_port.resp.ready = true;
     cycle_inputs(env);
 
     if (!r_issued && r_ready_snapshot)
@@ -639,16 +639,16 @@ bool test_read_write_parallel(TestEnv &env) {
       break;
 
     cycle_outputs(env);
-    if (!r_done && env.intlv.read_ports[0].resp.valid) {
-      if (env.intlv.read_ports[0].resp.data[0] != p_memory[r_addr >> 2]) {
+    if (!r_done && env.interconnect.read_ports[0].resp.valid) {
+      if (env.interconnect.read_ports[0].resp.data[0] != p_memory[r_addr >> 2]) {
         printf("FAIL: read data mismatch\n");
         return false;
       }
-      env.intlv.read_ports[0].resp.ready = true;
+      env.interconnect.read_ports[0].resp.ready = true;
       r_done = true;
     }
-    if (!w_done && env.intlv.write_port.resp.valid) {
-      env.intlv.write_port.resp.ready = true;
+    if (!w_done && env.interconnect.write_port.resp.valid) {
+      env.interconnect.write_port.resp.ready = true;
       w_done = true;
     }
     cycle_inputs(env);
@@ -672,7 +672,7 @@ bool test_read_resp_backpressure(TestEnv &env) {
   printf("=== Test 5: Read resp backpressure ===\n");
 
   env.clear_events();
-  env.intlv.init();
+  env.interconnect.init();
   env.ddr.init();
 
   uint8_t master = axi_interconnect::MASTER_ICACHE;
@@ -690,12 +690,12 @@ bool test_read_resp_backpressure(TestEnv &env) {
   int issue_timeout = 200;
   while (!issued && issue_timeout-- > 0) {
     cycle_outputs(env);
-    bool ready_snapshot = env.intlv.read_ports[master].req.ready;
+    bool ready_snapshot = env.interconnect.read_ports[master].req.ready;
 
-    env.intlv.read_ports[master].req.valid = true;
-    env.intlv.read_ports[master].req.addr = addr;
-    env.intlv.read_ports[master].req.total_size = total_size;
-    env.intlv.read_ports[master].req.id = id;
+    env.interconnect.read_ports[master].req.valid = true;
+    env.interconnect.read_ports[master].req.addr = addr;
+    env.interconnect.read_ports[master].req.total_size = total_size;
+    env.interconnect.read_ports[master].req.id = id;
 
     cycle_inputs(env);
     if (ready_snapshot) {
@@ -714,13 +714,13 @@ bool test_read_resp_backpressure(TestEnv &env) {
   int timeout = sim_ddr::SIM_DDR_LATENCY * 40;
   while (!saw_resp && timeout-- > 0) {
     cycle_outputs(env);
-    if (env.intlv.read_ports[master].resp.valid) {
-      if (env.intlv.read_ports[master].resp.id != id) {
+    if (env.interconnect.read_ports[master].resp.valid) {
+      if (env.interconnect.read_ports[master].resp.id != id) {
         printf("FAIL: resp.id mismatch exp=%u got=%u\n", id,
-               env.intlv.read_ports[master].resp.id);
+               env.interconnect.read_ports[master].resp.id);
         return false;
       }
-      resp_data_snapshot = env.intlv.read_ports[master].resp.data;
+      resp_data_snapshot = env.interconnect.read_ports[master].resp.data;
       saw_resp = true;
     }
     cycle_inputs(env);
@@ -733,16 +733,16 @@ bool test_read_resp_backpressure(TestEnv &env) {
   // Backpressure for 5 cycles: resp.valid/data must remain stable
   for (int i = 0; i < 5; i++) {
     cycle_outputs(env);
-    if (!env.intlv.read_ports[master].resp.valid) {
+    if (!env.interconnect.read_ports[master].resp.valid) {
       printf("FAIL: resp.valid dropped under backpressure\n");
       return false;
     }
-    if (env.intlv.read_ports[master].resp.id != id) {
+    if (env.interconnect.read_ports[master].resp.id != id) {
       printf("FAIL: resp.id changed under backpressure\n");
       return false;
     }
     for (int b = 0; b < axi_interconnect::CACHELINE_WORDS; b++) {
-      if (env.intlv.read_ports[master].resp.data[b] != resp_data_snapshot[b]) {
+      if (env.interconnect.read_ports[master].resp.data[b] != resp_data_snapshot[b]) {
         printf("FAIL: resp.data changed under backpressure\n");
         return false;
       }
@@ -752,15 +752,15 @@ bool test_read_resp_backpressure(TestEnv &env) {
 
   // Consume the response
   cycle_outputs(env);
-  if (!env.intlv.read_ports[master].resp.valid) {
+  if (!env.interconnect.read_ports[master].resp.valid) {
     printf("FAIL: resp.valid unexpectedly low before consume\n");
     return false;
   }
-  env.intlv.read_ports[master].resp.ready = true;
+  env.interconnect.read_ports[master].resp.ready = true;
   cycle_inputs(env);
 
   cycle_outputs(env);
-  if (env.intlv.read_ports[master].resp.valid) {
+  if (env.interconnect.read_ports[master].resp.valid) {
     printf("FAIL: resp.valid not cleared after handshake\n");
     return false;
   }

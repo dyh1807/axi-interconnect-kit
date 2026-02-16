@@ -39,6 +39,10 @@
  +-------------+  +---------------------+
 ```
 
+这里的 `AXI_Router_AXI4/AXI3` 是明确的独立层，不是 `interconnect` 内部细节：
+- `AXI_Interconnect`：负责多主设备仲裁、上游请求/响应调度。
+- `AXI_Router_AXI4/AXI3`：负责 AXI 侧地址译码与目标从设备路径选择。
+
 ## 连接拓扑（WRITE 路径）
 
 ```
@@ -62,6 +66,10 @@
  | (slave #0)  |  | (slave #1)          |
  +-------------+  +---------------------+
 ```
+
+写路径（`AW/W/B`）同样分层：
+- `AXI_Interconnect` 负责上游写端口仲裁和写响应分发。
+- `AXI_Router_AXI4/AXI3` 按地址映射选择 DDR 或 MMIO 目标。
 
 ## 接口信号文档
 
@@ -111,6 +119,10 @@ ctest --output-on-failure
 ./build/axi4_smoke_demo
 ./build/axi3_smoke_demo
 ```
+
+Demo 用途：
+- `axi4_smoke_demo`：AXI4 路径单读主设备冒烟测试，检查请求被接收、AR 通道发出、读响应返回。
+- `axi3_smoke_demo`：AXI3 路径同类冒烟测试，覆盖带 ID 的读路径握手与响应闭环。
 
 ## 回接到父仓库
 

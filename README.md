@@ -40,6 +40,10 @@ Read Masters (4 ports)
  +-------------+  +---------------------+
 ```
 
+`AXI_Router_AXI4/AXI3` is a first-class layer (not implied inside interconnect):
+- `AXI_Interconnect`: multi-master arbitration, upstream request/response scheduling.
+- `AXI_Router_AXI4/AXI3`: AXI-side address decode and slave-path selection.
+
 ## Topology (WRITE path)
 
 ```
@@ -63,6 +67,10 @@ Write Masters (2 ports)
  | (slave #0)  |  | (slave #1)          |
  +-------------+  +---------------------+
 ```
+
+The same layering applies to write path (`AW/W/B`):
+- `AXI_Interconnect` handles upstream write-port arbitration and response demux.
+- `AXI_Router_AXI4/AXI3` decides DDR vs MMIO destination by address map.
 
 ## Interface Signals
 
@@ -112,6 +120,10 @@ Current test binaries:
 ./build/axi4_smoke_demo
 ./build/axi3_smoke_demo
 ```
+
+Demo intent:
+- `axi4_smoke_demo`: single read-master smoke flow over AXI4 path; checks request acceptance, AR handshake issuance, and read response return.
+- `axi3_smoke_demo`: same smoke intent over AXI3 path, including ID-carrying read path handshake.
 
 ## Integration Back to Parent Simulator
 
