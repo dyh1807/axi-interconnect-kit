@@ -84,6 +84,117 @@
 - AXI3 五通道信号（`AW/W/B/AR/R`，256-bit 数据）
 - AXI4 五通道信号（`AW/W/B/AR/R`，32-bit 数据）
 
+## 项目目录树与文件职责
+
+```text
+.
+├── CMakeLists.txt
+├── Makefile
+├── README.md / README_CN.md
+├── include/
+├── axi_interconnect/
+│   ├── include/
+│   ├── AXI_Interconnect.cpp
+│   ├── AXI_Interconnect_AXI3.cpp
+│   ├── AXI_Router_AXI4.cpp
+│   ├── AXI_Router_AXI3.cpp
+│   ├── axi_interconnect_test.cpp
+│   └── axi_interconnect_axi3_test.cpp
+├── sim_ddr/
+│   ├── include/
+│   ├── SimDDR.cpp
+│   ├── SimDDR_AXI3.cpp
+│   ├── sim_ddr_test.cpp
+│   └── sim_ddr_axi3_test.cpp
+├── mmio/
+│   ├── include/
+│   ├── MMIO_Bus_AXI4.cpp
+│   ├── MMIO_Bus_AXI3.cpp
+│   ├── UART16550_Device.cpp
+│   ├── mmio_router_axi4_test.cpp
+│   └── mmio_router_axi3_test.cpp
+├── demos/
+│   ├── axi4_smoke.cpp
+│   ├── axi3_smoke.cpp
+│   └── single_cycle/
+│       ├── include/
+│       ├── src/
+│       └── third_party/softfloat/softfloat.a
+├── docs/
+└── .codex/skills/
+```
+
+顶层文件：
+- `CMakeLists.txt`：定义库/测试/demo 目标与构建开关。
+- `Makefile`：对 CMake 构建流程的便捷封装入口。
+- `README.md` / `README_CN.md`：英文/中文说明文档。
+- `.gitignore`：忽略构建产物和生成文件。
+
+`include/`：
+- `include/axi_interconnect_compat.h`：给父项目接入使用的兼容辅助定义。
+- `include/axi_mmio_map.h`：DDR/MMIO 地址映射常量定义。
+
+`axi_interconnect/`：
+- `axi_interconnect/include/AXI_Interconnect.h`：AXI4 interconnect 类与接口定义。
+- `axi_interconnect/include/AXI_Interconnect_AXI3.h`：AXI3 interconnect 类与接口定义。
+- `axi_interconnect/include/AXI_Interconnect_IO.h`：上游简化读写端口结构定义。
+- `axi_interconnect/include/AXI_Router_AXI4.h`：AXI4 router 接口定义。
+- `axi_interconnect/include/AXI_Router_AXI3.h`：AXI3 router 接口定义。
+- `axi_interconnect/AXI_Interconnect.cpp`：AXI4 仲裁/请求调度/响应分发实现。
+- `axi_interconnect/AXI_Interconnect_AXI3.cpp`：AXI3 仲裁/请求调度/响应分发实现。
+- `axi_interconnect/AXI_Router_AXI4.cpp`：AXI4 DDR/MMIO 地址译码与转发实现。
+- `axi_interconnect/AXI_Router_AXI3.cpp`：AXI3 DDR/MMIO 地址译码与转发实现。
+- `axi_interconnect/axi_interconnect_test.cpp`：AXI4 interconnect 单元与压力测试。
+- `axi_interconnect/axi_interconnect_axi3_test.cpp`：AXI3 interconnect 单元与压力测试。
+
+`sim_ddr/`：
+- `sim_ddr/include/SimDDR.h`：AXI4 SimDDR 接口定义。
+- `sim_ddr/include/SimDDR_AXI3.h`：AXI3 SimDDR 接口定义。
+- `sim_ddr/include/SimDDR_IO.h`：AXI4 IO bundle 定义。
+- `sim_ddr/include/SimDDR_AXI3_IO.h`：AXI3 IO bundle 定义。
+- `sim_ddr/SimDDR.cpp`：AXI4 内存后端行为实现。
+- `sim_ddr/SimDDR_AXI3.cpp`：AXI3 内存后端行为实现。
+- `sim_ddr/sim_ddr_test.cpp`：AXI4 SimDDR 测试。
+- `sim_ddr/sim_ddr_axi3_test.cpp`：AXI3 SimDDR 测试。
+
+`mmio/`：
+- `mmio/include/MMIO_Device.h`：MMIO 设备抽象基类。
+- `mmio/include/MMIO_Bus_AXI4.h`：AXI4 MMIO 总线接口定义。
+- `mmio/include/MMIO_Bus_AXI3.h`：AXI3 MMIO 总线接口定义。
+- `mmio/include/UART16550_Device.h`：UART16550 设备接口定义。
+- `mmio/MMIO_Bus_AXI4.cpp`：AXI4 MMIO 总线实现。
+- `mmio/MMIO_Bus_AXI3.cpp`：AXI3 MMIO 总线实现。
+- `mmio/UART16550_Device.cpp`：UART16550 设备模型实现。
+- `mmio/mmio_router_axi4_test.cpp`：AXI4 router+MMIO 集成测试。
+- `mmio/mmio_router_axi3_test.cpp`：AXI3 router+MMIO 集成测试。
+
+`demos/`：
+- `demos/axi4_smoke.cpp`：AXI4 最小冒烟示例。
+- `demos/axi3_smoke.cpp`：AXI3 最小冒烟示例。
+- `demos/single_cycle/include/config.h`：单周期示例本地配置与常量。
+- `demos/single_cycle/include/RISCV.h`：RV32 指令/类型/辅助定义。
+- `demos/single_cycle/include/CSR.h`：CSR 常量与定义。
+- `demos/single_cycle/include/single_cycle_cpu.h`：单周期 CPU 类声明。
+- `demos/single_cycle/include/sc_axi4_sim_api.h`：单周期示例的 AXI 仿真 API。
+- `demos/single_cycle/include/softfloat.h`：softfloat 函数声明。
+- `demos/single_cycle/include/softfloat_types.h`：softfloat 类型定义。
+- `demos/single_cycle/src/main.cpp`：单周期示例入口。
+- `demos/single_cycle/src/single_cycle_cpu.cpp`：单周期 CPU 实现。
+- `demos/single_cycle/src/sc_axi4_sim_api.cpp`：AXI 内存/MMIO 胶水逻辑与运行时实现。
+- `demos/single_cycle/third_party/softfloat/softfloat.a`：预编译 softfloat 静态库。
+
+`docs/`：
+- `docs/interfaces.md`：英文接口信号详表（上游端口 + AXI3/AXI4 通道）。
+- `docs/interfaces_CN.md`：中文接口信号详表。
+
+`.codex/skills/`：
+- `.codex/skills/axi-kit-dev/SKILL.md`：本仓库开发流程技能文档。
+- `.codex/skills/axi-kit-verify/SKILL.md`：本仓库验证/回归流程技能文档。
+
+说明：
+- `build/` 为构建生成目录，不属于源码职责范畴。
+
+
 ## 构建
 
 ```bash
