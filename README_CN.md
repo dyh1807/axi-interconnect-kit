@@ -195,6 +195,28 @@
 - `build/` 为构建生成目录，不属于源码职责范畴。
 
 
+## 推荐阅读路径
+
+如果是第一次阅读这个仓库，建议按以下顺序快速建立全局认知：
+
+1. 先读本 README 的架构和拓扑（READ/WRITE 两张 ASCII 图）。
+2. 再读 `docs/interfaces.md` / `docs/interfaces_CN.md` 的信号字典。
+3. 按一条完整数据路径串读源码：
+   - `axi_interconnect/include/AXI_Interconnect_IO.h`
+   - `axi_interconnect/AXI_Interconnect.cpp`（或 `AXI_Interconnect_AXI3.cpp`）
+   - `axi_interconnect/AXI_Router_AXI4.cpp`（或 `AXI_Router_AXI3.cpp`）
+   - `sim_ddr/SimDDR.cpp` + `mmio/MMIO_Bus_AXI4.cpp`
+4. 再读测试，确认预期行为与边界：
+   - `axi_interconnect/axi_interconnect_test.cpp`
+   - `mmio/mmio_router_axi4_test.cpp`
+5. 最后看可运行示例：
+   - `demos/axi4_smoke.cpp`、`demos/axi3_smoke.cpp`
+   - `demos/single_cycle/src/main.cpp`
+
+经验建议：
+- 优先从 AXI4 路径理解，再对照 AXI3 差异。
+
+
 ## 构建
 
 ```bash

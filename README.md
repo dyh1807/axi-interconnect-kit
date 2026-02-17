@@ -195,6 +195,28 @@ Top-level files:
 Note:
 - `build/` is generated output, not part of source roles.
 
+## Suggested Reading Path
+
+If you are new to this repository, this order gives the fastest understanding:
+
+1. Read architecture + topology in this README (READ/WRITE ASCII diagrams).
+2. Read signal dictionary in `docs/interfaces.md`.
+3. Read one full datapath in order:
+   - `axi_interconnect/include/AXI_Interconnect_IO.h`
+   - `axi_interconnect/AXI_Interconnect.cpp` (or `AXI_Interconnect_AXI3.cpp`)
+   - `axi_interconnect/AXI_Router_AXI4.cpp` (or `AXI_Router_AXI3.cpp`)
+   - `sim_ddr/SimDDR.cpp` + `mmio/MMIO_Bus_AXI4.cpp`
+4. Read tests to understand expected behavior:
+   - `axi_interconnect/axi_interconnect_test.cpp`
+   - `mmio/mmio_router_axi4_test.cpp`
+5. Read demos for runnable examples:
+   - `demos/axi4_smoke.cpp`, `demos/axi3_smoke.cpp`
+   - `demos/single_cycle/src/main.cpp`
+
+Quick rule of thumb:
+- Start from AXI4 path first, then map differences to AXI3 equivalents.
+
+
 ## Build
 
 ```bash
