@@ -52,9 +52,9 @@ struct TestEnv {
 };
 
 uint8_t calc_burst_len(uint8_t total_size) {
-  uint8_t bytes = total_size + 1;
-  uint8_t beats = (bytes + 3) / 4;
-  return beats > 0 ? (beats - 1) : 0;
+  uint16_t bytes = static_cast<uint16_t>(total_size) + 1u;
+  uint16_t beats = (bytes + 3u) / 4u;
+  return beats > 0 ? static_cast<uint8_t>(beats - 1u) : 0;
 }
 
 uint8_t calc_total_beats(uint8_t total_size) { return calc_burst_len(total_size) + 1; }
@@ -352,7 +352,8 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
           return false;
         }
       }
-      for (int b = exp_beats; b < axi_interconnect::CACHELINE_WORDS; b++) {
+      for (int b = exp_beats; b < axi_interconnect::MAX_READ_TRANSACTION_WORDS;
+           b++) {
         if (env.interconnect.read_ports[r.master].resp.data[b] != 0) {
           printf("FAIL: master %u beat %d expected 0 padding\n", r.master, b);
           return false;
@@ -708,7 +709,7 @@ bool test_read_resp_backpressure(TestEnv &env) {
   }
 
   // Wait for response
-  axi_interconnect::WideData256_t resp_data_snapshot;
+  axi_interconnect::WideReadData_t resp_data_snapshot;
   resp_data_snapshot.clear();
   bool saw_resp = false;
   int timeout = sim_ddr::SIM_DDR_LATENCY * 40;
@@ -741,7 +742,7 @@ bool test_read_resp_backpressure(TestEnv &env) {
       printf("FAIL: resp.id changed under backpressure\n");
       return false;
     }
-    for (int b = 0; b < axi_interconnect::CACHELINE_WORDS; b++) {
+    for (int b = 0; b < axi_interconnect::MAX_READ_TRANSACTION_WORDS; b++) {
       if (env.interconnect.read_ports[master].resp.data[b] != resp_data_snapshot[b]) {
         printf("FAIL: resp.data changed under backpressure\n");
         return false;
@@ -765,6 +766,97 @@ bool test_read_resp_backpressure(TestEnv &env) {
     return false;
   }
   cycle_inputs(env);
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_large_read_transactions(TestEnv &env) {
+  printf("=== Test 6: Large read transactions (64B/256B) ===\n");
+
+  struct Req {
+    uint32_t addr;
+    uint8_t total_size;
+    uint8_t id;
+    uint8_t exp_len;
+  };
+
+  const Req reqs[] = {
+      {.addr = 0x14000, .total_size = 63, .id = 1, .exp_len = 15},
+      {.addr = 0x18000, .total_size = 255, .id = 2, .exp_len = 63},
+  };
+
+  for (const auto &r : reqs) {
+    env.clear_events();
+    env.interconnect.init();
+    env.ddr.init();
+
+    uint8_t beats = calc_total_beats(r.total_size);
+    for (int b = 0; b < beats; ++b) {
+      p_memory[(r.addr >> 2) + b] = 0xAC000000u | (r.total_size << 8) | b;
+    }
+
+    bool issued = false;
+    int issue_timeout = 200;
+    while (!issued && issue_timeout-- > 0) {
+      cycle_outputs(env);
+      bool ready_snapshot = env.interconnect.read_ports[0].req.ready;
+
+      env.interconnect.read_ports[0].req.valid = true;
+      env.interconnect.read_ports[0].req.addr = r.addr;
+      env.interconnect.read_ports[0].req.total_size = r.total_size;
+      env.interconnect.read_ports[0].req.id = r.id;
+      env.interconnect.read_ports[0].resp.ready = true;
+
+      cycle_inputs(env);
+      if (ready_snapshot) {
+        issued = true;
+      }
+    }
+    if (!issued) {
+      printf("FAIL: large read req not accepted size=%u\n", r.total_size);
+      return false;
+    }
+
+    if (env.ar_events.size() != 1) {
+      printf("FAIL: expected 1 AR handshake, got %zu for size=%u\n",
+             env.ar_events.size(), r.total_size);
+      return false;
+    }
+    if (env.ar_events[0].addr != r.addr || env.ar_events[0].len != r.exp_len) {
+      printf("FAIL: AR mismatch addr=0x%x len=%u for size=%u\n",
+             env.ar_events[0].addr, env.ar_events[0].len, r.total_size);
+      return false;
+    }
+
+    bool done = false;
+    int resp_timeout = sim_ddr::SIM_DDR_LATENCY * 120;
+    while (!done && resp_timeout-- > 0) {
+      cycle_outputs(env);
+      auto &resp = env.interconnect.read_ports[0].resp;
+      if (resp.valid) {
+        if (resp.id != r.id) {
+          printf("FAIL: resp.id mismatch exp=%u got=%u\n", r.id, resp.id);
+          return false;
+        }
+        for (int b = 0; b < beats; ++b) {
+          uint32_t exp = p_memory[(r.addr >> 2) + b];
+          if (resp.data[b] != exp) {
+            printf("FAIL: size=%u beat=%d exp=0x%08x got=0x%08x\n", r.total_size,
+                   b, exp, resp.data[b]);
+            return false;
+          }
+        }
+        resp.ready = true;
+        done = true;
+      }
+      cycle_inputs(env);
+    }
+    if (!done) {
+      printf("FAIL: large read resp timeout size=%u\n", r.total_size);
+      return false;
+    }
+  }
 
   printf("PASS\n");
   return true;
@@ -803,6 +895,11 @@ int main() {
     failed++;
 
   if (test_read_resp_backpressure(env))
+    passed++;
+  else
+    failed++;
+
+  if (test_large_read_transactions(env))
     passed++;
   else
     failed++;

@@ -4,8 +4,9 @@
  * @brief AXI-Interconnect Upstream Interface Definitions
  *
  * Simplified master interfaces for icache/dcache/mmu:
- * - Single-beat wide data (up to 256-bit = 8 x 32-bit words)
- * - total_size specifies transfer width (0=1B, 31=32B)
+ * - Read response can return one full upstream transaction (up to 256B)
+ * - Write request payload remains 256-bit (32B), matching current dcache use
+ * - total_size specifies transfer width in bytes minus 1
  * - ID for out-of-order response routing
  */
 
@@ -21,6 +22,9 @@ constexpr uint8_t NUM_READ_MASTERS = 4;  // icache, dcache, mmu, extra
 constexpr uint8_t NUM_WRITE_MASTERS = 2; // dcache + extra
 constexpr uint8_t MAX_OUTSTANDING = 8;
 constexpr uint8_t CACHELINE_WORDS = 8; // 256-bit = 8 x 32-bit
+constexpr uint16_t MAX_READ_TRANSACTION_BYTES = 256;
+constexpr uint16_t MAX_READ_TRANSACTION_WORDS =
+    MAX_READ_TRANSACTION_BYTES / sizeof(uint32_t);
 
 // Master IDs
 constexpr uint8_t MASTER_ICACHE = 0;
@@ -32,7 +36,22 @@ constexpr uint8_t MASTER_DCACHE_W = 0;
 constexpr uint8_t MASTER_EXTRA_W = 1;
 
 // ============================================================================
-// Wide Data Type (256-bit = 8 x 32-bit words)
+// Read Response Data Type (up to 256B = 64 x 32-bit words)
+// ============================================================================
+struct WideReadData_t {
+  uint32_t words[MAX_READ_TRANSACTION_WORDS];
+
+  void clear() {
+    for (int i = 0; i < MAX_READ_TRANSACTION_WORDS; i++)
+      words[i] = 0;
+  }
+
+  uint32_t &operator[](int idx) { return words[idx]; }
+  const uint32_t &operator[](int idx) const { return words[idx]; }
+};
+
+// ============================================================================
+// Write Payload Data Type (256-bit = 8 x 32-bit words)
 // ============================================================================
 struct WideData256_t {
   uint32_t words[CACHELINE_WORDS];
@@ -55,7 +74,7 @@ struct ReadMasterReq_t {
   wire1_t valid;
   wire1_t ready;      // ← Output from interleaver
   wire32_t addr;      // Byte address
-  wire5_t total_size; // 0=1B, 3=4B, 7=8B, 15=16B, 31=32B
+  wire8_t total_size; // 0=1B ... 255=256B
   wire4_t id;         // Transaction ID (for out-of-order)
 };
 
@@ -63,7 +82,7 @@ struct ReadMasterReq_t {
 struct ReadMasterResp_t {
   wire1_t valid; // ← Output from interleaver
   wire1_t ready;
-  WideData256_t data; // Wide data (up to 256-bit cacheline)
+  WideReadData_t data; // Wide data (up to one 256B upstream transaction)
   wire4_t id;         // Matching transaction ID
 };
 

@@ -54,7 +54,7 @@ struct ReadPendingTxn {
   uint8_t orig_id;
   uint8_t total_beats;
   uint8_t beats_done;
-  WideData256_t data;
+  WideReadData_t data;
 };
 
 struct WritePendingTxn {

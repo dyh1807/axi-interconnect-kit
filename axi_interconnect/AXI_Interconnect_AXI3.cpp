@@ -9,6 +9,11 @@
 
 namespace axi_interconnect {
 
+static_assert(4 + 2 + AXI_Interconnect_AXI3::MAX_ID_PACKED_OFFSET_BITS +
+                  AXI_Interconnect_AXI3::MAX_ID_PACKED_SIZE_BITS <=
+              22,
+              "AXI3 packed ID metadata exceeds downstream ID width");
+
 uint32_t AXI_Interconnect_AXI3::make_axi_id(uint8_t master_id, uint8_t orig_id,
                                             uint8_t offset_bytes,
                                             uint8_t total_size) {
@@ -16,9 +21,9 @@ uint32_t AXI_Interconnect_AXI3::make_axi_id(uint8_t master_id, uint8_t orig_id,
   // [3:0]   orig_id (upstream)
   // [5:4]   master_id
   // [10:6]  offset_bytes (0..31)
-  // [15:11] total_size (0..31) meaning bytes=total_size+1
+  // [18:11] total_size (0..255) meaning bytes=total_size+1
   return (orig_id & 0xF) | ((master_id & 0x3) << 4) |
-         ((offset_bytes & 0x1F) << 6) | ((total_size & 0x1F) << 11);
+         ((offset_bytes & 0x1F) << 6) | ((total_size & 0xFF) << 11);
 }
 
 void AXI_Interconnect_AXI3::decode_axi_id(uint32_t axi_id, uint8_t &master_id,
@@ -28,7 +33,7 @@ void AXI_Interconnect_AXI3::decode_axi_id(uint32_t axi_id, uint8_t &master_id,
   orig_id = axi_id & 0xF;
   master_id = (axi_id >> 4) & 0x3;
   offset_bytes = (axi_id >> 6) & 0x1F;
-  total_size = (axi_id >> 11) & 0x1F;
+  total_size = (axi_id >> 11) & 0xFF;
 }
 
 uint8_t AXI_Interconnect_AXI3::calc_total_beats(uint8_t offset_bytes,
@@ -112,8 +117,9 @@ void AXI_Interconnect_AXI3::init() {
   r_axi_id = 0;
   r_total_beats = 0;
   r_beats_done = 0;
-  r_beats[0].clear();
-  r_beats[1].clear();
+  for (uint8_t i = 0; i < MAX_AXI3_READ_BEATS; ++i) {
+    r_beats[i].clear();
+  }
 
   w_active = false;
   w_axi_id = 0;
@@ -215,7 +221,7 @@ void AXI_Interconnect_AXI3::comb_read_arbiter() {
     } else {
       beats = calc_total_beats(offset, total_size);
     }
-    if (beats == 0 || beats > 2) {
+    if (beats == 0 || beats > MAX_AXI3_READ_BEATS) {
       if (DEBUG) {
         printf("[axi3] invalid beats=%u addr=0x%08x size=%u\n", beats, req_addr,
                total_size);
@@ -263,7 +269,7 @@ void AXI_Interconnect_AXI3::comb_read_arbiter() {
     } else {
       beats = calc_total_beats(offset, total_size);
     }
-    if (beats == 0 || beats > 2) {
+    if (beats == 0 || beats > MAX_AXI3_READ_BEATS) {
       continue;
     }
     uint32_t aligned_addr = req_addr & ~0x1Fu;
@@ -414,8 +420,9 @@ void AXI_Interconnect_AXI3::seq() {
     r_axi_id = id;
     r_total_beats = static_cast<uint8_t>(len + 1);
     r_beats_done = 0;
-    r_beats[0].clear();
-    r_beats[1].clear();
+    for (uint8_t i = 0; i < MAX_AXI3_READ_BEATS; ++i) {
+      r_beats[i].clear();
+    }
 
     uint8_t master = 0, orig = 0, off = 0, ts = 0;
     decode_axi_id(id, master, orig, off, ts);
@@ -425,7 +432,7 @@ void AXI_Interconnect_AXI3::seq() {
   // ========== R channel ==========
   if (axi_io.r.rvalid && axi_io.r.rready && r_active) {
     // Accept sequential beats (no interleaving).
-    if (r_beats_done < 2) {
+    if (r_beats_done < MAX_AXI3_READ_BEATS) {
       r_beats[r_beats_done] = axi_io.r.rdata;
     }
     r_beats_done++;
@@ -436,21 +443,22 @@ void AXI_Interconnect_AXI3::seq() {
       decode_axi_id(axi_io.r.rid, master, orig, off, ts);
       uint32_t bytes = static_cast<uint32_t>(ts) + 1;
 
-      uint8_t buf[64] = {0};
-      for (int b = 0; b < r_total_beats && b < 2; b++) {
+      uint8_t buf[MAX_AXI3_READ_BEATS * sim_ddr_axi3::AXI_DATA_BYTES] = {0};
+      for (int b = 0; b < r_total_beats && b < MAX_AXI3_READ_BEATS; b++) {
         for (int w = 0; w < sim_ddr_axi3::AXI_DATA_WORDS; w++) {
-          store_le32(buf + (b * 32) + (w * 4), r_beats[b][w]);
+          store_le32(buf + (b * sim_ddr_axi3::AXI_DATA_BYTES) + (w * 4),
+                     r_beats[b][w]);
         }
       }
 
-      uint8_t out_bytes[32] = {0};
-      for (uint32_t i = 0; i < bytes && i < 32; i++) {
+      uint8_t out_bytes[MAX_READ_TRANSACTION_BYTES] = {0};
+      for (uint32_t i = 0; i < bytes && i < MAX_READ_TRANSACTION_BYTES; i++) {
         out_bytes[i] = buf[static_cast<uint32_t>(off) + i];
       }
 
-      WideData256_t out;
+      WideReadData_t out;
       out.clear();
-      for (int w = 0; w < CACHELINE_WORDS; w++) {
+      for (int w = 0; w < MAX_READ_TRANSACTION_WORDS; w++) {
         out[w] = load_le32(out_bytes + (w * 4));
       }
 

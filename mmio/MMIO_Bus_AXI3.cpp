@@ -89,7 +89,7 @@ void MMIO_Bus_AXI3::decode_axi_id(uint32_t axi_id, uint8_t &master_id,
   orig_id = axi_id & 0xF;
   master_id = (axi_id >> 4) & 0x3;
   offset_bytes = (axi_id >> 6) & 0x1F;
-  total_size = (axi_id >> 11) & 0x1F;
+  total_size = (axi_id >> 11) & 0xFF;
 }
 
 void MMIO_Bus_AXI3::comb_outputs() {

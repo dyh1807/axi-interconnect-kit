@@ -25,6 +25,14 @@ class AXI_Interconnect_AXI3 {
 public:
   AXI_Interconnect_AXI3() : write_port(write_ports[MASTER_DCACHE_W]) {}
 
+  static constexpr uint8_t MAX_ID_PACKED_OFFSET_BITS = 5;
+  static constexpr uint8_t MAX_ID_PACKED_SIZE_BITS = 8;
+  static constexpr uint8_t MAX_AXI3_READ_BEATS =
+      static_cast<uint8_t>(((MAX_READ_TRANSACTION_BYTES +
+                             (sim_ddr_axi3::AXI_DATA_BYTES - 1)) +
+                            (sim_ddr_axi3::AXI_DATA_BYTES - 1)) /
+                           sim_ddr_axi3::AXI_DATA_BYTES);
+
   void init();
 
   // Two-phase combinational logic
@@ -60,7 +68,7 @@ private:
   // Read response register (one at a time)
   bool r_resp_valid;
   uint8_t r_resp_master;
-  WideData256_t r_resp_data;
+  WideReadData_t r_resp_data;
   uint8_t r_resp_id;
 
   // Active read transaction tracking (no interleaving)
@@ -68,7 +76,7 @@ private:
   uint32_t r_axi_id;
   uint8_t r_total_beats;
   uint8_t r_beats_done;
-  sim_ddr_axi3::Data256_t r_beats[2]; // enough for at most 2 beats
+  sim_ddr_axi3::Data256_t r_beats[MAX_AXI3_READ_BEATS];
 
   // AR latch for AXI compliance
   struct ARLatch_t {

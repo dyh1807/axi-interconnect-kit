@@ -532,9 +532,9 @@ void AXI_Interconnect::debug_print() {
 // Helpers
 // ============================================================================
 uint8_t AXI_Interconnect::calc_burst_len(uint8_t total_size) {
-  uint8_t bytes = total_size + 1;
-  uint8_t beats = (bytes + 3) / 4;
-  return beats > 0 ? beats - 1 : 0;
+  uint16_t bytes = static_cast<uint16_t>(total_size) + 1u;
+  uint16_t beats = (bytes + 3u) / 4u;
+  return beats > 0 ? static_cast<uint8_t>(beats - 1u) : 0;
 }
 
 } // namespace axi_interconnect

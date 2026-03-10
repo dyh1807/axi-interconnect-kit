@@ -45,17 +45,18 @@ static uint8_t pmem_read_byte(uint32_t addr) {
   return static_cast<uint8_t>((w >> ((addr & 3u) * 8)) & 0xFFu);
 }
 
-static axi_interconnect::WideData256_t make_expected_read(
+static axi_interconnect::WideReadData_t make_expected_read(
     const std::vector<uint8_t> &ref_mem, uint32_t addr, uint8_t total_size) {
-  uint8_t out_bytes[32] = {0};
+  uint8_t out_bytes[axi_interconnect::MAX_READ_TRANSACTION_BYTES] = {0};
   uint32_t bytes = static_cast<uint32_t>(total_size) + 1;
-  for (uint32_t i = 0; i < bytes && i < 32; i++) {
+  for (uint32_t i = 0; i < bytes && i < axi_interconnect::MAX_READ_TRANSACTION_BYTES;
+       i++) {
     out_bytes[i] = ref_mem[addr + i];
   }
 
-  axi_interconnect::WideData256_t out;
+  axi_interconnect::WideReadData_t out;
   out.clear();
-  for (int w = 0; w < axi_interconnect::CACHELINE_WORDS; w++) {
+  for (int w = 0; w < axi_interconnect::MAX_READ_TRANSACTION_WORDS; w++) {
     out[w] = load_le32(out_bytes + (w * 4));
   }
   return out;
@@ -81,7 +82,7 @@ static DecodedId decode_id(uint32_t axi_id) {
   d.orig_id = axi_id & 0xF;
   d.master_id = (axi_id >> 4) & 0x3;
   d.offset_bytes = (axi_id >> 6) & 0x1F;
-  d.total_size = (axi_id >> 11) & 0x1F;
+  d.total_size = (axi_id >> 11) & 0xFF;
   return d;
 }
 
@@ -355,7 +356,7 @@ static bool test_read_multi_master_offsets(TestEnv &env,
       }
 
       auto exp = make_expected_read(ref_mem, r.addr, r.total_size);
-      for (int w = 0; w < axi_interconnect::CACHELINE_WORDS; w++) {
+      for (int w = 0; w < axi_interconnect::MAX_READ_TRANSACTION_WORDS; w++) {
         if (port.resp.data[w] != exp[w]) {
           printf("FAIL: master %u word %d exp=0x%08x got=0x%08x\n", r.master, w,
                  exp[w], port.resp.data[w]);
@@ -692,6 +693,95 @@ static bool test_read_write_parallel(TestEnv &env,
   return true;
 }
 
+static bool test_large_aligned_reads(TestEnv &env,
+                                     const std::vector<uint8_t> &ref_mem) {
+  printf("=== Test 5: Large aligned reads (64B/256B) ===\n");
+
+  struct Req {
+    uint32_t addr;
+    uint8_t total_size;
+    uint8_t id;
+    uint8_t exp_len;
+  };
+
+  const Req reqs[] = {
+      {.addr = 0x9000, .total_size = 63, .id = 0x5, .exp_len = 1},
+      {.addr = 0xA000, .total_size = 255, .id = 0x6, .exp_len = 7},
+  };
+
+  for (const auto &r : reqs) {
+    env.clear_events();
+    env.interconnect.init();
+    env.ddr.init();
+
+    bool issued = false;
+    bool done = false;
+    int timeout = sim_ddr_axi3::SIM_DDR_AXI3_LATENCY * 400;
+    while (timeout-- > 0 && !done) {
+      cycle_outputs(env);
+      bool ready_snapshot =
+          env.interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.ready;
+
+      if (!issued) {
+        auto &rp = env.interconnect.read_ports[axi_interconnect::MASTER_ICACHE];
+        rp.req.valid = true;
+        rp.req.addr = r.addr;
+        rp.req.total_size = r.total_size;
+        rp.req.id = r.id;
+      }
+
+      auto &resp = env.interconnect.read_ports[axi_interconnect::MASTER_ICACHE].resp;
+      if (resp.valid) {
+        auto exp = make_expected_read(ref_mem, r.addr, r.total_size);
+        if (resp.id != (r.id & 0xF)) {
+          printf("FAIL: large read resp.id mismatch exp=%u got=%u\n", r.id & 0xF,
+                 resp.id);
+          return false;
+        }
+        for (int w = 0; w < axi_interconnect::MAX_READ_TRANSACTION_WORDS; ++w) {
+          if (resp.data[w] != exp[w]) {
+            printf("FAIL: large read word=%d exp=0x%08x got=0x%08x size=%u\n", w,
+                   exp[w], resp.data[w], r.total_size);
+            return false;
+          }
+        }
+        resp.ready = true;
+        done = true;
+      }
+
+      cycle_inputs(env);
+
+      if (!issued && ready_snapshot) {
+        issued = true;
+      }
+    }
+
+    if (!issued || !done) {
+      printf("FAIL: large aligned read timeout size=%u issued=%d done=%d\n",
+             r.total_size, issued, done);
+      return false;
+    }
+    if (env.ar_events.size() != 1) {
+      printf("FAIL: expected 1 AR handshake, got %zu size=%u\n",
+             env.ar_events.size(), r.total_size);
+      return false;
+    }
+
+    const auto &ar = env.ar_events[0];
+    DecodedId d = decode_id(ar.id);
+    if (ar.addr != r.addr || ar.len != r.exp_len || d.master_id != axi_interconnect::MASTER_ICACHE ||
+        d.orig_id != (r.id & 0xF) || d.offset_bytes != 0 || d.total_size != r.total_size) {
+      printf("FAIL: large AR mismatch addr=0x%x len=%u master=%u id=0x%x off=%u ts=%u\n",
+             ar.addr, ar.len, d.master_id, d.orig_id, d.offset_bytes,
+             d.total_size);
+      return false;
+    }
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 static void set_slave_read_idle(axi_interconnect::AXI_Interconnect_AXI3 &interconnect) {
   interconnect.axi_io.ar.arready = true;
   interconnect.axi_io.r.rvalid = false;
@@ -740,7 +830,7 @@ static bool test_random_stress(TestEnv &env) {
     }
 
     bool saw_valid = false;
-    axi_interconnect::WideData256_t first = {};
+    axi_interconnect::WideReadData_t first = {};
     int hold = static_cast<int>(rng() % 3);
     int timeout = sim_ddr_axi3::SIM_DDR_AXI3_LATENCY * 200;
     while (timeout-- > 0) {
@@ -756,7 +846,7 @@ static bool test_random_stress(TestEnv &env) {
             return false;
           }
           auto exp = make_expected_read(ref_mem, addr, total_size);
-          for (int w = 0; w < axi_interconnect::CACHELINE_WORDS; w++) {
+          for (int w = 0; w < axi_interconnect::MAX_READ_TRANSACTION_WORDS; w++) {
             if (first[w] != exp[w]) {
               printf("FAIL: read data mismatch word=%d exp=0x%08x got=0x%08x\n",
                      w, exp[w], first[w]);
@@ -765,7 +855,7 @@ static bool test_random_stress(TestEnv &env) {
           }
         } else {
           // Data must be stable while backpressured.
-          for (int w = 0; w < axi_interconnect::CACHELINE_WORDS; w++) {
+          for (int w = 0; w < axi_interconnect::MAX_READ_TRANSACTION_WORDS; w++) {
             if (rp.resp.data[w] != first[w]) {
               printf("FAIL: read data changed under backpressure\n");
               return false;
@@ -1831,6 +1921,7 @@ int main() {
   ok &= test_read_multi_master_offsets(env, ref_mem);
   ok &= test_write_split_and_resp_backpressure(env, ref_mem);
   ok &= test_read_write_parallel(env, ref_mem);
+  ok &= test_large_aligned_reads(env, ref_mem);
   ok &= test_random_stress(env);
   ok &= test_aw_latching_w_gate();
   ok &= test_w_backpressure_data_stability();
