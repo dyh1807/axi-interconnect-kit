@@ -13,6 +13,10 @@
 
 namespace axi_interconnect {
 
+namespace {
+constexpr uint8_t kInvalidAxiReadId = 0xFF;
+}
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -88,6 +92,22 @@ void AXI_Interconnect::init() {
   axi_io.w.wstrb = 0xF;
   axi_io.w.wlast = false;
   axi_io.b.bready = true;
+}
+
+uint8_t AXI_Interconnect::alloc_read_axi_id() const {
+  bool used[1u << sim_ddr::AXI_ID_WIDTH] = {false};
+  for (const auto &txn : r_pending) {
+    used[txn.axi_id & ((1u << sim_ddr::AXI_ID_WIDTH) - 1u)] = true;
+  }
+  if (ar_latched.valid) {
+    used[ar_latched.id & ((1u << sim_ddr::AXI_ID_WIDTH) - 1u)] = true;
+  }
+  for (uint8_t id = 0; id < (1u << sim_ddr::AXI_ID_WIDTH); ++id) {
+    if (!used[id]) {
+      return id;
+    }
+  }
+  return kInvalidAxiReadId;
 }
 
 // ============================================================================
@@ -188,12 +208,16 @@ void AXI_Interconnect::comb_read_arbiter() {
     }
 
     r_current_master = i;
+    uint8_t axi_id = alloc_read_axi_id();
+    if (axi_id == kInvalidAxiReadId) {
+      continue;
+    }
     axi_io.ar.arvalid = true;
     axi_io.ar.araddr = read_ports[i].req.addr;
     axi_io.ar.arlen = calc_burst_len(read_ports[i].req.total_size);
     axi_io.ar.arsize = 2;
     axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-    axi_io.ar.arid = (i << 2) | (read_ports[i].req.id & 0x3);
+    axi_io.ar.arid = axi_id;
     read_ports[i].req.ready = true;
     return;
   }
@@ -217,6 +241,10 @@ void AXI_Interconnect::comb_read_arbiter() {
       }
 
       r_current_master = idx;
+      uint8_t axi_id = alloc_read_axi_id();
+      if (axi_id == kInvalidAxiReadId) {
+        continue;
+      }
 
       // Raise ready first, then issue AR on following cycle when ready is seen.
       if (!req_ready_curr[idx]) {
@@ -231,7 +259,7 @@ void AXI_Interconnect::comb_read_arbiter() {
       axi_io.ar.arlen = calc_burst_len(read_ports[idx].req.total_size);
       axi_io.ar.arsize = 2;
       axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-      axi_io.ar.arid = (idx << 2) | (read_ports[idx].req.id & 0x3);
+      axi_io.ar.arid = axi_id;
 
       read_ports[idx].req.ready = true; // Also set for immediate use
       break;
@@ -357,6 +385,18 @@ void AXI_Interconnect::seq() {
 
   // If new AR request and NOT immediately ready, latch it
   if (axi_io.ar.arvalid && !ar_latched.valid && !axi_io.ar.arready) {
+    int master_idx = -1;
+    uint8_t orig_id = 0;
+    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+      if (read_ports[i].req.valid && read_ports[i].req.ready) {
+        master_idx = i;
+        orig_id = read_ports[i].req.id;
+        break;
+      }
+    }
+    if (master_idx < 0) {
+      return;
+    }
     // Latch the request
     ar_latched.valid = true;
     ar_latched.addr = axi_io.ar.araddr;
@@ -364,8 +404,8 @@ void AXI_Interconnect::seq() {
     ar_latched.size = axi_io.ar.arsize;
     ar_latched.burst = axi_io.ar.arburst;
     ar_latched.id = axi_io.ar.arid;
-    ar_latched.master_id = (axi_io.ar.arid >> 2) & 0x3;
-    ar_latched.orig_id = axi_io.ar.arid & 0x3;
+    ar_latched.master_id = static_cast<uint8_t>(master_idx);
+    ar_latched.orig_id = orig_id;
   }
 
   // AR handshake complete
@@ -373,14 +413,28 @@ void AXI_Interconnect::seq() {
     ReadPendingTxn txn;
     if (ar_latched.valid) {
       // Use latched values
+      txn.axi_id = ar_latched.id;
       txn.master_id = ar_latched.master_id;
       txn.orig_id = ar_latched.orig_id;
       txn.total_beats = ar_latched.len + 1;
       ar_latched.valid = false; // Clear latch
     } else {
       // Direct handshake (same cycle)
-      txn.master_id = (axi_io.ar.arid >> 2) & 0x3;
-      txn.orig_id = axi_io.ar.arid & 0x3;
+      int master_idx = -1;
+      uint8_t orig_id = 0;
+      for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+        if (read_ports[i].req.valid && read_ports[i].req.ready) {
+          master_idx = i;
+          orig_id = read_ports[i].req.id;
+          break;
+        }
+      }
+      if (master_idx < 0) {
+        return;
+      }
+      txn.axi_id = axi_io.ar.arid;
+      txn.master_id = static_cast<uint8_t>(master_idx);
+      txn.orig_id = orig_id;
       txn.total_beats = axi_io.ar.arlen + 1;
     }
     txn.beats_done = 0;
@@ -393,9 +447,9 @@ void AXI_Interconnect::seq() {
 
   // R handshake
   if (axi_io.r.rvalid && axi_io.r.rready) {
-    uint8_t master = (axi_io.r.rid >> 2) & 0x3;
     for (auto &txn : r_pending) {
-      if (txn.master_id == master && txn.beats_done < txn.total_beats) {
+      if (txn.axi_id == static_cast<uint8_t>(axi_io.r.rid & 0xF) &&
+          txn.beats_done < txn.total_beats) {
         txn.data[txn.beats_done] = axi_io.r.rdata;
         txn.beats_done++;
         break;

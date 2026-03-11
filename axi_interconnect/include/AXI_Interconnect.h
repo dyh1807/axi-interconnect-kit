@@ -50,6 +50,7 @@ struct AWLatch_t {
 // ============================================================================
 
 struct ReadPendingTxn {
+  uint8_t axi_id;
   uint8_t master_id;
   uint8_t orig_id;
   uint8_t total_beats;
@@ -136,6 +137,7 @@ private:
   void comb_write_response();
 
   uint8_t calc_burst_len(uint8_t total_size);
+  uint8_t alloc_read_axi_id() const;
 };
 
 } // namespace axi_interconnect
