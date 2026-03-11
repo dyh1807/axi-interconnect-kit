@@ -186,6 +186,7 @@ void AXI_Interconnect_AXI3::comb_read_arbiter() {
     decode_axi_id(ar_latched.id, master, orig, off, ts);
     if (master < NUM_READ_MASTERS) {
       req_ready_r[master] = true;
+      read_ports[master].req.ready = true;
     }
     return;
   }
@@ -237,6 +238,7 @@ void AXI_Interconnect_AXI3::comb_read_arbiter() {
     axi_io.ar.arburst =
         is_mmio ? sim_ddr_axi3::AXI_BURST_FIXED : sim_ddr_axi3::AXI_BURST_INCR;
     axi_io.ar.arid = make_axi_id(i, read_ports[i].req.id, offset, total_size);
+    read_ports[i].req.ready = true;
     return;
   }
 
@@ -248,6 +250,7 @@ void AXI_Interconnect_AXI3::comb_read_arbiter() {
     }
     if (!req_ready_curr[idx]) {
       req_ready_r[idx] = true;
+      read_ports[idx].req.ready = true;
       break;
     }
 
@@ -281,6 +284,7 @@ void AXI_Interconnect_AXI3::comb_read_arbiter() {
         is_mmio ? sim_ddr_axi3::AXI_BURST_FIXED : sim_ddr_axi3::AXI_BURST_INCR;
     axi_io.ar.arid =
         make_axi_id(idx, read_ports[idx].req.id, offset, total_size);
+    read_ports[idx].req.ready = true;
     break;
   }
 }
