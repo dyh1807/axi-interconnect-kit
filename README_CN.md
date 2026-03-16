@@ -7,8 +7,10 @@
 - AXI4 路径：`interconnect + AXI4 router + SimDDR + MMIO bus + UART16550`
 - AXI3 路径：`interconnect + AXI3 router + SimDDR + MMIO bus + UART16550`
 - 上游 CPU 简化主设备端口：
-  - 读主设备 `4` 个（`icache` / `dcache_r` / `mmu` / `extra_r`）
-  - 写主设备 `2` 个（`dcache_w` / `extra_w`）
+  - 接口容量为 `read_ports[4]`、`write_ports[2]`
+  - 当前面向 simulator 的准备映射：
+    - 读侧：`icache`、`dcache_r`、`uncore_lsu_r`、`extra_r`
+    - 写侧：`dcache_w`、`uncore_lsu_w`
 
 ## 命名选择：为什么叫 `interconnect`
 
@@ -18,8 +20,8 @@
 ## 连接拓扑（READ 路径）
 
 ```
-读主设备（4个）
-  M0 icache, M1 dcache_r, M2 mmu, M3 extra_r
+读主设备（当前 simulator 准备映射）
+  M0 icache, M1 dcache_r, M2 uncore_lsu_r, M3 extra_r
             |
             v
    +----------------------+
@@ -70,6 +72,12 @@
 写路径（`AW/W/B`）同样分层：
 - `AXI_Interconnect` 负责上游写端口仲裁和写响应分发。
 - `AXI_Router_AXI4/AXI3` 按地址映射选择 DDR 或 MMIO 目标。
+
+说明：
+- kit 对外仍保留通用接口 `read_ports[4]` 和 `write_ports[2]`。
+- 当前父模拟器的接入规划中，读侧映射为
+  `icache / dcache_r / uncore_lsu_r / extra_r`，写侧映射为
+  `dcache_w / uncore_lsu_w`。
 
 ## 接口信号文档
 

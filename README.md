@@ -7,8 +7,10 @@ Standalone AXI subsystem extracted from the simulator and buildable on its own.
 - AXI4 path: interconnect + AXI4 router + SimDDR + MMIO bus + UART16550 device
 - AXI3 path: interconnect + AXI3 router + SimDDR + MMIO bus + UART16550 device
 - Upstream simplified CPU-side master ports:
-  - `4` read masters (`icache`, `dcache_r`, `mmu`, `extra_r`)
-  - `2` write masters (`dcache_w`, `extra_w`)
+  - interface capacity: `read_ports[4]`, `write_ports[2]`
+  - current simulator-oriented mapping under preparation:
+    - read side: `icache`, `dcache_r`, `uncore_lsu_r`, `extra_r`
+    - write side: `dcache_w`, `uncore_lsu_w`
 
 ## Naming Choice: `interconnect` vs `bridge`
 
@@ -19,8 +21,8 @@ This project does multi-master arbitration, address routing, and response demux,
 ## Topology (READ path)
 
 ```
-Read Masters (4 ports)
-  M0 icache, M1 dcache_r, M2 mmu, M3 extra_r
+Read Masters (current simulator-oriented mapping)
+  M0 icache, M1 dcache_r, M2 uncore_lsu_r, M3 extra_r
             |
             v
    +----------------------+
@@ -71,6 +73,13 @@ Write Masters (2 ports)
 The same layering applies to write path (`AW/W/B`):
 - `AXI_Interconnect` handles upstream write-port arbitration and response demux.
 - `AXI_Router_AXI4/AXI3` decides DDR vs MMIO destination by address map.
+
+Note:
+- The kit still exposes `read_ports[4]` and `write_ports[2]` as its generic upstream
+  interface.
+- The current parent-simulator integration plan maps them as
+  `icache` / `dcache_r` / `uncore_lsu_r` / `extra_r` on read side and
+  `dcache_w` / `uncore_lsu_w` on write side.
 
 ## Interface Signals
 
