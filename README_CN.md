@@ -49,7 +49,7 @@
 
 ```
 写主设备（2个）
-  M0 dcache_w, M1 extra_w
+  M0 dcache_w, M1 uncore_lsu_w
             |
             v
    +----------------------+

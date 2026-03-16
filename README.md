@@ -50,7 +50,7 @@ Read Masters (current simulator-oriented mapping)
 
 ```
 Write Masters (2 ports)
-  M0 dcache_w, M1 extra_w
+  M0 dcache_w, M1 uncore_lsu_w
             |
             v
    +----------------------+
