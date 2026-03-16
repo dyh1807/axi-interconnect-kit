@@ -12,6 +12,7 @@
  */
 
 #include "AXI_Interconnect_IO.h"
+#include "AXI_LLC.h"
 #include "SimDDR_IO.h"
 #include "axi_interconnect_compat.h"
 #include <queue>
@@ -79,6 +80,11 @@ public:
   AXI_Interconnect() : write_port(write_ports[MASTER_DCACHE_W]) {}
 
   void init();
+  void set_llc_config(const AXI_LLCConfig &config) {
+    llc_config = config;
+    llc.set_config(llc_config);
+  }
+  const AXI_LLCConfig &get_llc_config() const { return llc_config; }
 
   // Two-phase combinational logic for proper signal timing
   void comb_outputs(); // Phase 1: Update resp signals for masters, req.ready
@@ -102,6 +108,10 @@ public:
   sim_ddr::SimDDR_IO_t axi_io;
 
 private:
+  uint8_t count_master_read_pending(uint8_t master_id) const;
+  uint8_t count_total_read_inflight() const;
+  bool can_accept_read_master(uint8_t master_id) const;
+
   // Read arbiter state
   uint8_t r_arb_rr_idx;
   int r_current_master;
@@ -138,6 +148,9 @@ private:
 
   uint8_t calc_burst_len(uint8_t total_size);
   uint8_t alloc_read_axi_id() const;
+
+  AXI_LLCConfig llc_config{};
+  AXI_LLC llc{};
 };
 
 } // namespace axi_interconnect

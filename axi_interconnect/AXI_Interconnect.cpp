@@ -21,6 +21,8 @@ constexpr uint8_t kInvalidAxiReadId = 0xFF;
 // Initialization
 // ============================================================================
 void AXI_Interconnect::init() {
+  llc.set_config(llc_config);
+  llc.reset();
   r_arb_rr_idx = 0;
   r_current_master = -1;
   r_pending.clear();
@@ -110,6 +112,36 @@ uint8_t AXI_Interconnect::alloc_read_axi_id() const {
   return kInvalidAxiReadId;
 }
 
+uint8_t AXI_Interconnect::count_master_read_pending(uint8_t master_id) const {
+  uint8_t count = 0;
+  for (const auto &txn : r_pending) {
+    if (txn.master_id == master_id) {
+      ++count;
+    }
+  }
+  if (ar_latched.valid && ar_latched.master_id == master_id) {
+    ++count;
+  }
+  return count;
+}
+
+uint8_t AXI_Interconnect::count_total_read_inflight() const {
+  return static_cast<uint8_t>(r_pending.size() + (ar_latched.valid ? 1 : 0));
+}
+
+bool AXI_Interconnect::can_accept_read_master(uint8_t master_id) const {
+  if (master_id >= NUM_READ_MASTERS) {
+    return false;
+  }
+  if (count_total_read_inflight() >= MAX_OUTSTANDING) {
+    return false;
+  }
+  if (count_master_read_pending(master_id) >= MAX_READ_OUTSTANDING_PER_MASTER) {
+    return false;
+  }
+  return alloc_read_axi_id() != kInvalidAxiReadId;
+}
+
 // ============================================================================
 // Two-Phase Combinational Logic
 // ============================================================================
@@ -117,6 +149,8 @@ uint8_t AXI_Interconnect::alloc_read_axi_id() const {
 // Phase 1: Output signals for masters (run BEFORE cpu.cycle())
 // Sets: port.resp.valid/data, port.req.ready (from register), DDR rready
 void AXI_Interconnect::comb_outputs() {
+  llc.comb();
+
   // Response path: DDR → masters
   comb_read_response();
   comb_write_response();
@@ -196,14 +230,7 @@ void AXI_Interconnect::comb_read_arbiter() {
     if (!req_ready_curr[i] || !read_ports[i].req.valid) {
       continue;
     }
-    bool has_pending = false;
-    for (const auto &txn : r_pending) {
-      if (txn.master_id == i) {
-        has_pending = true;
-        break;
-      }
-    }
-    if (has_pending) {
+    if (!can_accept_read_master(static_cast<uint8_t>(i))) {
       continue;
     }
 
@@ -227,17 +254,8 @@ void AXI_Interconnect::comb_read_arbiter() {
     int idx = (r_arb_rr_idx + i) % NUM_READ_MASTERS;
 
     if (read_ports[idx].req.valid) {
-      // Check if this master already has a pending transaction (only one
-      // outstanding per master for correctness with simple masters)
-      bool has_pending = false;
-      for (const auto &txn : r_pending) {
-        if (txn.master_id == idx) {
-          has_pending = true;
-          break;
-        }
-      }
-      if (has_pending) {
-        continue; // Skip, transaction in flight
+      if (!can_accept_read_master(static_cast<uint8_t>(idx))) {
+        continue;
       }
 
       r_current_master = idx;
@@ -273,7 +291,7 @@ void AXI_Interconnect::comb_read_response() {
   }
   axi_io.r.rready = true;
 
-  // Find first complete response for EACH master (not just first overall)
+  // Present at most one completed response per master per cycle.
   bool master_has_resp[NUM_READ_MASTERS] = {false};
   for (auto &txn : r_pending) {
     if (txn.beats_done == txn.total_beats) {
@@ -394,18 +412,17 @@ void AXI_Interconnect::seq() {
         break;
       }
     }
-    if (master_idx < 0) {
-      return;
+    if (master_idx >= 0) {
+      // Latch the request
+      ar_latched.valid = true;
+      ar_latched.addr = axi_io.ar.araddr;
+      ar_latched.len = axi_io.ar.arlen;
+      ar_latched.size = axi_io.ar.arsize;
+      ar_latched.burst = axi_io.ar.arburst;
+      ar_latched.id = axi_io.ar.arid;
+      ar_latched.master_id = static_cast<uint8_t>(master_idx);
+      ar_latched.orig_id = orig_id;
     }
-    // Latch the request
-    ar_latched.valid = true;
-    ar_latched.addr = axi_io.ar.araddr;
-    ar_latched.len = axi_io.ar.arlen;
-    ar_latched.size = axi_io.ar.arsize;
-    ar_latched.burst = axi_io.ar.arburst;
-    ar_latched.id = axi_io.ar.arid;
-    ar_latched.master_id = static_cast<uint8_t>(master_idx);
-    ar_latched.orig_id = orig_id;
   }
 
   // AR handshake complete
@@ -430,7 +447,7 @@ void AXI_Interconnect::seq() {
         }
       }
       if (master_idx < 0) {
-        return;
+        goto read_handshake_done;
       }
       txn.axi_id = axi_io.ar.arid;
       txn.master_id = static_cast<uint8_t>(master_idx);
@@ -444,6 +461,7 @@ void AXI_Interconnect::seq() {
 
     // req_ready_r is recomputed in comb_read_arbiter.
   }
+read_handshake_done:
 
   // R handshake
   if (axi_io.r.rvalid && axi_io.r.rready) {
@@ -460,12 +478,14 @@ void AXI_Interconnect::seq() {
   // Response handshake
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     if (read_ports[i].resp.valid && read_ports[i].resp.ready) {
-      r_pending.erase(std::remove_if(r_pending.begin(), r_pending.end(),
-                                     [i](const ReadPendingTxn &t) {
-                                       return t.master_id == i &&
-                                              t.beats_done == t.total_beats;
-                                     }),
-                      r_pending.end());
+      auto it = std::find_if(r_pending.begin(), r_pending.end(),
+                             [i](const ReadPendingTxn &t) {
+                               return t.master_id == i &&
+                                      t.beats_done == t.total_beats;
+                             });
+      if (it != r_pending.end()) {
+        r_pending.erase(it);
+      }
     }
   }
 
@@ -564,6 +584,8 @@ void AXI_Interconnect::seq() {
     w_current = {};
     w_current_master = -1;
   }
+
+  llc.seq();
 }
 
 void AXI_Interconnect::debug_print() {

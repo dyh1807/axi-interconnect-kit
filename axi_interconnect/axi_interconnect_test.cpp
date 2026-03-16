@@ -65,6 +65,7 @@ void clear_upstream_inputs(axi_interconnect::AXI_Interconnect &interconnect) {
     interconnect.read_ports[i].req.addr = 0;
     interconnect.read_ports[i].req.total_size = 0;
     interconnect.read_ports[i].req.id = 0;
+    interconnect.read_ports[i].req.bypass = false;
     interconnect.read_ports[i].resp.ready = false;
   }
   interconnect.write_port.req.valid = false;
@@ -73,6 +74,7 @@ void clear_upstream_inputs(axi_interconnect::AXI_Interconnect &interconnect) {
   interconnect.write_port.req.wstrb = 0;
   interconnect.write_port.req.total_size = 0;
   interconnect.write_port.req.id = 0;
+  interconnect.write_port.req.bypass = false;
   interconnect.write_port.resp.ready = false;
 }
 
@@ -296,24 +298,29 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
     return false;
   }
 
-  // Validate AR fields per master
+  // Validate AR fields as a set; AXI ID allocation is an internal policy.
+  bool ar_seen[axi_interconnect::NUM_READ_MASTERS] = {};
   for (const auto &e : env.ar_events) {
-    uint8_t master_id = (e.id >> 2) & 0x3;
-    uint8_t orig_id = e.id & 0x3;
     bool found = false;
-    for (const auto &r : reqs) {
-      if (r.master != master_id)
-        continue;
-      found = true;
+    for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; ++i) {
+      const auto &r = reqs[i];
       uint8_t exp_len = calc_burst_len(r.total_size);
-      if (e.addr != r.addr || e.len != exp_len || orig_id != (r.id & 0x3)) {
-        printf("FAIL: AR mismatch master=%u addr=0x%x len=%u id=%u\n",
-               master_id, e.addr, e.len, orig_id);
-        return false;
+      if (e.addr == r.addr && e.len == exp_len) {
+        ar_seen[i] = true;
+        found = true;
+        break;
       }
     }
     if (!found) {
-      printf("FAIL: unexpected AR master_id=%u\n", master_id);
+      printf("FAIL: unexpected AR addr=0x%x len=%u id=%u\n", e.addr, e.len,
+             e.id);
+      return false;
+    }
+  }
+  for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; ++i) {
+    if (!ar_seen[i]) {
+      printf("FAIL: missing AR for master=%u addr=0x%x\n", reqs[i].master,
+             reqs[i].addr);
       return false;
     }
   }
@@ -862,6 +869,106 @@ bool test_large_read_transactions(TestEnv &env) {
   return true;
 }
 
+bool test_same_master_multi_outstanding(TestEnv &env) {
+  printf("=== Test 7: Same-master multi-outstanding reads ===\n");
+
+  env.clear_events();
+  env.interconnect.init();
+  env.ddr.init();
+
+  struct Req {
+    uint32_t addr;
+    uint8_t total_size;
+    uint8_t id;
+  };
+  const Req reqs[2] = {
+      {.addr = 0x1C000, .total_size = 3, .id = 1},
+      {.addr = 0x1C040, .total_size = 3, .id = 2},
+  };
+  constexpr uint8_t master = axi_interconnect::MASTER_ICACHE;
+
+  for (int i = 0; i < 2; ++i) {
+    p_memory[reqs[i].addr >> 2] = 0xA5000000u | (i << 8) | reqs[i].id;
+  }
+
+  bool issued[2] = {false, false};
+  bool second_issued_before_first_consumed = false;
+  bool first_resp_seen = false;
+  int issue_timeout = sim_ddr::SIM_DDR_LATENCY * 40;
+  while ((!issued[0] || !issued[1]) && issue_timeout-- > 0) {
+    cycle_outputs(env);
+    bool ready_snapshot = env.interconnect.read_ports[master].req.ready;
+    if (env.interconnect.read_ports[master].resp.valid) {
+      first_resp_seen = true;
+    }
+
+    int idx = issued[0] ? 1 : 0;
+    env.interconnect.read_ports[master].req.valid = true;
+    env.interconnect.read_ports[master].req.addr = reqs[idx].addr;
+    env.interconnect.read_ports[master].req.total_size = reqs[idx].total_size;
+    env.interconnect.read_ports[master].req.id = reqs[idx].id;
+
+    cycle_inputs(env);
+
+    if (ready_snapshot) {
+      issued[idx] = true;
+      if (idx == 1 && !first_resp_seen) {
+        second_issued_before_first_consumed = true;
+      }
+    }
+  }
+
+  if (!issued[0] || !issued[1]) {
+    printf("FAIL: same-master issue timeout first=%d second=%d\n", issued[0],
+           issued[1]);
+    return false;
+  }
+  if (!second_issued_before_first_consumed) {
+    printf("FAIL: second request was not accepted before first response path\n");
+    return false;
+  }
+  if (env.ar_events.size() < 2) {
+    printf("FAIL: expected 2 AR handshakes, got %zu\n", env.ar_events.size());
+    return false;
+  }
+
+  bool resp_done[2] = {false, false};
+  int resp_timeout = sim_ddr::SIM_DDR_LATENCY * 80;
+  while ((!resp_done[0] || !resp_done[1]) && resp_timeout-- > 0) {
+    cycle_outputs(env);
+    auto &resp = env.interconnect.read_ports[master].resp;
+    if (resp.valid) {
+      int idx = -1;
+      if (resp.id == reqs[0].id) {
+        idx = 0;
+      } else if (resp.id == reqs[1].id) {
+        idx = 1;
+      } else {
+        printf("FAIL: unexpected resp.id=%u\n", resp.id);
+        return false;
+      }
+      uint32_t expected = p_memory[reqs[idx].addr >> 2];
+      if (resp.data[0] != expected) {
+        printf("FAIL: resp data mismatch id=%u exp=0x%08x got=0x%08x\n",
+               resp.id, expected, resp.data[0]);
+        return false;
+      }
+      resp.ready = true;
+      resp_done[idx] = true;
+    }
+    cycle_inputs(env);
+  }
+
+  if (!resp_done[0] || !resp_done[1]) {
+    printf("FAIL: same-master resp timeout first=%d second=%d\n", resp_done[0],
+           resp_done[1]);
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 int main() {
   printf("====================================\n");
   printf("AXI-Interconnect Test Suite\n");
@@ -900,6 +1007,11 @@ int main() {
     failed++;
 
   if (test_large_read_transactions(env))
+    passed++;
+  else
+    failed++;
+
+  if (test_same_master_multi_outstanding(env))
     passed++;
   else
     failed++;

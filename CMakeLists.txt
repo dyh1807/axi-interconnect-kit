@@ -18,6 +18,7 @@ set(AXI_KIT_INCLUDE_DIRS
 )
 
 add_library(axi_kit_axi4 STATIC
+    axi_interconnect/AXI_LLC.cpp
     axi_interconnect/AXI_Interconnect.cpp
     axi_interconnect/AXI_Router_AXI4.cpp
     sim_ddr/SimDDR.cpp
@@ -28,6 +29,7 @@ target_include_directories(axi_kit_axi4 PUBLIC ${AXI_KIT_INCLUDE_DIRS})
 target_compile_features(axi_kit_axi4 PUBLIC cxx_std_20)
 
 add_library(axi_kit_axi3 STATIC
+    axi_interconnect/AXI_LLC.cpp
     axi_interconnect/AXI_Interconnect_AXI3.cpp
     axi_interconnect/AXI_Router_AXI3.cpp
     sim_ddr/SimDDR_AXI3.cpp
@@ -44,6 +46,7 @@ if(AXI_KIT_BUILD_TESTS)
       MMIO_TEST_SIZE=0x1000
   )
   add_library(axi_kit_axi4_test STATIC
+      axi_interconnect/AXI_LLC.cpp
       axi_interconnect/AXI_Interconnect.cpp
       axi_interconnect/AXI_Router_AXI4.cpp
       sim_ddr/SimDDR.cpp
@@ -55,6 +58,7 @@ if(AXI_KIT_BUILD_TESTS)
   target_compile_definitions(axi_kit_axi4_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
 
   add_library(axi_kit_axi3_test STATIC
+      axi_interconnect/AXI_LLC.cpp
       axi_interconnect/AXI_Interconnect_AXI3.cpp
       axi_interconnect/AXI_Router_AXI3.cpp
       sim_ddr/SimDDR_AXI3.cpp
@@ -135,6 +139,7 @@ if(AXI_KIT_BUILD_SINGLE_CYCLE)
   )
 
   add_library(axi_kit_axi4_sc STATIC
+      axi_interconnect/AXI_LLC.cpp
       axi_interconnect/AXI_Interconnect.cpp
       axi_interconnect/AXI_Router_AXI4.cpp
       sim_ddr/SimDDR.cpp
