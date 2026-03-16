@@ -27,6 +27,7 @@ namespace axi_interconnect {
 // Latched AR request - holds values until arready
 struct ARLatch_t {
   bool valid;
+  bool to_llc;
   uint32_t addr;
   uint8_t len;
   uint8_t size;
@@ -56,6 +57,7 @@ struct ReadPendingTxn {
   uint8_t orig_id;
   uint8_t total_beats;
   uint8_t beats_done;
+  bool to_llc;
   WideReadData_t data;
 };
 
@@ -85,6 +87,11 @@ public:
     llc.set_config(llc_config);
   }
   const AXI_LLCConfig &get_llc_config() const { return llc_config; }
+  bool llc_enabled() const { return llc_config.enable && llc_config.valid(); }
+  void set_llc_lookup_in(const AXI_LLC_LookupIn_t &lookup_in) {
+    llc.io.lookup_in = lookup_in;
+  }
+  const AXI_LLC_TableOut_t &get_llc_table_out() const { return llc.io.table_out; }
 
   // Two-phase combinational logic for proper signal timing
   void comb_outputs(); // Phase 1: Update resp signals for masters, req.ready
@@ -145,12 +152,16 @@ private:
   void comb_read_response();
   void comb_write_request();
   void comb_write_response();
+  void prepare_llc_inputs();
+  bool can_issue_llc_read_req() const;
 
   uint8_t calc_burst_len(uint8_t total_size);
   uint8_t alloc_read_axi_id() const;
 
   AXI_LLCConfig llc_config{};
   AXI_LLC llc{};
+  bool ar_from_llc_c = false;
+  uint8_t ar_llc_mem_id_c = 0;
 };
 
 } // namespace axi_interconnect

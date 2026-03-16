@@ -2,6 +2,7 @@
 
 #include "AXI_Interconnect_IO.h"
 #include "AXI_LLC_Config.h"
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -11,7 +12,21 @@ struct AXI_LLC_Bytes_t {
   std::vector<uint8_t> bytes{};
 
   void clear() { bytes.clear(); }
+  void resize(size_t size) { bytes.assign(size, 0); }
+  size_t size() const { return bytes.size(); }
+  uint8_t *data() { return bytes.data(); }
+  const uint8_t *data() const { return bytes.data(); }
 };
+
+struct AXI_LLCMetaEntry_t {
+  uint32_t tag = 0;
+  uint8_t flags = 0;
+};
+
+constexpr uint8_t AXI_LLC_META_VALID = 1u << 0;
+constexpr uint8_t AXI_LLC_META_DIRTY = 1u << 1;
+constexpr uint32_t AXI_LLC_META_ENTRY_BYTES = 8;
+constexpr uint32_t AXI_LLC_REPL_BYTES = 4;
 
 struct AXI_LLC_ReadReqIn_t {
   wire1_t valid = false;
@@ -142,17 +157,48 @@ enum class AXI_LLCState : uint8_t {
   kRefill = 4,
 };
 
+struct AXI_LLCMissEntry_t {
+  bool valid = false;
+  bool bypass = false;
+  bool mem_req_issued = false;
+  bool refill_valid = false;
+  bool refill_committed = false;
+  uint32_t addr = 0;
+  uint32_t line_addr = 0;
+  uint32_t set = 0;
+  uint32_t tag = 0;
+  uint8_t way = 0;
+  uint8_t total_size = 0;
+  uint8_t master = 0;
+  uint8_t id = 0;
+  WideReadData_t refill_data{};
+};
+
 struct AXI_LLC_Regs_t {
   bool enable_r = false;
   AXI_LLCState state = AXI_LLCState::kDisabled;
-  bool lookup_pending_r = false;
-  bool miss_pending_r = false;
-  bool refill_pending_r = false;
-  uint32_t active_addr_r = 0;
-  uint8_t active_size_r = 0;
-  uint8_t active_master_r = 0;
-  uint8_t active_id_r = 0;
-  uint32_t mshr_busy_mask_r = 0;
+
+  bool lookup_valid_r = false;
+  uint32_t lookup_addr_r = 0;
+  uint8_t lookup_size_r = 0;
+  uint8_t lookup_master_r = 0;
+  uint8_t lookup_id_r = 0;
+
+  uint8_t rr_read_master_r = 0;
+  uint8_t rr_write_master_r = 0;
+
+  bool read_resp_valid_r[NUM_READ_MASTERS] = {false};
+  WideReadData_t read_resp_data_r[NUM_READ_MASTERS] = {};
+  uint8_t read_resp_id_r[NUM_READ_MASTERS] = {0};
+
+  bool write_active_r = false;
+  uint8_t write_active_master_r = 0;
+  uint8_t write_active_id_r = 0;
+  bool write_resp_valid_r[NUM_WRITE_MASTERS] = {false};
+  uint8_t write_resp_id_r[NUM_WRITE_MASTERS] = {0};
+  uint8_t write_resp_code_r[NUM_WRITE_MASTERS] = {0};
+
+  AXI_LLCMissEntry_t mshr[MAX_OUTSTANDING] = {};
 };
 
 using AXI_LLC_RegWrite_t = AXI_LLC_Regs_t;
@@ -177,9 +223,31 @@ public:
   void comb();
   void seq();
 
+  static uint32_t line_words(const AXI_LLCConfig &config);
+  static uint32_t line_addr(const AXI_LLCConfig &config, uint32_t addr);
+  static uint32_t set_index(const AXI_LLCConfig &config, uint32_t addr);
+  static uint32_t tag_of(const AXI_LLCConfig &config, uint32_t addr);
+  static AXI_LLCMetaEntry_t decode_meta(const AXI_LLC_Bytes_t &payload,
+                                        uint32_t way);
+  static void encode_meta(const AXI_LLCMetaEntry_t &entry,
+                          AXI_LLC_Bytes_t &payload);
+
   AXI_LLC_IO_t io;
 
 private:
+  int find_free_mshr(const AXI_LLC_Regs_t &regs) const;
+  int pick_mem_issue_slot(const AXI_LLC_Regs_t &regs) const;
+  int find_mshr_by_mem_id(const AXI_LLC_Regs_t &regs, uint8_t mem_id) const;
+  int pick_refill_commit_slot(const AXI_LLC_Regs_t &regs) const;
+  int pick_new_read_master(const AXI_LLC_Regs_t &regs) const;
+  int pick_new_write_master(const AXI_LLC_Regs_t &regs) const;
+
+  void drive_read_responses();
+  void drive_write_path();
+  void drive_lookup_request();
+  bool try_complete_lookup();
+  void drive_mem_read_path();
+  void accept_new_requests();
   void comb_disabled();
 
   AXI_LLCConfig config_{};

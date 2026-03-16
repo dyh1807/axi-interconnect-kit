@@ -81,6 +81,12 @@ if(AXI_KIT_BUILD_TESTS)
   target_compile_definitions(axi_interconnect_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
   target_link_libraries(axi_interconnect_test PRIVATE axi_kit_axi4_test)
 
+  add_executable(axi_llc_test
+      axi_interconnect/axi_llc_test.cpp
+  )
+  target_compile_definitions(axi_llc_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
+  target_link_libraries(axi_llc_test PRIVATE axi_kit_axi4_test)
+
   add_executable(mmio_router_axi4_test
       mmio/mmio_router_axi4_test.cpp
   )
@@ -107,6 +113,7 @@ if(AXI_KIT_BUILD_TESTS)
 
   add_test(NAME sim_ddr_test COMMAND sim_ddr_test)
   add_test(NAME axi_interconnect_test COMMAND axi_interconnect_test)
+  add_test(NAME axi_llc_test COMMAND axi_llc_test)
   add_test(NAME mmio_router_axi4_test COMMAND mmio_router_axi4_test)
   add_test(NAME sim_ddr_axi3_test COMMAND sim_ddr_axi3_test)
   add_test(NAME axi_interconnect_axi3_test COMMAND axi_interconnect_axi3_test)

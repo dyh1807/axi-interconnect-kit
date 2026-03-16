@@ -15,6 +15,7 @@ namespace axi_interconnect {
 
 namespace {
 constexpr uint8_t kInvalidAxiReadId = 0xFF;
+constexpr uint8_t kLlcFrontendMaster = MASTER_ICACHE;
 }
 
 // ============================================================================
@@ -29,6 +30,7 @@ void AXI_Interconnect::init() {
 
   // Clear AR latch
   ar_latched.valid = false;
+  ar_latched.to_llc = false;
   ar_latched.addr = 0;
   ar_latched.len = 0;
   ar_latched.size = 2;
@@ -142,6 +144,43 @@ bool AXI_Interconnect::can_accept_read_master(uint8_t master_id) const {
   return alloc_read_axi_id() != kInvalidAxiReadId;
 }
 
+bool AXI_Interconnect::can_issue_llc_read_req() const {
+  return !ar_latched.valid && count_total_read_inflight() < MAX_OUTSTANDING &&
+         alloc_read_axi_id() != kInvalidAxiReadId;
+}
+
+void AXI_Interconnect::prepare_llc_inputs() {
+  llc.io.ext_in = {};
+
+  if (!llc_enabled()) {
+    return;
+  }
+
+  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].valid =
+      read_ports[kLlcFrontendMaster].req.valid;
+  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].addr =
+      read_ports[kLlcFrontendMaster].req.addr;
+  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].total_size =
+      read_ports[kLlcFrontendMaster].req.total_size;
+  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].id =
+      read_ports[kLlcFrontendMaster].req.id;
+  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].bypass =
+      read_ports[kLlcFrontendMaster].req.bypass;
+  llc.io.ext_in.upstream.read_resp[kLlcFrontendMaster].ready =
+      read_ports[kLlcFrontendMaster].resp.ready;
+  llc.io.ext_in.mem.read_req_ready = can_issue_llc_read_req();
+
+  for (const auto &txn : r_pending) {
+    if (!txn.to_llc || txn.beats_done != txn.total_beats) {
+      continue;
+    }
+    llc.io.ext_in.mem.read_resp_valid = true;
+    llc.io.ext_in.mem.read_resp_data = txn.data;
+    llc.io.ext_in.mem.read_resp_id = txn.orig_id;
+    break;
+  }
+}
+
 // ============================================================================
 // Two-Phase Combinational Logic
 // ============================================================================
@@ -149,6 +188,7 @@ bool AXI_Interconnect::can_accept_read_master(uint8_t master_id) const {
 // Phase 1: Output signals for masters (run BEFORE cpu.cycle())
 // Sets: port.resp.valid/data, port.req.ready (from register), DDR rready
 void AXI_Interconnect::comb_outputs() {
+  prepare_llc_inputs();
   llc.comb();
 
   // Response path: DDR → masters
@@ -163,7 +203,9 @@ void AXI_Interconnect::comb_outputs() {
 
   // If AR is latched (waiting for arready), also keep req.ready true
   if (ar_latched.valid) {
-    read_ports[ar_latched.master_id].req.ready = true;
+    if (ar_latched.master_id < NUM_READ_MASTERS) {
+      read_ports[ar_latched.master_id].req.ready = true;
+    }
   }
 
   // Registered write req.ready (two-phase timing)
@@ -173,6 +215,17 @@ void AXI_Interconnect::comb_outputs() {
   if (aw_latched.valid && w_current_master >= 0 &&
       w_current_master < NUM_WRITE_MASTERS) {
     write_ports[w_current_master].req.ready = true;
+  }
+
+  if (llc_enabled()) {
+    read_ports[kLlcFrontendMaster].req.ready =
+        llc.io.ext_out.upstream.read_req[kLlcFrontendMaster].ready;
+    read_ports[kLlcFrontendMaster].resp.valid =
+        llc.io.ext_out.upstream.read_resp[kLlcFrontendMaster].valid;
+    read_ports[kLlcFrontendMaster].resp.data =
+        llc.io.ext_out.upstream.read_resp[kLlcFrontendMaster].data;
+    read_ports[kLlcFrontendMaster].resp.id =
+        llc.io.ext_out.upstream.read_resp[kLlcFrontendMaster].id;
   }
 }
 
@@ -187,6 +240,8 @@ void AXI_Interconnect::comb_inputs() {
 // Read Arbiter with Latched AR (AXI Compliant)
 // ============================================================================
 void AXI_Interconnect::comb_read_arbiter() {
+  ar_from_llc_c = false;
+  ar_llc_mem_id_c = 0;
   bool req_ready_curr[NUM_READ_MASTERS];
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     req_ready_curr[i] = req_ready_r[i];
@@ -217,16 +272,33 @@ void AXI_Interconnect::comb_read_arbiter() {
     axi_io.ar.arid = ar_latched.id;
     // Also need to keep req.ready=true for the master whose request is latched
     // so the handshake completes and ICache knows request was accepted
-    read_ports[ar_latched.master_id].req.ready = true;
-    req_ready_r[ar_latched.master_id] = true;
+    if (ar_latched.master_id < NUM_READ_MASTERS) {
+      read_ports[ar_latched.master_id].req.ready = true;
+      req_ready_r[ar_latched.master_id] = true;
+    }
     return; // Cannot accept new requests while AR pending
   }
 
   // No latched AR, can accept new request
   axi_io.ar.arvalid = false;
 
+  if (llc_enabled() && llc.io.ext_out.mem.read_req_valid && can_issue_llc_read_req()) {
+    ar_from_llc_c = true;
+    ar_llc_mem_id_c = llc.io.ext_out.mem.read_req_id;
+    axi_io.ar.arvalid = true;
+    axi_io.ar.araddr = llc.io.ext_out.mem.read_req_addr;
+    axi_io.ar.arlen = calc_burst_len(llc.io.ext_out.mem.read_req_size);
+    axi_io.ar.arsize = 2;
+    axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
+    axi_io.ar.arid = alloc_read_axi_id();
+    return;
+  }
+
   // If a master saw ready last cycle, complete that handshake first.
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
+    if (llc_enabled() && i == static_cast<int>(kLlcFrontendMaster)) {
+      continue;
+    }
     if (!req_ready_curr[i] || !read_ports[i].req.valid) {
       continue;
     }
@@ -252,6 +324,9 @@ void AXI_Interconnect::comb_read_arbiter() {
   // Round-robin search for valid request
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     int idx = (r_arb_rr_idx + i) % NUM_READ_MASTERS;
+    if (llc_enabled() && idx == static_cast<int>(kLlcFrontendMaster)) {
+      continue;
+    }
 
     if (read_ports[idx].req.valid) {
       if (!can_accept_read_master(static_cast<uint8_t>(idx))) {
@@ -295,6 +370,9 @@ void AXI_Interconnect::comb_read_response() {
   bool master_has_resp[NUM_READ_MASTERS] = {false};
   for (auto &txn : r_pending) {
     if (txn.beats_done == txn.total_beats) {
+      if (txn.to_llc) {
+        continue;
+      }
       uint8_t master = txn.master_id;
       if (!master_has_resp[master]) { // Only first complete per master
         read_ports[master].resp.valid = true;
@@ -405,11 +483,16 @@ void AXI_Interconnect::seq() {
   if (axi_io.ar.arvalid && !ar_latched.valid && !axi_io.ar.arready) {
     int master_idx = -1;
     uint8_t orig_id = 0;
-    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-      if (read_ports[i].req.valid && read_ports[i].req.ready) {
-        master_idx = i;
-        orig_id = read_ports[i].req.id;
-        break;
+    if (ar_from_llc_c) {
+      master_idx = kLlcFrontendMaster;
+      orig_id = ar_llc_mem_id_c;
+    } else {
+      for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+        if (read_ports[i].req.valid && read_ports[i].req.ready) {
+          master_idx = i;
+          orig_id = read_ports[i].req.id;
+          break;
+        }
       }
     }
     if (master_idx >= 0) {
@@ -422,6 +505,7 @@ void AXI_Interconnect::seq() {
       ar_latched.id = axi_io.ar.arid;
       ar_latched.master_id = static_cast<uint8_t>(master_idx);
       ar_latched.orig_id = orig_id;
+      ar_latched.to_llc = ar_from_llc_c;
     }
   }
 
@@ -434,16 +518,23 @@ void AXI_Interconnect::seq() {
       txn.master_id = ar_latched.master_id;
       txn.orig_id = ar_latched.orig_id;
       txn.total_beats = ar_latched.len + 1;
+      txn.to_llc = ar_latched.to_llc;
       ar_latched.valid = false; // Clear latch
+      ar_latched.to_llc = false;
     } else {
       // Direct handshake (same cycle)
       int master_idx = -1;
       uint8_t orig_id = 0;
-      for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-        if (read_ports[i].req.valid && read_ports[i].req.ready) {
-          master_idx = i;
-          orig_id = read_ports[i].req.id;
-          break;
+      if (ar_from_llc_c) {
+        master_idx = kLlcFrontendMaster;
+        orig_id = ar_llc_mem_id_c;
+      } else {
+        for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+          if (read_ports[i].req.valid && read_ports[i].req.ready) {
+            master_idx = i;
+            orig_id = read_ports[i].req.id;
+            break;
+          }
         }
       }
       if (master_idx < 0) {
@@ -453,6 +544,7 @@ void AXI_Interconnect::seq() {
       txn.master_id = static_cast<uint8_t>(master_idx);
       txn.orig_id = orig_id;
       txn.total_beats = axi_io.ar.arlen + 1;
+      txn.to_llc = ar_from_llc_c;
     }
     txn.beats_done = 0;
     txn.data.clear();
@@ -481,11 +573,23 @@ read_handshake_done:
       auto it = std::find_if(r_pending.begin(), r_pending.end(),
                              [i](const ReadPendingTxn &t) {
                                return t.master_id == i &&
+                                      !t.to_llc &&
                                       t.beats_done == t.total_beats;
                              });
       if (it != r_pending.end()) {
         r_pending.erase(it);
       }
+    }
+  }
+
+  if (llc_enabled() && llc.io.ext_in.mem.read_resp_valid &&
+      llc.io.ext_out.mem.read_resp_ready) {
+    auto it = std::find_if(r_pending.begin(), r_pending.end(),
+                           [](const ReadPendingTxn &t) {
+                             return t.to_llc && t.beats_done == t.total_beats;
+                           });
+    if (it != r_pending.end()) {
+      r_pending.erase(it);
     }
   }
 
