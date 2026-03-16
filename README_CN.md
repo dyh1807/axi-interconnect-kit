@@ -79,6 +79,59 @@
   `icache / dcache_r / uncore_lsu_r / extra_r`，写侧映射为
   `dcache_w / uncore_lsu_w`。
 
+## LLC（AXI4 路径）
+
+`AXI_LLC` 是 AXI4 路径上的可选共享统一 LLC。当前父模拟器的接线是
+`icache-first`：只有 `icache` 读主设备目前走 LLC 上游路径，因此这里不
+表示 `dcache` 已经接入 LLC。
+
+当前组织形态：
+
+```text
+上游读主设备
+（当前 simulator 接线：先接 icache）
+            |
+            v
+   +----------------------+
+   | AXI_Interconnect     |
+   +----------------------+
+            |
+            v
+   +----------------------+
+   | AXI_LLC              |
+   +----------------------+
+      |        |        |
+      |        |        +--> DDR / MMIO 路径
+      |        |
+      |        +--> MSHR 阵列
+      |
+      +--> 外部 SRAM 风格 data / meta / repl 表
+           （由父模拟器提供）
+      |
+      +--> 保守型 stream prefetch
+           （quiet-cycle 节流、demand 优先、直接回填 LLC 表）
+```
+
+当前行为与默认配置：
+
+- 它是 AXI4 路径上的可选共享统一 LLC；当前父模拟器先接入的是 `icache`
+  读路径。
+- 默认配置为 `8MB`、`64B` cache line、`16-way`、`4` 个 MSHR、lookup
+  latency 为 `8` cycles。
+- 当前 prefetch 路径可由 `prefetch_enable` 和 `prefetch_degree` 配置；
+  在当前 simulator 分支里，`degree=1` 和 `degree=2` 都有实现。
+- `bypass` 请求不会进入 LLC 的 lookup/fill 路径，而是直接下发到下游，
+  不占用 LLC 表项状态。
+- cacheable demand miss 使用父模拟器提供的外部 SRAM 风格 `data` /
+  `meta` / `repl` 表。
+- 当前 next-line prefetch 逻辑是“保守但回填到表”的版本：检测到连续两个
+  demand miss 后，会先把最多 `prefetch_degree` 个 next-line 候选放入队列，
+  只在没有 demand MSHR 的 quiet cycle 中按一次一条的方式发起，并将返回行
+  以 prefetch 标记写入 LLC 表。
+- demand 流量始终优先于 prefetch lookup / memory issue；一旦 LLC 真正接受
+  新的 demand，请求队列中的 prefetch 候选会被丢弃，因此 prefetch 更像
+  “后台尽力而为”流量，而不会与主请求路径竞争。
+
 ## 接口信号文档
 
 详细信号列表见：

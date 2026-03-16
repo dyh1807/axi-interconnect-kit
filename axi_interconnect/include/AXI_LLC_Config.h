@@ -10,7 +10,9 @@ struct AXI_LLCConfig {
   uint32_t line_bytes = 64;
   uint32_t ways = 16;
   uint32_t mshr_num = 4;
-  uint32_t lookup_latency = 4;
+  uint32_t lookup_latency = 8;
+  bool prefetch_enable = false;
+  uint32_t prefetch_degree = 1;
   bool nine = true;
   bool unified = true;
   bool pipt = true;

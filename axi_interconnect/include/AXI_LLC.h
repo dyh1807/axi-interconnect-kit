@@ -25,8 +25,27 @@ struct AXI_LLCMetaEntry_t {
 
 constexpr uint8_t AXI_LLC_META_VALID = 1u << 0;
 constexpr uint8_t AXI_LLC_META_DIRTY = 1u << 1;
+constexpr uint8_t AXI_LLC_META_PREFETCH = 1u << 2;
 constexpr uint32_t AXI_LLC_META_ENTRY_BYTES = 8;
 constexpr uint32_t AXI_LLC_REPL_BYTES = 4;
+constexpr uint32_t AXI_LLC_MAX_PREFETCH_QUEUE = 8;
+
+struct AXI_LLCPerfCounters_t {
+  uint64_t read_access = 0;
+  uint64_t read_hit = 0;
+  uint64_t read_miss = 0;
+  uint64_t bypass_read = 0;
+  uint64_t write_passthrough = 0;
+  uint64_t refill = 0;
+  uint64_t mshr_alloc = 0;
+  uint64_t mshr_merge = 0;
+  uint64_t prefetch_issue = 0;
+  uint64_t prefetch_hit = 0;
+  uint64_t prefetch_drop_inflight = 0;
+  uint64_t prefetch_drop_mshr_full = 0;
+  uint64_t prefetch_drop_queue_full = 0;
+  uint64_t prefetch_drop_table_hit = 0;
+};
 
 struct AXI_LLC_ReadReqIn_t {
   wire1_t valid = false;
@@ -89,6 +108,8 @@ struct AXI_LLC_UpstreamOut_t {
 };
 
 struct AXI_LLC_MemIn_t {
+  wire1_t invalidate_all = false;
+  wire1_t prefetch_allow = true;
   wire1_t read_req_ready = false;
   wire1_t read_resp_valid = false;
   WideReadData_t read_resp_data{};
@@ -160,6 +181,8 @@ enum class AXI_LLCState : uint8_t {
 struct AXI_LLCMissEntry_t {
   bool valid = false;
   bool bypass = false;
+  bool is_prefetch = false;
+  bool prefetch_train = false;
   bool mem_req_issued = false;
   bool refill_valid = false;
   bool refill_committed = false;
@@ -174,15 +197,27 @@ struct AXI_LLCMissEntry_t {
   WideReadData_t refill_data{};
 };
 
+struct AXI_LLCPrefetchReq_t {
+  bool valid = false;
+  uint32_t line_addr = 0;
+};
+
 struct AXI_LLC_Regs_t {
   bool enable_r = false;
   AXI_LLCState state = AXI_LLCState::kDisabled;
+  AXI_LLCPerfCounters_t perf{};
 
   bool lookup_valid_r = false;
+  bool lookup_issued_r = false;
   uint32_t lookup_addr_r = 0;
   uint8_t lookup_size_r = 0;
   uint8_t lookup_master_r = 0;
   uint8_t lookup_id_r = 0;
+  bool lookup_is_prefetch_r = false;
+  bool prefetch_stream_valid_r = false;
+  uint32_t prefetch_last_miss_line_r = 0;
+  uint8_t prefetch_quiet_cycles_r = 0;
+  AXI_LLCPrefetchReq_t prefetch_q[AXI_LLC_MAX_PREFETCH_QUEUE] = {};
 
   uint8_t rr_read_master_r = 0;
   uint8_t rr_write_master_r = 0;
@@ -222,7 +257,8 @@ public:
   void reset();
   void comb();
   void seq();
-  bool can_accept_read_now(uint8_t master, bool bypass) const;
+  bool can_accept_read_now(uint8_t master, bool bypass, uint32_t addr) const;
+  const AXI_LLCPerfCounters_t &perf_counters() const { return io.regs.perf; }
 
   static uint32_t line_words(const AXI_LLCConfig &config);
   static uint32_t line_addr(const AXI_LLCConfig &config, uint32_t addr);
@@ -239,11 +275,23 @@ private:
   int find_free_mshr(const AXI_LLC_Regs_t &regs) const;
   int find_mshr_by_line_addr(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
   bool has_mshr_for_master(const AXI_LLC_Regs_t &regs, uint8_t master) const;
+  uint32_t count_free_mshrs(const AXI_LLC_Regs_t &regs) const;
+  bool has_demand_mshr(const AXI_LLC_Regs_t &regs) const;
   int pick_mem_issue_slot(const AXI_LLC_Regs_t &regs) const;
   int find_mshr_by_mem_id(const AXI_LLC_Regs_t &regs, uint8_t mem_id) const;
   int pick_refill_commit_slot(const AXI_LLC_Regs_t &regs) const;
   int pick_new_read_master(const AXI_LLC_Regs_t &regs) const;
   int pick_new_write_master(const AXI_LLC_Regs_t &regs) const;
+  int find_prefetch_queue_slot(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  int find_free_prefetch_queue_slot(const AXI_LLC_Regs_t &regs) const;
+  int pick_prefetch_queue_slot(const AXI_LLC_Regs_t &regs) const;
+  bool prefetch_candidate_exists(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  bool can_allocate_prefetch_mshr(const AXI_LLC_Regs_t &regs) const;
+  bool line_has_valid_meta(const AXI_LLC_Bytes_t &meta_payload, uint32_t tag,
+                           int *hit_way, int *first_invalid_way,
+                           AXI_LLCMetaEntry_t *hit_meta) const;
+  void try_schedule_prefetch(const AXI_LLCMissEntry_t &entry);
+  void try_launch_prefetch_lookup();
 
   void drive_read_responses();
   void drive_write_path();

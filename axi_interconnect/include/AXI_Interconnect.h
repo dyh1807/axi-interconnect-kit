@@ -61,7 +61,7 @@ struct ReadPendingTxn {
   WideReadData_t data;
 };
 
-struct LlcFrontendReqLatch {
+struct LlcUpstreamReqLatch {
   bool valid = false;
   uint32_t addr = 0;
   uint8_t total_size = 0;
@@ -99,7 +99,11 @@ public:
   void set_llc_lookup_in(const AXI_LLC_LookupIn_t &lookup_in) {
     llc.io.lookup_in = lookup_in;
   }
+  void set_llc_invalidate(bool invalidate) { llc_invalidate_req_ = invalidate; }
   const AXI_LLC_TableOut_t &get_llc_table_out() const { return llc.io.table_out; }
+  const AXI_LLCPerfCounters_t &get_llc_perf_counters() const {
+    return llc.perf_counters();
+  }
 
   // Two-phase combinational logic for proper signal timing
   void comb_outputs(); // Phase 1: Update resp signals for masters, req.ready
@@ -168,8 +172,10 @@ private:
 
   AXI_LLCConfig llc_config{};
   AXI_LLC llc{};
-  LlcFrontendReqLatch llc_front_req{};
-  bool llc_front_accept_c = false;
+  bool llc_invalidate_req_ = false;
+  LlcUpstreamReqLatch llc_upstream_req{};
+  LlcUpstreamReqLatch llc_upstream_capture_c{};
+  bool llc_upstream_accept_c = false;
   bool ar_from_llc_c = false;
   uint8_t ar_llc_mem_id_c = 0;
 };

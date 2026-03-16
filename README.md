@@ -81,6 +81,63 @@ Note:
   `icache` / `dcache_r` / `uncore_lsu_r` / `extra_r` on read side and
   `dcache_w` / `uncore_lsu_w` on write side.
 
+## LLC (AXI4 path)
+
+`AXI_LLC` is an optional shared unified LLC on the AXI4 path. In the current
+parent-simulator hookup, the LLC upstream side is connected `icache`-first:
+only the `icache` read master is currently routed through the LLC path, so
+this README does not imply that `dcache` is already connected.
+
+Current organization:
+
+```text
+Upstream read masters
+(current simulator hookup: icache first)
+            |
+            v
+   +----------------------+
+   | AXI_Interconnect     |
+   +----------------------+
+            |
+            v
+   +----------------------+
+   | AXI_LLC              |
+   +----------------------+
+      |        |        |
+      |        |        +--> DDR / MMIO path
+      |        |
+      |        +--> MSHR array
+      |
+      +--> external SRAM-style data / meta / repl tables
+           (provided by the parent simulator)
+      |
+      +--> conservative stream prefetch
+           (quiet-cycle gated, demand-priority, table-backed refill)
+```
+
+Current behavior and defaults:
+
+- Optional shared unified LLC only on the AXI4 path; the parent simulator
+  currently hooks up the `icache` read side first.
+- Default config is `8MB`, `64B` lines, `16-way`, `4` MSHRs, lookup latency
+  `8` cycles.
+- The current prefetch path is configurable by `prefetch_enable` and
+  `prefetch_degree`; `degree=1` and `degree=2` are both supported in the
+  current simulator branch.
+- Bypass requests do not enter the LLC lookup/fill path; they go downstream
+  without allocating LLC table state.
+- Cacheable demand misses use external SRAM-style `data` / `meta` / `repl`
+  tables supplied by the parent simulator.
+- The current next-line prefetch logic is conservative but table-backed: after
+  two sequential demand misses, it enqueues up to `prefetch_degree` next-line
+  candidates, waits for a quiet cycle with no active demand MSHR, and then
+  issues prefetches one-at-a-time. Returned lines are refilled into the LLC
+  tables with a prefetch marker.
+- Demand traffic always has priority over prefetch lookup / memory issue.
+  Pending prefetch queue entries are dropped once a new demand is accepted, so
+  the prefetch path behaves like best-effort background traffic instead of a
+  competing upstream path.
+
 ## Interface Signals
 
 Detailed signal lists are in:
@@ -162,8 +219,8 @@ Top-level files:
 - `sim_ddr/include/SimDDR_AXI3.h`: AXI3 SimDDR API.
 - `sim_ddr/include/SimDDR_IO.h`: AXI4 IO bundle definitions.
 - `sim_ddr/include/SimDDR_AXI3_IO.h`: AXI3 IO bundle definitions.
-- `sim_ddr/SimDDR.cpp`: AXI4 memory backend behavior.
-- `sim_ddr/SimDDR_AXI3.cpp`: AXI3 memory backend behavior.
+- `sim_ddr/SimDDR.cpp`: AXI4 DDR-side behavior.
+- `sim_ddr/SimDDR_AXI3.cpp`: AXI3 DDR-side behavior.
 - `sim_ddr/sim_ddr_test.cpp`: AXI4 SimDDR test.
 - `sim_ddr/sim_ddr_axi3_test.cpp`: AXI3 SimDDR test.
 
@@ -310,7 +367,7 @@ Reserved-but-unused in this single-cycle case:
 - read master `M3 (extra_r)`
 - write master `M1 (extra_w)`
 
-## Integration Back to Parent Simulator
+## Integration into Parent Simulator
 
 Parent project can consume this repository as an external dependency and include:
 

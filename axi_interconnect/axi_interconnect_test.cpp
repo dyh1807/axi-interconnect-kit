@@ -3,13 +3,17 @@
  * @brief Test harness for AXI_Interconnect layer
  */
 
-#include "AXI_Interconnect.h"
-#include "SimDDR.h"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <queue>
 #include <vector>
+
+#define private public
+#include "AXI_Interconnect.h"
+#undef private
+#include "SimDDR.h"
 
 uint32_t *p_memory = nullptr;
 long long sim_time = 0;
@@ -969,6 +973,70 @@ bool test_same_master_multi_outstanding(TestEnv &env) {
   return true;
 }
 
+bool test_llc_mem_issue_priority() {
+  printf("=== Test 8: LLC downstream AR wins over new upstream req ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+  interconnect.llc.io.ext_out.mem.read_req_valid = true;
+  interconnect.llc.io.ext_out.mem.read_req_addr = 0x4000;
+  interconnect.llc.io.ext_out.mem.read_req_size = 63;
+  interconnect.llc.io.ext_out.mem.read_req_id = 2;
+
+  interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.valid = true;
+  interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.addr = 0x80005380;
+  interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.total_size = 63;
+  interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.id = 1;
+
+  interconnect.comb_inputs();
+  if (!interconnect.axi_io.ar.arvalid ||
+      interconnect.axi_io.ar.araddr != 0x4000) {
+    printf("FAIL: LLC downstream AR was not prioritized addr=0x%08x\n",
+           interconnect.axi_io.ar.araddr);
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_llc_latched_ar_not_ready_upstream() {
+  printf("=== Test 9: Latched LLC AR must not ack upstream ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+  interconnect.ar_latched.valid = true;
+  interconnect.ar_latched.to_llc = true;
+  interconnect.ar_latched.master_id = axi_interconnect::MASTER_ICACHE;
+  interconnect.ar_latched.addr = 0x80005380;
+  interconnect.req_ready_r[axi_interconnect::MASTER_ICACHE] = false;
+
+  interconnect.comb_outputs();
+  if (interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.ready) {
+    printf("FAIL: latched LLC AR leaked ready to upstream\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
 int main() {
   printf("====================================\n");
   printf("AXI-Interconnect Test Suite\n");
@@ -1012,6 +1080,16 @@ int main() {
     failed++;
 
   if (test_same_master_multi_outstanding(env))
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_mem_issue_priority())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_latched_ar_not_ready_upstream())
     passed++;
   else
     failed++;
