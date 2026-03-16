@@ -4,6 +4,8 @@
 
 using namespace axi_interconnect;
 
+long long sim_time = 0;
+
 namespace {
 
 AXI_LLCConfig make_config() {
@@ -432,6 +434,61 @@ bool test_same_master_multi_mshr_bypass() {
   return true;
 }
 
+bool test_read_resp_holds_until_ready() {
+  printf("=== LLC Test 6: read response holds until ready ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].addr = 0x900;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].total_size = 7;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].id = 9;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].bypass = true;
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.read_req_ready = true;
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.read_resp_valid = true;
+  llc.io.ext_in.mem.read_resp_id = 0;
+  llc.io.ext_in.mem.read_resp_data = make_line_data(0x9000);
+  cycle(llc);
+
+  for (int i = 0; i < 3; ++i) {
+    clear_inputs(llc);
+    llc.comb();
+    auto &resp = llc.io.ext_out.upstream.read_resp[MASTER_ICACHE];
+    if (!resp.valid || resp.id != 9 || resp.data[0] != 0x9000) {
+      printf("FAIL: response dropped before ready on hold cycle %d\n", i);
+      return false;
+    }
+    llc.seq();
+  }
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_resp[MASTER_ICACHE].ready = true;
+  llc.comb();
+  if (!llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].valid) {
+    printf("FAIL: response not visible on ready handshake cycle\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].valid) {
+    printf("FAIL: response not cleared after ready handshake\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
 } // namespace
 
 int main() {
@@ -459,6 +516,11 @@ int main() {
     failed++;
 
   if (test_same_master_multi_mshr_bypass())
+    passed++;
+  else
+    failed++;
+
+  if (test_read_resp_holds_until_ready())
     passed++;
   else
     failed++;

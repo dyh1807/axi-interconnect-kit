@@ -65,10 +65,28 @@ uint32_t decode_repl_way(const AXI_LLC_Bytes_t &payload) {
   }
   return read_u32_le(payload.data());
 }
-
 } // namespace
 
 AXI_LLC::AXI_LLC() { reset(); }
+
+bool AXI_LLC::can_accept_read_now(uint8_t master, bool bypass) const {
+  if (master >= NUM_READ_MASTERS || config_.mshr_num == 0) {
+    return false;
+  }
+  if (io.regs.read_resp_valid_r[master]) {
+    return false;
+  }
+  if (bypass) {
+    return find_free_mshr(io.regs) >= 0;
+  }
+  if (io.regs.lookup_valid_r) {
+    return false;
+  }
+  if (has_mshr_for_master(io.regs, master)) {
+    return false;
+  }
+  return true;
+}
 
 uint32_t AXI_LLC::line_words(const AXI_LLCConfig &config) {
   return config.line_bytes / sizeof(uint32_t);
@@ -135,6 +153,28 @@ int AXI_LLC::find_free_mshr(const AXI_LLC_Regs_t &regs) const {
   return -1;
 }
 
+int AXI_LLC::find_mshr_by_line_addr(const AXI_LLC_Regs_t &regs,
+                                    uint32_t line_addr_value) const {
+  const uint32_t limit = std::min<uint32_t>(config_.mshr_num, MAX_OUTSTANDING);
+  for (uint32_t i = 0; i < limit; ++i) {
+    if (regs.mshr[i].valid && !regs.mshr[i].bypass &&
+        regs.mshr[i].line_addr == line_addr_value) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+bool AXI_LLC::has_mshr_for_master(const AXI_LLC_Regs_t &regs, uint8_t master) const {
+  const uint32_t limit = std::min<uint32_t>(config_.mshr_num, MAX_OUTSTANDING);
+  for (uint32_t i = 0; i < limit; ++i) {
+    if (regs.mshr[i].valid && regs.mshr[i].master == master) {
+      return true;
+    }
+  }
+  return false;
+}
+
 int AXI_LLC::pick_mem_issue_slot(const AXI_LLC_Regs_t &regs) const {
   const uint32_t limit = std::min<uint32_t>(config_.mshr_num, MAX_OUTSTANDING);
   for (uint32_t i = 0; i < limit; ++i) {
@@ -170,6 +210,9 @@ int AXI_LLC::pick_new_read_master(const AXI_LLC_Regs_t &regs) const {
     const uint32_t idx = (regs.rr_read_master_r + off) % NUM_READ_MASTERS;
     const auto &req = io.ext_in.upstream.read_req[idx];
     if (!req.valid || regs.read_resp_valid_r[idx]) {
+      continue;
+    }
+    if (!req.bypass && has_mshr_for_master(regs, static_cast<uint8_t>(idx))) {
       continue;
     }
     if (!req.bypass && regs.lookup_valid_r) {
@@ -309,6 +352,14 @@ bool AXI_LLC::try_complete_lookup() {
     io.table_out.repl.byte_enable.assign(AXI_LLC_REPL_BYTES, 1);
     io.reg_write.lookup_valid_r = false;
     io.reg_write.state = AXI_LLCState::kIdle;
+    return true;
+  }
+
+  const uint32_t req_line_addr = line_addr(config_, io.regs.lookup_addr_r);
+  const int merge_slot = find_mshr_by_line_addr(io.regs, req_line_addr);
+  if (merge_slot >= 0) {
+    io.reg_write.lookup_valid_r = false;
+    io.reg_write.state = AXI_LLCState::kMiss;
     return true;
   }
 
@@ -452,6 +503,12 @@ void AXI_LLC::accept_new_requests() {
     entry.set = set_index(config_, req.addr);
     entry.tag = tag_of(config_, req.addr);
     io.reg_write.state = AXI_LLCState::kMiss;
+    return;
+  }
+
+  const int merge_slot =
+      find_mshr_by_line_addr(io.regs, line_addr(config_, req.addr));
+  if (merge_slot >= 0) {
     return;
   }
 

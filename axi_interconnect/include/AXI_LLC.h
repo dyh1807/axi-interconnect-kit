@@ -222,6 +222,7 @@ public:
   void reset();
   void comb();
   void seq();
+  bool can_accept_read_now(uint8_t master, bool bypass) const;
 
   static uint32_t line_words(const AXI_LLCConfig &config);
   static uint32_t line_addr(const AXI_LLCConfig &config, uint32_t addr);
@@ -236,6 +237,8 @@ public:
 
 private:
   int find_free_mshr(const AXI_LLC_Regs_t &regs) const;
+  int find_mshr_by_line_addr(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  bool has_mshr_for_master(const AXI_LLC_Regs_t &regs, uint8_t master) const;
   int pick_mem_issue_slot(const AXI_LLC_Regs_t &regs) const;
   int find_mshr_by_mem_id(const AXI_LLC_Regs_t &regs, uint8_t mem_id) const;
   int pick_refill_commit_slot(const AXI_LLC_Regs_t &regs) const;

@@ -61,6 +61,14 @@ struct ReadPendingTxn {
   WideReadData_t data;
 };
 
+struct LlcFrontendReqLatch {
+  bool valid = false;
+  uint32_t addr = 0;
+  uint8_t total_size = 0;
+  uint8_t id = 0;
+  bool bypass = false;
+};
+
 struct WritePendingTxn {
   uint8_t master_id;
   uint8_t orig_id;
@@ -160,6 +168,8 @@ private:
 
   AXI_LLCConfig llc_config{};
   AXI_LLC llc{};
+  LlcFrontendReqLatch llc_front_req{};
+  bool llc_front_accept_c = false;
   bool ar_from_llc_c = false;
   uint8_t ar_llc_mem_id_c = 0;
 };

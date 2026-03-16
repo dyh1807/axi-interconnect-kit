@@ -9,7 +9,6 @@
 
 #include "AXI_Interconnect.h"
 #include <algorithm>
-#include <cstdio>
 
 namespace axi_interconnect {
 
@@ -27,6 +26,7 @@ void AXI_Interconnect::init() {
   r_arb_rr_idx = 0;
   r_current_master = -1;
   r_pending.clear();
+  llc_front_req = {};
 
   // Clear AR latch
   ar_latched.valid = false;
@@ -156,16 +156,13 @@ void AXI_Interconnect::prepare_llc_inputs() {
     return;
   }
 
-  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].valid =
-      read_ports[kLlcFrontendMaster].req.valid;
-  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].addr =
-      read_ports[kLlcFrontendMaster].req.addr;
+  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].valid = llc_front_req.valid;
+  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].addr = llc_front_req.addr;
   llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].total_size =
-      read_ports[kLlcFrontendMaster].req.total_size;
-  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].id =
-      read_ports[kLlcFrontendMaster].req.id;
+      llc_front_req.total_size;
+  llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].id = llc_front_req.id;
   llc.io.ext_in.upstream.read_req[kLlcFrontendMaster].bypass =
-      read_ports[kLlcFrontendMaster].req.bypass;
+      llc_front_req.bypass;
   llc.io.ext_in.upstream.read_resp[kLlcFrontendMaster].ready =
       read_ports[kLlcFrontendMaster].resp.ready;
   llc.io.ext_in.mem.read_req_ready = can_issue_llc_read_req();
@@ -218,8 +215,6 @@ void AXI_Interconnect::comb_outputs() {
   }
 
   if (llc_enabled()) {
-    read_ports[kLlcFrontendMaster].req.ready =
-        llc.io.ext_out.upstream.read_req[kLlcFrontendMaster].ready;
     read_ports[kLlcFrontendMaster].resp.valid =
         llc.io.ext_out.upstream.read_resp[kLlcFrontendMaster].valid;
     read_ports[kLlcFrontendMaster].resp.data =
@@ -242,6 +237,7 @@ void AXI_Interconnect::comb_inputs() {
 void AXI_Interconnect::comb_read_arbiter() {
   ar_from_llc_c = false;
   ar_llc_mem_id_c = 0;
+  llc_front_accept_c = false;
   bool req_ready_curr[NUM_READ_MASTERS];
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     req_ready_curr[i] = req_ready_r[i];
@@ -281,6 +277,24 @@ void AXI_Interconnect::comb_read_arbiter() {
 
   // No latched AR, can accept new request
   axi_io.ar.arvalid = false;
+
+  if (llc_enabled()) {
+    if (!llc_front_req.valid && read_ports[kLlcFrontendMaster].req.valid) {
+      if (req_ready_curr[kLlcFrontendMaster]) {
+        read_ports[kLlcFrontendMaster].req.ready = true;
+        llc_front_accept_c = true;
+        return;
+      }
+
+      const bool llc_can_accept = llc.can_accept_read_now(
+          kLlcFrontendMaster, read_ports[kLlcFrontendMaster].req.bypass);
+      if (!llc_can_accept) {
+        return;
+      }
+      req_ready_r[kLlcFrontendMaster] = true;
+      return;
+    }
+  }
 
   if (llc_enabled() && llc.io.ext_out.mem.read_req_valid && can_issue_llc_read_req()) {
     ar_from_llc_c = true;
@@ -509,6 +523,14 @@ void AXI_Interconnect::seq() {
     }
   }
 
+  if (llc_enabled() && !llc_front_req.valid && llc_front_accept_c) {
+    llc_front_req.valid = true;
+    llc_front_req.addr = read_ports[kLlcFrontendMaster].req.addr;
+    llc_front_req.total_size = read_ports[kLlcFrontendMaster].req.total_size;
+    llc_front_req.id = read_ports[kLlcFrontendMaster].req.id;
+    llc_front_req.bypass = read_ports[kLlcFrontendMaster].req.bypass;
+  }
+
   // AR handshake complete
   if (axi_io.ar.arvalid && axi_io.ar.arready) {
     ReadPendingTxn txn;
@@ -554,6 +576,11 @@ void AXI_Interconnect::seq() {
     // req_ready_r is recomputed in comb_read_arbiter.
   }
 read_handshake_done:
+
+  if (llc_enabled() && llc_front_req.valid &&
+      llc.io.ext_out.upstream.read_req[kLlcFrontendMaster].ready) {
+    llc_front_req = {};
+  }
 
   // R handshake
   if (axi_io.r.rvalid && axi_io.r.rready) {
