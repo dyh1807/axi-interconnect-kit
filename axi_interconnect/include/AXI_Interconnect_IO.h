@@ -5,7 +5,7 @@
  *
  * Simplified master interfaces for icache/dcache/uncore-lsu/extra:
  * - Read response can return one full upstream transaction (up to 256B)
- * - Write request payload remains 256-bit (32B), matching current dcache use
+ * - Write request payload is bounded but no longer fixed to one 256-bit line
  * - total_size specifies transfer width in bytes minus 1
  * - ID for out-of-order response routing
  */
@@ -22,10 +22,15 @@ constexpr uint8_t NUM_READ_MASTERS = 4;  // icache, dcache, uncore-lsu, extra
 constexpr uint8_t NUM_WRITE_MASTERS = 2; // dcache + uncore-lsu
 constexpr uint8_t MAX_OUTSTANDING = 8;
 constexpr uint8_t MAX_READ_OUTSTANDING_PER_MASTER = 4;
-constexpr uint8_t CACHELINE_WORDS = 8; // 256-bit = 8 x 32-bit
+constexpr uint8_t AXI_BEAT_WORDS = 8; // AXI3 data beat = 256-bit = 8 x 32-bit
+constexpr uint8_t AXI_BEAT_BYTES = AXI_BEAT_WORDS * sizeof(uint32_t);
+constexpr uint8_t CACHELINE_WORDS = AXI_BEAT_WORDS; // legacy beat-width alias
 constexpr uint16_t MAX_READ_TRANSACTION_BYTES = 256;
 constexpr uint16_t MAX_READ_TRANSACTION_WORDS =
     MAX_READ_TRANSACTION_BYTES / sizeof(uint32_t);
+constexpr uint16_t MAX_WRITE_TRANSACTION_BYTES = 64;
+constexpr uint16_t MAX_WRITE_TRANSACTION_WORDS =
+    MAX_WRITE_TRANSACTION_BYTES / sizeof(uint32_t);
 
 // Master IDs
 constexpr uint8_t MASTER_ICACHE = 0;
@@ -58,17 +63,88 @@ struct WideReadData_t {
 // ============================================================================
 // Write Payload Data Type (256-bit = 8 x 32-bit words)
 // ============================================================================
-struct WideData256_t {
-  uint32_t words[CACHELINE_WORDS];
+struct WideData256_t;
+
+struct WideWriteData_t {
+  uint32_t words[MAX_WRITE_TRANSACTION_WORDS];
 
   void clear() {
-    for (int i = 0; i < CACHELINE_WORDS; i++)
+    for (int i = 0; i < MAX_WRITE_TRANSACTION_WORDS; i++)
+      words[i] = 0;
+  }
+
+  uint32_t &operator[](int idx) { return words[idx]; }
+  const uint32_t &operator[](int idx) const { return words[idx]; }
+
+  WideWriteData_t() = default;
+  WideWriteData_t(const WideData256_t &other);
+  WideWriteData_t &operator=(const WideData256_t &other);
+};
+
+struct WideWriteStrb_t {
+  uint8_t bytes[MAX_WRITE_TRANSACTION_BYTES];
+
+  void clear() {
+    for (int i = 0; i < MAX_WRITE_TRANSACTION_BYTES; i++) {
+      bytes[i] = 0;
+    }
+  }
+
+  bool test(uint32_t idx) const {
+    return idx < MAX_WRITE_TRANSACTION_BYTES && bytes[idx] != 0;
+  }
+
+  void set(uint32_t idx, bool enable) {
+    if (idx < MAX_WRITE_TRANSACTION_BYTES) {
+      bytes[idx] = enable ? 1u : 0u;
+    }
+  }
+
+  uint32_t slice_u32(uint32_t first_byte) const {
+    uint32_t out = 0;
+    for (uint32_t i = 0; i < 32; ++i) {
+      if (test(first_byte + i)) {
+        out |= (1u << i);
+      }
+    }
+    return out;
+  }
+
+  WideWriteStrb_t &operator=(uint32_t mask) {
+    clear();
+    for (uint32_t i = 0; i < 32 && i < MAX_WRITE_TRANSACTION_BYTES; ++i) {
+      bytes[i] = static_cast<uint8_t>((mask >> i) & 0x1u);
+    }
+    return *this;
+  }
+};
+
+struct WideData256_t {
+  uint32_t words[AXI_BEAT_WORDS];
+
+  void clear() {
+    for (int i = 0; i < AXI_BEAT_WORDS; i++)
       words[i] = 0;
   }
 
   uint32_t &operator[](int idx) { return words[idx]; }
   const uint32_t &operator[](int idx) const { return words[idx]; }
 };
+
+inline WideWriteData_t::WideWriteData_t(const WideData256_t &other) {
+  clear();
+  for (int i = 0; i < AXI_BEAT_WORDS; ++i) {
+    words[i] = other.words[i];
+  }
+}
+
+inline WideWriteData_t &WideWriteData_t::operator=(const WideData256_t &other) {
+  clear();
+  for (int i = 0; i < AXI_BEAT_WORDS; ++i) {
+    words[i] = other.words[i];
+  }
+  return *this;
+}
 
 // ============================================================================
 // Read Master Interface (for icache/dcache/uncore-lsu/extra)
@@ -107,9 +183,9 @@ struct WriteMasterReq_t {
   wire1_t valid;
   wire1_t ready;       // ← Output from interleaver
   wire32_t addr;       // Byte address
-  WideData256_t wdata; // Wide write data
-  wire32_t wstrb;      // Byte strobe (32 bits for 256-bit data)
-  wire5_t total_size;  // 0=1B, 3=4B, 31=32B
+  WideWriteData_t wdata; // Wide write data (bounded by MAX_WRITE_TRANSACTION_BYTES)
+  WideWriteStrb_t wstrb; // Byte strobes
+  wire8_t total_size;    // Transfer bytes minus 1
   wire4_t id;          // Transaction ID
   wire1_t bypass;      // Skip LLC / cacheable path and force memory/MMIO routing
 };

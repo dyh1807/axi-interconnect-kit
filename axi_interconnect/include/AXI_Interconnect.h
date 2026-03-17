@@ -73,8 +73,8 @@ struct WritePendingTxn {
   uint8_t master_id;
   uint8_t orig_id;
   uint32_t addr;
-  WideData256_t wdata;
-  uint32_t wstrb;
+  WideWriteData_t wdata;
+  WideWriteStrb_t wstrb;
   uint8_t total_beats;
   uint8_t beats_sent;
   bool aw_done;
@@ -125,6 +125,8 @@ public:
 
   // Downstream IO (to SimDDR)
   sim_ddr::SimDDR_IO_t axi_io;
+  bool read_req_accepted[NUM_READ_MASTERS] = {};
+  bool write_req_accepted[NUM_WRITE_MASTERS] = {};
 
 private:
   uint8_t count_master_read_pending(uint8_t master_id) const;

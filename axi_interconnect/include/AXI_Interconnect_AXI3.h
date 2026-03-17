@@ -32,6 +32,11 @@ public:
                              (sim_ddr_axi3::AXI_DATA_BYTES - 1)) +
                             (sim_ddr_axi3::AXI_DATA_BYTES - 1)) /
                            sim_ddr_axi3::AXI_DATA_BYTES);
+  static constexpr uint8_t MAX_AXI3_WRITE_BEATS =
+      static_cast<uint8_t>(((MAX_WRITE_TRANSACTION_BYTES +
+                             (sim_ddr_axi3::AXI_DATA_BYTES - 1)) +
+                            (sim_ddr_axi3::AXI_DATA_BYTES - 1)) /
+                           sim_ddr_axi3::AXI_DATA_BYTES);
 
   void init();
 
@@ -54,6 +59,8 @@ public:
 
   // Downstream AXI3 IO
   sim_ddr_axi3::SimDDR_AXI3_IO_t axi_io;
+  bool read_req_accepted[NUM_READ_MASTERS] = {};
+  bool write_req_accepted[NUM_WRITE_MASTERS] = {};
 
 private:
   // Registered req.ready pulses
@@ -98,8 +105,8 @@ private:
   uint32_t w_axi_id;
   uint8_t w_total_beats;
   uint8_t w_beats_sent;
-  sim_ddr_axi3::Data256_t w_beats_data[2];
-  uint32_t w_beats_strb[2];
+  sim_ddr_axi3::Data256_t w_beats_data[MAX_AXI3_WRITE_BEATS];
+  uint32_t w_beats_strb[MAX_AXI3_WRITE_BEATS];
   bool w_aw_done;
   bool w_w_done;
 

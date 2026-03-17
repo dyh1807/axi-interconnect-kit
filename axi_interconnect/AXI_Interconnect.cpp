@@ -68,6 +68,7 @@ void AXI_Interconnect::init() {
     read_ports[i].resp.valid = false;
     read_ports[i].resp.data.clear();
     read_ports[i].resp.id = 0;
+    read_req_accepted[i] = false;
   }
   for (int i = 0; i < NUM_WRITE_MASTERS; i++) {
     write_ports[i].req.ready = false;
@@ -78,6 +79,7 @@ void AXI_Interconnect::init() {
     w_resp_valid[i] = false;
     w_resp_id[i] = 0;
     w_resp_resp[i] = 0;
+    write_req_accepted[i] = false;
   }
 
   axi_io.ar.arvalid = false;
@@ -290,20 +292,19 @@ void AXI_Interconnect::comb_read_arbiter() {
   // No latched AR, can accept new request
   axi_io.ar.arvalid = false;
 
-  if (llc_enabled() && llc.io.ext_out.mem.read_req_valid &&
-      can_issue_llc_read_req()) {
-    ar_from_llc_c = true;
-    ar_llc_mem_id_c = llc.io.ext_out.mem.read_req_id;
-    axi_io.ar.arvalid = true;
-    axi_io.ar.araddr = llc.io.ext_out.mem.read_req_addr;
-    axi_io.ar.arlen = calc_burst_len(llc.io.ext_out.mem.read_req_size);
-    axi_io.ar.arsize = 2;
-    axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-    axi_io.ar.arid = alloc_read_axi_id();
-    return;
-  }
-
   if (llc_enabled()) {
+    if (llc.io.ext_out.mem.read_req_valid && can_issue_llc_read_req()) {
+      ar_from_llc_c = true;
+      ar_llc_mem_id_c = llc.io.ext_out.mem.read_req_id;
+      axi_io.ar.arvalid = true;
+      axi_io.ar.araddr = llc.io.ext_out.mem.read_req_addr;
+      axi_io.ar.arlen = calc_burst_len(llc.io.ext_out.mem.read_req_size);
+      axi_io.ar.arsize = 2;
+      axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
+      axi_io.ar.arid = alloc_read_axi_id();
+      return;
+    }
+
     if (!llc_upstream_req.valid && read_ports[kLlcUpstreamMaster].req.valid) {
       if (req_ready_curr[kLlcUpstreamMaster]) {
         read_ports[kLlcUpstreamMaster].req.ready = true;
@@ -334,9 +335,6 @@ void AXI_Interconnect::comb_read_arbiter() {
       continue;
     }
     if (!req_ready_curr[i] || !read_ports[i].req.valid) {
-      continue;
-    }
-    if (!can_accept_read_master(static_cast<uint8_t>(i))) {
       continue;
     }
 
@@ -487,7 +485,9 @@ void AXI_Interconnect::comb_write_request() {
   if (w_active && w_current.aw_done && !w_current.w_done) {
     axi_io.w.wvalid = true;
     axi_io.w.wdata = w_current.wdata[w_current.beats_sent];
-    axi_io.w.wstrb = (w_current.wstrb >> (w_current.beats_sent * 4)) & 0xF;
+    axi_io.w.wstrb = static_cast<uint8_t>(
+        w_current.wstrb.slice_u32(static_cast<uint32_t>(w_current.beats_sent) * 4) &
+        0xFu);
     axi_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
   }
 }
@@ -511,6 +511,12 @@ void AXI_Interconnect::comb_write_response() {
 void AXI_Interconnect::seq() {
   constexpr uint32_t kPendingTimeout = 100000;
   const bool llc_upstream_req_valid_prev = llc_upstream_req.valid;
+  for (int i = 0; i < NUM_READ_MASTERS; i++) {
+    read_req_accepted[i] = false;
+  }
+  for (int i = 0; i < NUM_WRITE_MASTERS; i++) {
+    write_req_accepted[i] = false;
+  }
 
   // ========== AR Channel with Latch ==========
 
@@ -585,6 +591,9 @@ void AXI_Interconnect::seq() {
     txn.data.clear();
     r_pending.push_back(txn);
     r_arb_rr_idx = (txn.master_id + 1) % NUM_READ_MASTERS;
+    if (txn.master_id < NUM_READ_MASTERS) {
+      read_req_accepted[txn.master_id] = true;
+    }
 
     // req_ready_r is recomputed in comb_read_arbiter.
   }
@@ -693,6 +702,7 @@ read_handshake_done:
       w_current.aw_done = false;
       w_current.w_done = false;
       w_current_master = idx;
+      write_req_accepted[idx] = true;
 
       // Immediately latch AW (will stay valid until awready)
       aw_latched.valid = true;

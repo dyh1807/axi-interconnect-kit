@@ -72,9 +72,9 @@ struct AXI_LLC_ReadRespOut_t {
 struct AXI_LLC_WriteReqIn_t {
   wire1_t valid = false;
   wire32_t addr = 0;
-  WideData256_t wdata{};
-  wire32_t wstrb = 0;
-  wire5_t total_size = 0;
+  WideWriteData_t wdata{};
+  WideWriteStrb_t wstrb{};
+  wire8_t total_size = 0;
   wire4_t id = 0;
   wire1_t bypass = false;
 };
@@ -128,9 +128,9 @@ struct AXI_LLC_MemOut_t {
   wire1_t read_resp_ready = false;
   wire1_t write_req_valid = false;
   wire32_t write_req_addr = 0;
-  WideData256_t write_req_data{};
-  wire32_t write_req_strobe = 0;
-  wire5_t write_req_size = 0;
+  WideWriteData_t write_req_data{};
+  WideWriteStrb_t write_req_strobe{};
+  wire8_t write_req_size = 0;
   wire4_t write_req_id = 0;
   wire1_t write_resp_ready = false;
 };

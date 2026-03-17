@@ -67,6 +67,7 @@ void AXI_Interconnect_AXI3::init() {
     read_ports[i].resp.valid = false;
     read_ports[i].resp.data.clear();
     read_ports[i].resp.id = 0;
+    read_req_accepted[i] = false;
   }
 
   for (int i = 0; i < NUM_WRITE_MASTERS; i++) {
@@ -78,6 +79,7 @@ void AXI_Interconnect_AXI3::init() {
     w_resp_valid[i] = false;
     w_resp_id[i] = 0;
     w_resp_resp[i] = 0;
+    write_req_accepted[i] = false;
   }
 
   // Downstream defaults
@@ -125,10 +127,10 @@ void AXI_Interconnect_AXI3::init() {
   w_axi_id = 0;
   w_total_beats = 0;
   w_beats_sent = 0;
-  w_beats_data[0].clear();
-  w_beats_data[1].clear();
-  w_beats_strb[0] = 0;
-  w_beats_strb[1] = 0;
+  for (uint8_t i = 0; i < MAX_AXI3_WRITE_BEATS; ++i) {
+    w_beats_data[i].clear();
+    w_beats_strb[i] = 0;
+  }
   w_aw_done = false;
   w_w_done = false;
 }
@@ -367,6 +369,13 @@ void AXI_Interconnect_AXI3::comb_write_response() {
 }
 
 void AXI_Interconnect_AXI3::seq() {
+  for (int i = 0; i < NUM_READ_MASTERS; i++) {
+    read_req_accepted[i] = false;
+  }
+  for (int i = 0; i < NUM_WRITE_MASTERS; i++) {
+    write_req_accepted[i] = false;
+  }
+
   // Capture previous-cycle visibility for robust upstream handshakes.
   // (Prevents clearing a response in the same cycle it is produced.)
   bool r_resp_valid_curr = r_resp_valid;
@@ -431,6 +440,9 @@ void AXI_Interconnect_AXI3::seq() {
     uint8_t master = 0, orig = 0, off = 0, ts = 0;
     decode_axi_id(id, master, orig, off, ts);
     r_arb_rr_idx = (master + 1) % NUM_READ_MASTERS;
+    if (master < NUM_READ_MASTERS) {
+      read_req_accepted[master] = true;
+    }
   }
 
   // ========== R channel ==========
@@ -504,7 +516,7 @@ void AXI_Interconnect_AXI3::seq() {
       } else {
         beats = calc_total_beats(offset, total_size);
       }
-      if (beats == 0 || beats > 2) {
+      if (beats == 0 || beats > MAX_AXI3_WRITE_BEATS) {
         if (DEBUG) {
           printf("[axi3] invalid write beats=%u addr=0x%08x size=%u\n", beats,
                  req_addr, total_size);
@@ -515,20 +527,20 @@ void AXI_Interconnect_AXI3::seq() {
       uint32_t aligned_addr = req_addr & ~0x1Fu;
       uint32_t axi_id = make_axi_id(idx, req.id, offset, total_size);
 
-      uint8_t in_bytes[32] = {0};
-      for (int w = 0; w < CACHELINE_WORDS; w++) {
+      uint8_t in_bytes[MAX_WRITE_TRANSACTION_BYTES] = {0};
+      for (int w = 0; w < MAX_WRITE_TRANSACTION_WORDS; w++) {
         store_le32(in_bytes + (w * 4), req.wdata[w]);
       }
 
-      uint8_t beat_bytes[2][32] = {{0}};
-      uint32_t beat_strb[2] = {0, 0};
-      for (uint32_t i = 0; i < bytes && i < 32; i++) {
-        if (((req.wstrb >> i) & 1u) == 0) {
+      uint8_t beat_bytes[MAX_AXI3_WRITE_BEATS][sim_ddr_axi3::AXI_DATA_BYTES] = {};
+      uint32_t beat_strb[MAX_AXI3_WRITE_BEATS] = {};
+      for (uint32_t i = 0; i < bytes && i < MAX_WRITE_TRANSACTION_BYTES; i++) {
+        if (!req.wstrb.test(i)) {
           continue;
         }
-        uint32_t dst = static_cast<uint32_t>(offset) + i;
-        uint32_t beat = dst / 32;
-        uint32_t pos = dst % 32;
+        const uint32_t dst = static_cast<uint32_t>(offset) + i;
+        const uint32_t beat = dst / sim_ddr_axi3::AXI_DATA_BYTES;
+        const uint32_t pos = dst % sim_ddr_axi3::AXI_DATA_BYTES;
         if (beat >= beats) {
           continue;
         }
@@ -552,6 +564,7 @@ void AXI_Interconnect_AXI3::seq() {
       w_w_done = false;
       w_current_master = idx;
       w_arb_rr_idx = (idx + 1) % NUM_WRITE_MASTERS;
+      write_req_accepted[idx] = true;
 
       aw_latched.valid = true;
       aw_latched.addr = aligned_addr;
