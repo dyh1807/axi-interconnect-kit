@@ -459,6 +459,9 @@ void AXI_LLC::drive_write_path() {
     io.ext_out.mem.write_req_size = req.total_size;
     io.ext_out.mem.write_req_id = req.id;
     if (req.valid && io.ext_in.mem.write_req_ready) {
+      if (!req.bypass) {
+        io.table_out.invalidate_all = true;
+      }
       io.reg_write.write_active_r = true;
       io.reg_write.write_active_master_r = static_cast<uint8_t>(write_master);
       io.reg_write.write_active_id_r = req.id;

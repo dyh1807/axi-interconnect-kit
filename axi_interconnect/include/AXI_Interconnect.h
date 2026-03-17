@@ -175,9 +175,11 @@ private:
   AXI_LLCConfig llc_config{};
   AXI_LLC llc{};
   bool llc_invalidate_req_ = false;
-  LlcUpstreamReqLatch llc_upstream_req{};
-  LlcUpstreamReqLatch llc_upstream_capture_c{};
-  bool llc_upstream_accept_c = false;
+  LlcUpstreamReqLatch llc_upstream_req[NUM_READ_MASTERS] = {};
+  LlcUpstreamReqLatch llc_upstream_capture_c[NUM_READ_MASTERS] = {};
+  bool llc_upstream_accept_c[NUM_READ_MASTERS] = {};
+  bool llc_mem_write_resp_valid_ = false;
+  uint8_t llc_mem_write_resp_ = 0;
   bool ar_from_llc_c = false;
   uint8_t ar_llc_mem_id_c = 0;
 };
