@@ -913,6 +913,64 @@ bool test_same_line_inflight_not_ready() {
   return true;
 }
 
+bool test_line_invalidate_maintenance() {
+  printf("=== LLC Test 12: line invalidate maintenance ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t addr = 0x240;
+  const uint32_t tag = AXI_LLC::tag_of(config, addr);
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.invalidate_line_valid = true;
+  llc.io.ext_in.mem.invalidate_line_addr = addr;
+  llc.comb();
+  if (!llc.io.ext_out.mem.invalidate_line_accepted) {
+    printf("FAIL: invalidate maintenance not accepted\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: invalidate lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data = make_data_set(config, 1, 0x4000);
+  llc.io.lookup_in.meta = make_meta_set(config, 1, tag);
+  llc.io.lookup_in.repl = make_repl(0);
+  llc.comb();
+  if (!llc.io.table_out.meta.enable || !llc.io.table_out.meta.write ||
+      llc.io.table_out.meta.way != 1) {
+    printf("FAIL: invalidate meta write missing enable=%d write=%d way=%u\n",
+           static_cast<int>(llc.io.table_out.meta.enable),
+           static_cast<int>(llc.io.table_out.meta.write), llc.io.table_out.meta.way);
+    return false;
+  }
+  const auto meta = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
+  if (meta.flags != 0) {
+    printf("FAIL: invalidate meta flags not cleared flags=0x%x\n", meta.flags);
+    return false;
+  }
+  if (llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].valid) {
+    printf("FAIL: invalidate maintenance incorrectly produced read response\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 } // namespace
 
 int main() {
@@ -970,6 +1028,11 @@ int main() {
     failed++;
 
   if (test_same_line_inflight_not_ready())
+    passed++;
+  else
+    failed++;
+
+  if (test_line_invalidate_maintenance())
     passed++;
   else
     failed++;

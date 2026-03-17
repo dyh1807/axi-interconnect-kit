@@ -99,7 +99,14 @@ public:
   void set_llc_lookup_in(const AXI_LLC_LookupIn_t &lookup_in) {
     llc.io.lookup_in = lookup_in;
   }
-  void set_llc_invalidate(bool invalidate) { llc_invalidate_req_ = invalidate; }
+  void set_llc_invalidate_all(bool invalidate) { llc_invalidate_all_req_ = invalidate; }
+  void set_llc_invalidate_line(bool valid, uint32_t addr) {
+    llc_invalidate_line_valid_ = valid;
+    llc_invalidate_line_addr_ = addr;
+  }
+  bool llc_invalidate_line_accepted() const {
+    return llc.io.ext_out.mem.invalidate_line_accepted;
+  }
   const AXI_LLC_TableOut_t &get_llc_table_out() const { return llc.io.table_out; }
   const AXI_LLCPerfCounters_t &get_llc_perf_counters() const {
     return llc.perf_counters();
@@ -174,7 +181,9 @@ private:
 
   AXI_LLCConfig llc_config{};
   AXI_LLC llc{};
-  bool llc_invalidate_req_ = false;
+  bool llc_invalidate_all_req_ = false;
+  bool llc_invalidate_line_valid_ = false;
+  uint32_t llc_invalidate_line_addr_ = 0;
   LlcUpstreamReqLatch llc_upstream_req[NUM_READ_MASTERS] = {};
   LlcUpstreamReqLatch llc_upstream_capture_c[NUM_READ_MASTERS] = {};
   bool llc_upstream_accept_c[NUM_READ_MASTERS] = {};

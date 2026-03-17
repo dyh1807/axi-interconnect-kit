@@ -166,7 +166,9 @@ void AXI_Interconnect::prepare_llc_inputs() {
     return;
   }
 
-  llc.io.ext_in.mem.invalidate_all = llc_invalidate_req_;
+  llc.io.ext_in.mem.invalidate_all = llc_invalidate_all_req_;
+  llc.io.ext_in.mem.invalidate_line_valid = llc_invalidate_line_valid_;
+  llc.io.ext_in.mem.invalidate_line_addr = llc_invalidate_line_addr_;
   bool any_upstream_capture_pending = false;
   bool any_upstream_req_visible = false;
   for (int master = 0; master < NUM_READ_MASTERS; ++master) {
@@ -244,7 +246,7 @@ void AXI_Interconnect::comb_outputs() {
 
   // If AR is latched (waiting for arready), also keep req.ready true
   if (ar_latched.valid) {
-    if (ar_latched.master_id < NUM_READ_MASTERS) {
+    if (!ar_latched.to_llc && ar_latched.master_id < NUM_READ_MASTERS) {
       read_ports[ar_latched.master_id].req.ready = true;
     }
   }
@@ -332,7 +334,7 @@ void AXI_Interconnect::comb_read_arbiter() {
     axi_io.ar.arid = ar_latched.id;
     // Keep req.ready=true for the master whose request is latched so the
     // upstream handshake remains visible until the downstream AR handshake wins.
-    if (ar_latched.master_id < NUM_READ_MASTERS) {
+    if (!ar_latched.to_llc && ar_latched.master_id < NUM_READ_MASTERS) {
       read_ports[ar_latched.master_id].req.ready = true;
       req_ready_r[ar_latched.master_id] = true;
     }

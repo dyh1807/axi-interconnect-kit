@@ -109,6 +109,8 @@ struct AXI_LLC_UpstreamOut_t {
 
 struct AXI_LLC_MemIn_t {
   wire1_t invalidate_all = false;
+  wire1_t invalidate_line_valid = false;
+  wire32_t invalidate_line_addr = 0;
   wire1_t prefetch_allow = true;
   wire1_t read_req_ready = false;
   wire1_t read_resp_valid = false;
@@ -121,6 +123,7 @@ struct AXI_LLC_MemIn_t {
 };
 
 struct AXI_LLC_MemOut_t {
+  wire1_t invalidate_line_accepted = false;
   wire1_t read_req_valid = false;
   wire32_t read_req_addr = 0;
   wire8_t read_req_size = 0;
@@ -214,6 +217,7 @@ struct AXI_LLC_Regs_t {
   uint8_t lookup_master_r = 0;
   uint8_t lookup_id_r = 0;
   bool lookup_is_prefetch_r = false;
+  bool lookup_is_invalidate_r = false;
   bool prefetch_stream_valid_r = false;
   uint32_t prefetch_last_miss_line_r = 0;
   uint8_t prefetch_quiet_cycles_r = 0;
@@ -299,6 +303,7 @@ private:
   bool try_complete_lookup();
   void drive_mem_read_path();
   void accept_new_requests();
+  void accept_maintenance_request();
   void comb_disabled();
 
   AXI_LLCConfig config_{};

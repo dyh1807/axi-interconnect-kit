@@ -411,6 +411,7 @@ void AXI_LLC::try_launch_prefetch_lookup() {
   io.reg_write.lookup_master_r = kInvalidReadMaster;
   io.reg_write.lookup_id_r = static_cast<uint8_t>(slot);
   io.reg_write.lookup_is_prefetch_r = true;
+  io.reg_write.lookup_is_invalidate_r = false;
   io.reg_write.state = AXI_LLCState::kLookup;
 }
 
@@ -472,6 +473,26 @@ void AXI_LLC::drive_write_path() {
   }
 }
 
+void AXI_LLC::accept_maintenance_request() {
+  io.ext_out.mem.invalidate_line_accepted = false;
+  if (!io.ext_in.mem.invalidate_line_valid || io.ext_in.mem.invalidate_all) {
+    return;
+  }
+  if (io.reg_write.lookup_valid_r) {
+    return;
+  }
+  io.reg_write.lookup_valid_r = true;
+  io.reg_write.lookup_issued_r = false;
+  io.reg_write.lookup_addr_r = io.ext_in.mem.invalidate_line_addr;
+  io.reg_write.lookup_size_r = 0;
+  io.reg_write.lookup_master_r = 0;
+  io.reg_write.lookup_id_r = 0;
+  io.reg_write.lookup_is_prefetch_r = false;
+  io.reg_write.lookup_is_invalidate_r = true;
+  io.reg_write.state = AXI_LLCState::kLookup;
+  io.ext_out.mem.invalidate_line_accepted = true;
+}
+
 void AXI_LLC::drive_lookup_request() {
   if (!io.regs.lookup_valid_r || io.regs.lookup_issued_r) {
     return;
@@ -504,6 +525,7 @@ bool AXI_LLC::try_complete_lookup() {
   }
 
   const bool is_prefetch_lookup = io.regs.lookup_is_prefetch_r;
+  const bool is_invalidate_lookup = io.regs.lookup_is_invalidate_r;
   const uint8_t lookup_slot_id = io.regs.lookup_id_r;
   const uint32_t set = set_index(config_, io.regs.lookup_addr_r);
   const uint32_t tag = tag_of(config_, io.regs.lookup_addr_r);
@@ -515,6 +537,22 @@ bool AXI_LLC::try_complete_lookup() {
                             &hit_meta);
 
   if (hit_way >= 0) {
+    if (is_invalidate_lookup) {
+      AXI_LLCMetaEntry_t meta = hit_meta;
+      meta.flags = 0;
+      io.table_out.meta.enable = true;
+      io.table_out.meta.write = true;
+      io.table_out.meta.index = set;
+      io.table_out.meta.way = static_cast<uint32_t>(hit_way);
+      encode_meta(meta, io.table_out.meta.payload);
+      io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
+      io.reg_write.lookup_valid_r = false;
+      io.reg_write.lookup_issued_r = false;
+      io.reg_write.lookup_is_prefetch_r = false;
+      io.reg_write.lookup_is_invalidate_r = false;
+      io.reg_write.state = AXI_LLCState::kIdle;
+      return true;
+    }
     if (is_prefetch_lookup) {
       if (lookup_slot_id < AXI_LLC_MAX_PREFETCH_QUEUE) {
         io.reg_write.prefetch_q[lookup_slot_id] = {};
@@ -522,6 +560,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.lookup_valid_r = false;
       io.reg_write.lookup_issued_r = false;
       io.reg_write.lookup_is_prefetch_r = false;
+      io.reg_write.lookup_is_invalidate_r = false;
       io.reg_write.state = AXI_LLCState::kIdle;
       io.reg_write.perf.prefetch_drop_table_hit++;
       return true;
@@ -558,8 +597,18 @@ bool AXI_LLC::try_complete_lookup() {
     io.reg_write.lookup_valid_r = false;
     io.reg_write.lookup_issued_r = false;
     io.reg_write.lookup_is_prefetch_r = false;
+    io.reg_write.lookup_is_invalidate_r = false;
     io.reg_write.state = AXI_LLCState::kIdle;
     io.reg_write.perf.read_hit++;
+    return true;
+  }
+
+  if (is_invalidate_lookup) {
+    io.reg_write.lookup_valid_r = false;
+    io.reg_write.lookup_issued_r = false;
+    io.reg_write.lookup_is_prefetch_r = false;
+    io.reg_write.lookup_is_invalidate_r = false;
+    io.reg_write.state = AXI_LLCState::kIdle;
     return true;
   }
 
@@ -572,6 +621,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.lookup_valid_r = false;
       io.reg_write.lookup_issued_r = false;
       io.reg_write.lookup_is_prefetch_r = false;
+      io.reg_write.lookup_is_invalidate_r = false;
       io.reg_write.state = AXI_LLCState::kMiss;
       io.reg_write.perf.prefetch_drop_inflight++;
       return true;
@@ -591,6 +641,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.lookup_valid_r = false;
       io.reg_write.lookup_issued_r = false;
       io.reg_write.lookup_is_prefetch_r = false;
+      io.reg_write.lookup_is_invalidate_r = false;
       io.reg_write.state = AXI_LLCState::kMiss;
       io.reg_write.perf.prefetch_drop_mshr_full++;
       return true;
@@ -620,6 +671,7 @@ bool AXI_LLC::try_complete_lookup() {
   io.reg_write.lookup_valid_r = false;
   io.reg_write.lookup_issued_r = false;
   io.reg_write.lookup_is_prefetch_r = false;
+  io.reg_write.lookup_is_invalidate_r = false;
   io.reg_write.state = AXI_LLCState::kMiss;
   if (is_prefetch_lookup) {
     if (lookup_slot_id < AXI_LLC_MAX_PREFETCH_QUEUE) {
@@ -784,6 +836,7 @@ void AXI_LLC::accept_new_requests() {
   io.reg_write.lookup_master_r = static_cast<uint8_t>(master);
   io.reg_write.lookup_id_r = req.id;
   io.reg_write.lookup_is_prefetch_r = false;
+  io.reg_write.lookup_is_invalidate_r = false;
   io.reg_write.state = AXI_LLCState::kLookup;
 }
 
@@ -857,6 +910,7 @@ void AXI_LLC::comb() {
   (void)try_complete_lookup();
   drive_mem_read_path();
   accept_new_requests();
+  accept_maintenance_request();
   try_launch_prefetch_lookup();
   drive_lookup_request();
 }
