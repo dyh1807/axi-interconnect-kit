@@ -154,6 +154,7 @@ inline WideWriteData_t &WideWriteData_t::operator=(const WideData256_t &other) {
 struct ReadMasterReq_t {
   wire1_t valid;
   wire1_t ready;      // ← Output from interleaver
+  wire1_t accepted;   // ← One-cycle pulse when request is truly accepted
   wire32_t addr;      // Byte address
   wire8_t total_size; // 0=1B ... 255=256B
   wire4_t id;         // Transaction ID (for out-of-order)

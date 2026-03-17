@@ -64,6 +64,7 @@ void AXI_Interconnect_AXI3::init() {
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     req_ready_r[i] = false;
     read_ports[i].req.ready = false;
+    read_ports[i].req.accepted = false;
     read_ports[i].resp.valid = false;
     read_ports[i].resp.data.clear();
     read_ports[i].resp.id = 0;
@@ -141,6 +142,7 @@ void AXI_Interconnect_AXI3::comb_outputs() {
 
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     read_ports[i].req.ready = req_ready_r[i];
+    read_ports[i].req.accepted = read_req_accepted[i];
   }
 
   if (ar_latched.valid) {

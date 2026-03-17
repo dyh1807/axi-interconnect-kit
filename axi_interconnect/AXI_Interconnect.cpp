@@ -69,6 +69,7 @@ void AXI_Interconnect::init() {
 
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     read_ports[i].req.ready = false;
+    read_ports[i].req.accepted = false;
     read_ports[i].resp.valid = false;
     read_ports[i].resp.data.clear();
     read_ports[i].resp.id = 0;
@@ -238,6 +239,7 @@ void AXI_Interconnect::comb_outputs() {
   // This ensures ICache sees req.ready in the same cycle as it transitions
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     read_ports[i].req.ready = req_ready_r[i];
+    read_ports[i].req.accepted = read_req_accepted[i];
   }
 
   // If AR is latched (waiting for arready), also keep req.ready true
@@ -746,7 +748,7 @@ void AXI_Interconnect::seq() {
     txn.data.clear();
     r_pending.push_back(txn);
     r_arb_rr_idx = (txn.master_id + 1) % NUM_READ_MASTERS;
-    if (txn.master_id < NUM_READ_MASTERS) {
+    if (!txn.to_llc && txn.master_id < NUM_READ_MASTERS) {
       read_req_accepted[txn.master_id] = true;
     }
 
