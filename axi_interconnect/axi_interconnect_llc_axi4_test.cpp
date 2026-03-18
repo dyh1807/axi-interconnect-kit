@@ -2,10 +2,8 @@
 #include <cstring>
 #include <random>
 #include <unordered_map>
-#include <vector>
 
-#include "AXI_Interconnect.h"
-#include "SimDDR.h"
+#include "axi_test_axi4_llc_env.h"
 
 uint32_t *p_memory = nullptr;
 long long sim_time = 0;
@@ -14,348 +12,12 @@ constexpr uint32_t TEST_MEM_SIZE_WORDS = 0x100000;
 namespace {
 
 using namespace axi_interconnect;
-
-struct ArEvent {
-  uint32_t addr = 0;
-  uint8_t id = 0;
-  uint8_t len = 0;
-};
-
-struct FakeLlcTables {
-  AXI_LLCConfig config{};
-  AXI_LLC_LookupIn_t lookup_in{};
-  std::vector<AXI_LLC_Bytes_t> data_sets{};
-  std::vector<AXI_LLC_Bytes_t> meta_sets{};
-  std::vector<AXI_LLC_Bytes_t> repl_sets{};
-
-  bool pending_data = false;
-  bool pending_meta = false;
-  bool pending_repl = false;
-  uint32_t pending_data_index = 0;
-  uint32_t pending_meta_index = 0;
-  uint32_t pending_repl_index = 0;
-
-  void init(const AXI_LLCConfig &cfg) {
-    config = cfg;
-    const uint32_t sets = config.set_count();
-    data_sets.assign(sets, {});
-    meta_sets.assign(sets, {});
-    repl_sets.assign(sets, {});
-    for (uint32_t set = 0; set < sets; ++set) {
-      data_sets[set].resize(static_cast<size_t>(config.ways) * config.line_bytes);
-      meta_sets[set].resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
-      repl_sets[set].resize(AXI_LLC_REPL_BYTES);
-    }
-    lookup_in = {};
-    pending_data = pending_meta = pending_repl = false;
-    pending_data_index = pending_meta_index = pending_repl_index = 0;
-  }
-
-  void comb_outputs() {
-    lookup_in = {};
-    if (pending_data && pending_data_index < data_sets.size()) {
-      lookup_in.data_valid = true;
-      lookup_in.data = data_sets[pending_data_index];
-    }
-    if (pending_meta && pending_meta_index < meta_sets.size()) {
-      lookup_in.meta_valid = true;
-      lookup_in.meta = meta_sets[pending_meta_index];
-    }
-    if (pending_repl && pending_repl_index < repl_sets.size()) {
-      lookup_in.repl_valid = true;
-      lookup_in.repl = repl_sets[pending_repl_index];
-    }
-  }
-
-  static void write_way_payload(AXI_LLC_Bytes_t &set_payload, uint32_t way,
-                                uint32_t bytes_per_way,
-                                const AXI_LLC_Bytes_t &payload,
-                                const std::vector<uint8_t> &byte_enable) {
-    const size_t base = static_cast<size_t>(way) * bytes_per_way;
-    for (uint32_t i = 0; i < bytes_per_way; ++i) {
-      if (base + i >= set_payload.size() || i >= payload.size()) {
-        break;
-      }
-      if (!byte_enable.empty() && i < byte_enable.size() && byte_enable[i] == 0) {
-        continue;
-      }
-      set_payload.data()[base + i] = payload.data()[i];
-    }
-  }
-
-  static void write_plain_payload(AXI_LLC_Bytes_t &dst,
-                                  const AXI_LLC_Bytes_t &payload,
-                                  const std::vector<uint8_t> &byte_enable) {
-    const size_t limit = std::min(dst.size(), payload.size());
-    for (size_t i = 0; i < limit; ++i) {
-      if (!byte_enable.empty() && i < byte_enable.size() && byte_enable[i] == 0) {
-        continue;
-      }
-      dst.data()[i] = payload.data()[i];
-    }
-  }
-
-  void seq(const AXI_LLC_TableOut_t &table_out) {
-    pending_data = pending_meta = pending_repl = false;
-
-    if (table_out.invalidate_all) {
-      for (auto &data : data_sets) {
-        data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
-      }
-      for (auto &meta : meta_sets) {
-        meta.resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
-      }
-      for (auto &repl : repl_sets) {
-        repl.resize(AXI_LLC_REPL_BYTES);
-      }
-    }
-
-    if (table_out.data.write && table_out.data.index < data_sets.size()) {
-      write_way_payload(data_sets[table_out.data.index], table_out.data.way,
-                        config.line_bytes, table_out.data.payload,
-                        table_out.data.byte_enable);
-    } else if (table_out.data.enable && table_out.data.index < data_sets.size()) {
-      pending_data = true;
-      pending_data_index = table_out.data.index;
-    }
-
-    if (table_out.meta.write && table_out.meta.index < meta_sets.size()) {
-      write_way_payload(meta_sets[table_out.meta.index], table_out.meta.way,
-                        AXI_LLC_META_ENTRY_BYTES, table_out.meta.payload,
-                        table_out.meta.byte_enable);
-    } else if (table_out.meta.enable && table_out.meta.index < meta_sets.size()) {
-      pending_meta = true;
-      pending_meta_index = table_out.meta.index;
-    }
-
-    if (table_out.repl.write && table_out.repl.index < repl_sets.size()) {
-      write_plain_payload(repl_sets[table_out.repl.index], table_out.repl.payload,
-                          table_out.repl.byte_enable);
-    } else if (table_out.repl.enable && table_out.repl.index < repl_sets.size()) {
-      pending_repl = true;
-      pending_repl_index = table_out.repl.index;
-    }
-  }
-};
-
-struct TestEnv {
-  AXI_Interconnect interconnect;
-  sim_ddr::SimDDR ddr;
-  FakeLlcTables tables;
-  std::vector<ArEvent> ar_events{};
-};
-
-void clear_upstream_inputs(AXI_Interconnect &interconnect) {
-  for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-    interconnect.read_ports[i].req.valid = false;
-    interconnect.read_ports[i].req.addr = 0;
-    interconnect.read_ports[i].req.total_size = 0;
-    interconnect.read_ports[i].req.id = 0;
-    interconnect.read_ports[i].req.bypass = false;
-    interconnect.read_ports[i].resp.ready = false;
-  }
-  for (int i = 0; i < NUM_WRITE_MASTERS; ++i) {
-    interconnect.write_ports[i].req.valid = false;
-    interconnect.write_ports[i].req.addr = 0;
-    interconnect.write_ports[i].req.total_size = 0;
-    interconnect.write_ports[i].req.id = 0;
-    interconnect.write_ports[i].req.bypass = false;
-    interconnect.write_ports[i].req.wdata.clear();
-    interconnect.write_ports[i].req.wstrb.clear();
-    interconnect.write_ports[i].resp.ready = false;
-  }
-}
-
-void cycle_outputs(TestEnv &env) {
-  clear_upstream_inputs(env.interconnect);
-  env.tables.comb_outputs();
-  env.interconnect.set_llc_lookup_in(env.tables.lookup_in);
-
-  env.ddr.comb_outputs();
-  env.interconnect.axi_io.ar.arready = env.ddr.io.ar.arready;
-  env.interconnect.axi_io.r.rvalid = env.ddr.io.r.rvalid;
-  env.interconnect.axi_io.r.rid = env.ddr.io.r.rid;
-  env.interconnect.axi_io.r.rdata = env.ddr.io.r.rdata;
-  env.interconnect.axi_io.r.rlast = env.ddr.io.r.rlast;
-  env.interconnect.axi_io.r.rresp = env.ddr.io.r.rresp;
-  env.interconnect.axi_io.aw.awready = env.ddr.io.aw.awready;
-  env.interconnect.axi_io.w.wready = env.ddr.io.w.wready;
-  env.interconnect.axi_io.b.bvalid = env.ddr.io.b.bvalid;
-  env.interconnect.axi_io.b.bid = env.ddr.io.b.bid;
-  env.interconnect.axi_io.b.bresp = env.ddr.io.b.bresp;
-
-  env.interconnect.comb_outputs();
-}
-
-void cycle_inputs(TestEnv &env) {
-  env.interconnect.comb_inputs();
-
-  if (env.interconnect.axi_io.ar.arvalid && env.interconnect.axi_io.ar.arready) {
-    env.ar_events.push_back({env.interconnect.axi_io.ar.araddr,
-                             static_cast<uint8_t>(env.interconnect.axi_io.ar.arid),
-                             static_cast<uint8_t>(env.interconnect.axi_io.ar.arlen)});
-  }
-
-  env.ddr.io.ar.arvalid = env.interconnect.axi_io.ar.arvalid;
-  env.ddr.io.ar.araddr = env.interconnect.axi_io.ar.araddr;
-  env.ddr.io.ar.arid = env.interconnect.axi_io.ar.arid;
-  env.ddr.io.ar.arlen = env.interconnect.axi_io.ar.arlen;
-  env.ddr.io.ar.arsize = env.interconnect.axi_io.ar.arsize;
-  env.ddr.io.ar.arburst = env.interconnect.axi_io.ar.arburst;
-
-  env.ddr.io.aw.awvalid = env.interconnect.axi_io.aw.awvalid;
-  env.ddr.io.aw.awaddr = env.interconnect.axi_io.aw.awaddr;
-  env.ddr.io.aw.awid = env.interconnect.axi_io.aw.awid;
-  env.ddr.io.aw.awlen = env.interconnect.axi_io.aw.awlen;
-  env.ddr.io.aw.awsize = env.interconnect.axi_io.aw.awsize;
-  env.ddr.io.aw.awburst = env.interconnect.axi_io.aw.awburst;
-
-  env.ddr.io.w.wvalid = env.interconnect.axi_io.w.wvalid;
-  env.ddr.io.w.wdata = env.interconnect.axi_io.w.wdata;
-  env.ddr.io.w.wstrb = env.interconnect.axi_io.w.wstrb;
-  env.ddr.io.w.wlast = env.interconnect.axi_io.w.wlast;
-
-  env.ddr.io.r.rready = env.interconnect.axi_io.r.rready;
-  env.ddr.io.b.bready = env.interconnect.axi_io.b.bready;
-
-  env.ddr.comb_inputs();
-  env.tables.seq(env.interconnect.get_llc_table_out());
-  env.ddr.seq();
-  env.interconnect.seq();
-  ++sim_time;
-}
-
-AXI_LLCConfig make_config() {
-  AXI_LLCConfig cfg;
-  cfg.enable = true;
-  cfg.size_bytes = 512;
-  cfg.line_bytes = 64;
-  cfg.ways = 2;
-  cfg.mshr_num = 2;
-  cfg.prefetch_enable = false;
-  return cfg;
-}
-
-void init_env(TestEnv &env) {
-  AXI_LLCConfig cfg = make_config();
-  env.interconnect.set_llc_config(cfg);
-  env.interconnect.init();
-  env.ddr.init();
-  env.tables.init(cfg);
-  env.ar_events.clear();
-}
-
-void init_env(TestEnv &env, const AXI_LLCConfig &cfg) {
-  env.interconnect.set_llc_config(cfg);
-  env.interconnect.init();
-  env.ddr.init();
-  env.tables.init(cfg);
-  env.ar_events.clear();
-}
-
-uint32_t read_mem_word(uint32_t addr) { return p_memory[addr >> 2]; }
-
-void write_memory_line(uint32_t line_addr, uint32_t base_word) {
-  for (uint32_t i = 0; i < 16; ++i) {
-    p_memory[(line_addr >> 2) + i] = base_word + i;
-  }
-}
-
-bool issue_read(TestEnv &env, uint8_t master, uint32_t addr, uint8_t total_size,
-                uint8_t id, bool bypass) {
-  int timeout = 200;
-  while (timeout-- > 0) {
-    cycle_outputs(env);
-    const bool ready_snapshot = env.interconnect.read_ports[master].req.ready;
-
-    auto &rp = env.interconnect.read_ports[master];
-    rp.req.valid = true;
-    rp.req.addr = addr;
-    rp.req.total_size = total_size;
-    rp.req.id = id;
-    rp.req.bypass = bypass;
-
-    cycle_inputs(env);
-    if (ready_snapshot) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool issue_write(TestEnv &env, uint8_t master, uint32_t addr,
-                 const WideWriteData_t &wdata, const WideWriteStrb_t &wstrb,
-                 uint8_t total_size, uint8_t id, bool bypass) {
-  int timeout = 200;
-  while (timeout-- > 0) {
-    cycle_outputs(env);
-    const bool ready_snapshot = env.interconnect.write_ports[master].req.ready;
-
-    auto &wp = env.interconnect.write_ports[master];
-    wp.req.valid = true;
-    wp.req.addr = addr;
-    wp.req.wdata = wdata;
-    wp.req.wstrb = wstrb;
-    wp.req.total_size = total_size;
-    wp.req.id = id;
-    wp.req.bypass = bypass;
-
-    cycle_inputs(env);
-    if (ready_snapshot) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool wait_read_resp(TestEnv &env, uint8_t master, uint8_t id, uint32_t exp_word0,
-                    uint32_t exp_word1) {
-  int timeout = sim_ddr::SIM_DDR_LATENCY * 80;
-  while (timeout-- > 0) {
-    cycle_outputs(env);
-    auto &resp = env.interconnect.read_ports[master].resp;
-    if (resp.valid) {
-      if (resp.id != id || resp.data[0] != exp_word0 || resp.data[1] != exp_word1) {
-        std::printf("FAIL: read resp mismatch id=%u d0=0x%x d1=0x%x\n", resp.id,
-                    resp.data[0], resp.data[1]);
-        return false;
-      }
-      resp.ready = true;
-      cycle_inputs(env);
-      return true;
-    }
-    cycle_inputs(env);
-  }
-  std::printf("FAIL: read resp timeout master=%u id=%u\n", master, id);
-  return false;
-}
-
-bool wait_write_resp(TestEnv &env, uint8_t master, uint8_t id) {
-  int timeout = sim_ddr::SIM_DDR_LATENCY * 80;
-  while (timeout-- > 0) {
-    cycle_outputs(env);
-    auto &resp = env.interconnect.write_ports[master].resp;
-    if (resp.valid) {
-      if (resp.id != id || resp.resp != sim_ddr::AXI_RESP_OKAY) {
-        std::printf("FAIL: write resp mismatch id=%u resp=%u\n", resp.id,
-                    resp.resp);
-        return false;
-      }
-      resp.ready = true;
-      cycle_inputs(env);
-      return true;
-    }
-    cycle_inputs(env);
-  }
-  std::printf("FAIL: write resp timeout master=%u id=%u\n", master, id);
-  env.interconnect.debug_print();
-  return false;
-}
+using namespace axi_test;
 
 bool test_cross_master_write_then_read_latest() {
   std::printf("=== AXI4 LLC Integration Test 1: cross-master latest value ===\n");
 
-  TestEnv env;
+  Axi4LlcTestEnv env;
   init_env(env);
 
   const uint32_t line_addr = 0x1800;
@@ -406,7 +68,7 @@ bool test_cross_master_write_then_read_latest() {
 bool test_bypass_read_does_not_allocate_line() {
   std::printf("=== AXI4 LLC Integration Test 2: bypass read does not allocate ===\n");
 
-  TestEnv env;
+  Axi4LlcTestEnv env;
   init_env(env);
 
   const uint32_t line_addr = 0x1c00;
@@ -470,7 +132,7 @@ bool test_bypass_read_does_not_allocate_line() {
 bool test_cacheable_and_bypass_parallel_disjoint() {
   std::printf("=== AXI4 LLC Integration Test 3: cacheable+bypass coexist ===\n");
 
-  TestEnv env;
+  Axi4LlcTestEnv env;
   init_env(env);
 
   const uint32_t bypass_line = 0x2400;
@@ -588,8 +250,8 @@ bool test_cacheable_and_bypass_parallel_disjoint() {
 bool test_same_set_eviction_roundtrip_latest() {
   std::printf("=== AXI4 LLC Integration Test 4: same-set eviction preserves latest ===\n");
 
-  TestEnv env;
-  AXI_LLCConfig cfg = make_config();
+  Axi4LlcTestEnv env;
+  AXI_LLCConfig cfg = make_small_llc_config();
   cfg.size_bytes = 256;
   cfg.line_bytes = 64;
   cfg.ways = 2;
@@ -677,7 +339,7 @@ bool test_same_set_eviction_roundtrip_latest() {
 bool test_bypass_read_sees_latest_after_cacheable_write() {
   std::printf("=== AXI4 LLC Integration Test 5: bypass read sees latest after cacheable write ===\n");
 
-  TestEnv env;
+  Axi4LlcTestEnv env;
   init_env(env);
 
   const uint32_t line = 0x40;
@@ -714,7 +376,7 @@ bool test_bypass_read_sees_latest_after_cacheable_write() {
 bool test_bypass_write_hit_updates_resident_line() {
   std::printf("=== AXI4 LLC Integration Test 6: bypass write hit updates resident line ===\n");
 
-  TestEnv env;
+  Axi4LlcTestEnv env;
   init_env(env);
 
   const uint32_t line = 0x400;
@@ -764,10 +426,89 @@ bool test_bypass_write_hit_updates_resident_line() {
   return true;
 }
 
+bool test_bypass_write_hit_preserves_dirty_on_eviction() {
+  std::printf("=== AXI4 LLC Integration Test 6b: bypass write hit preserves dirty on eviction ===\n");
+
+  Axi4LlcTestEnv env;
+  AXI_LLCConfig cfg = make_small_llc_config();
+  cfg.size_bytes = 256;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  init_env(env, cfg);
+
+  const uint32_t line_a = 0x000;
+  const uint32_t line_b = 0x080;
+  const uint32_t line_c = 0x100;
+  const uint32_t addr_a = line_a + 0x10;
+  const uint32_t write_value = 0x8B04D00D;
+  write_memory_line(line_a, 0x7100);
+  write_memory_line(line_b, 0x7200);
+  write_memory_line(line_c, 0x7300);
+
+  const WideWriteStrb_t full_strobe = make_full_write_strobe();
+  if (!issue_write(env, MASTER_DCACHE_W, line_a, make_line_write_data(0xA100), full_strobe,
+                   63, 0x36, false) ||
+      !wait_write_resp(env, MASTER_DCACHE_W, 0x36)) {
+    std::printf("FAIL: cacheable write for line A failed\n");
+    return false;
+  }
+
+  WideWriteData_t subline_wdata;
+  subline_wdata.clear();
+  subline_wdata[0] = write_value;
+  WideWriteStrb_t subline_wstrb;
+  subline_wstrb.clear();
+  for (uint32_t i = 0; i < 4; ++i) {
+    subline_wstrb.set(i, true);
+  }
+  if (!issue_write(env, MASTER_UNCORE_LSU_W, addr_a, subline_wdata, subline_wstrb, 3,
+                   0x37, true) ||
+      !wait_write_resp(env, MASTER_UNCORE_LSU_W, 0x37)) {
+    std::printf("FAIL: bypass write-hit on dirty line A failed\n");
+    return false;
+  }
+
+  if (!issue_write(env, MASTER_DCACHE_W, line_b, make_line_write_data(0xB200), full_strobe,
+                   63, 0x38, false) ||
+      !wait_write_resp(env, MASTER_DCACHE_W, 0x38)) {
+    std::printf("FAIL: cacheable write for line B failed\n");
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_ICACHE, line_c + 8, 15, 0x39, false) ||
+      !wait_read_resp(env, MASTER_ICACHE, 0x39, 0x7302, 0x7303)) {
+    std::printf("FAIL: eviction-triggering read for line C failed\n");
+    return false;
+  }
+
+  if (read_mem_word(line_a) != 0xA100 || read_mem_word(addr_a) != write_value) {
+    std::printf("FAIL: evicted dirty line A did not write back latest data mem0=0x%08x mem4=0x%08x\n",
+                read_mem_word(line_a), read_mem_word(addr_a));
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, addr_a, 15, 0x3A, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x3A, write_value, 0xA105)) {
+    std::printf("FAIL: reread of evicted line A failed\n");
+    return false;
+  }
+  if (env.ar_events.size() != 1) {
+    std::printf("FAIL: reread of evicted line A should miss once, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
 bool test_invalidate_all_drops_stale_refill_install() {
   std::printf("=== AXI4 LLC Integration Test 7: invalidate_all drops stale refill install ===\n");
 
-  TestEnv env;
+  Axi4LlcTestEnv env;
   init_env(env);
 
   const uint32_t line = 0x500;
@@ -822,8 +563,8 @@ bool test_invalidate_all_drops_stale_refill_install() {
 bool test_victim_writeback_maintenance_and_miss_interlock() {
   std::printf("=== AXI4 LLC Integration Test 8: victim writeback + maintenance + miss interlock ===\n");
 
-  TestEnv env;
-  AXI_LLCConfig cfg = make_config();
+  Axi4LlcTestEnv env;
+  AXI_LLCConfig cfg = make_small_llc_config();
   cfg.size_bytes = 128;
   cfg.line_bytes = 64;
   cfg.ways = 1;
@@ -945,7 +686,7 @@ bool test_victim_writeback_maintenance_and_miss_interlock() {
 bool test_bypass_write_miss_does_not_allocate_line() {
   std::printf("=== AXI4 LLC Integration Test 7: bypass write miss does not allocate ===\n");
 
-  TestEnv env;
+  Axi4LlcTestEnv env;
   init_env(env);
 
   const uint32_t line = 0x480;
@@ -992,8 +733,8 @@ bool test_bypass_write_miss_does_not_allocate_line() {
 bool test_bypass_write_miss_preserves_same_set_residents() {
   std::printf("=== AXI4 LLC Integration Test 8: bypass write miss preserves same-set residents ===\n");
 
-  TestEnv env;
-  AXI_LLCConfig cfg = make_config();
+  Axi4LlcTestEnv env;
+  AXI_LLCConfig cfg = make_small_llc_config();
   cfg.size_bytes = 512;
   cfg.line_bytes = 64;
   cfg.ways = 2;
@@ -1077,8 +818,8 @@ bool test_bypass_write_miss_preserves_same_set_residents() {
 bool test_seeded_small_depth_stress() {
   std::printf("=== AXI4 LLC Integration Test 9: seeded small-depth stress ===\n");
 
-  TestEnv env;
-  AXI_LLCConfig cfg = make_config();
+  Axi4LlcTestEnv env;
+  AXI_LLCConfig cfg = make_small_llc_config();
   cfg.size_bytes = 256;
   cfg.line_bytes = 64;
   cfg.ways = 2;
@@ -1193,7 +934,7 @@ bool test_seeded_small_depth_stress() {
 bool test_llc_same_master_multi_write_accepts_before_first_resp() {
   std::printf("=== AXI4 LLC Integration Test 10: LLC path queues same-master writes ===\n");
 
-  TestEnv env;
+  Axi4LlcTestEnv env;
   init_env(env);
 
   const uint32_t line0 = 0xA000;
@@ -1288,6 +1029,232 @@ bool test_llc_same_master_multi_write_accepts_before_first_resp() {
   return true;
 }
 
+bool test_seeded_mixed_read_write_coherence_stress() {
+  std::printf("=== AXI4 LLC Integration Test 11: seeded mixed read/write coherence stress ===\n");
+
+  Axi4LlcTestEnv env;
+  AXI_LLCConfig cfg = make_small_llc_config();
+  cfg.size_bytes = 256;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  init_env(env, cfg);
+
+  const std::vector<uint32_t> lines = {0x000, 0x040, 0x080, 0x0C0, 0x100, 0x140};
+  std::unordered_map<uint32_t, std::vector<uint32_t>> shadow;
+  for (size_t idx = 0; idx < lines.size(); ++idx) {
+    const uint32_t base = 0x7000 + static_cast<uint32_t>(idx) * 0x100;
+    write_memory_line(lines[idx], base);
+    shadow[lines[idx]].resize(16);
+    for (uint32_t word = 0; word < 16; ++word) {
+      shadow[lines[idx]][word] = base + word;
+    }
+  }
+
+  const WideWriteStrb_t full_strobe = make_full_write_strobe();
+  std::mt19937 rng(0x13579BDFu);
+  for (uint32_t step = 0; step < 96; ++step) {
+    const uint32_t line = lines[rng() % lines.size()];
+    const uint32_t word_idx = static_cast<uint32_t>(rng() % 8) + 4;
+    const uint32_t addr = line + word_idx * 4;
+    const uint32_t op = rng() % 4;
+    const uint8_t id = static_cast<uint8_t>((step & 0x3F) + 1);
+
+    if (op == 0) {
+      const uint8_t master = ((step & 1u) == 0u) ? MASTER_ICACHE : MASTER_DCACHE_R;
+      if (!issue_read(env, master, line, 15, id, false) ||
+          !wait_read_resp(env, master, id, shadow[line][0], shadow[line][1])) {
+        std::printf("FAIL: mixed stress cacheable read failed step=%u master=%u addr=0x%x\n",
+                    step, master, line);
+        return false;
+      }
+      continue;
+    }
+
+    if (op == 1) {
+      if (!issue_read(env, MASTER_UNCORE_LSU_R, line + 8, 15, id, true) ||
+          !wait_read_resp(env, MASTER_UNCORE_LSU_R, id, shadow[line][2],
+                          shadow[line][3])) {
+        std::printf("FAIL: mixed stress bypass read failed step=%u addr=0x%x\n",
+                    step, line + 8);
+        return false;
+      }
+      continue;
+    }
+
+    if (op == 2) {
+      const uint32_t base = 0xA0000000u + step * 0x40u;
+      const WideWriteData_t wdata = make_line_write_data(base);
+      if (!issue_write(env, MASTER_DCACHE_W, line, wdata, full_strobe, 63, id, false) ||
+          !wait_write_resp(env, MASTER_DCACHE_W, id)) {
+        std::printf("FAIL: mixed stress cacheable write failed step=%u line=0x%x\n",
+                    step, line);
+        return false;
+      }
+      for (uint32_t word = 0; word < 16; ++word) {
+        shadow[line][word] = base + word;
+      }
+      continue;
+    }
+
+    const uint32_t write_value = 0xC0000000u + step * 0x100u + word_idx;
+    WideWriteData_t wdata;
+    wdata.clear();
+    wdata[0] = write_value;
+    WideWriteStrb_t wstrb;
+    wstrb.clear();
+    for (uint32_t i = 0; i < 4; ++i) {
+      wstrb.set(i, true);
+    }
+    if (!issue_write(env, MASTER_UNCORE_LSU_W, addr, wdata, wstrb, 3, id, true) ||
+        !wait_write_resp(env, MASTER_UNCORE_LSU_W, id)) {
+      std::printf("FAIL: mixed stress bypass write failed step=%u addr=0x%x\n",
+                  step, addr);
+      return false;
+    }
+    shadow[line][word_idx] = write_value;
+    const uint8_t verify_id = static_cast<uint8_t>(0x80 + (step & 0x1F));
+    if (!issue_read(env, MASTER_DCACHE_R, addr, 15, verify_id, false) ||
+        !wait_read_resp(env, MASTER_DCACHE_R, verify_id, shadow[line][word_idx],
+                        shadow[line][word_idx + 1])) {
+      std::printf("FAIL: mixed stress bypass-write verification failed step=%u addr=0x%x\n",
+                  step, addr);
+      return false;
+    }
+  }
+
+  uint8_t final_id = 0x70;
+  for (uint32_t line : lines) {
+    if (!issue_read(env, MASTER_DCACHE_R, line, 15, final_id, false) ||
+        !wait_read_resp(env, MASTER_DCACHE_R, final_id, shadow[line][0],
+                        shadow[line][1])) {
+      std::printf("FAIL: mixed stress final cacheable sweep failed line=0x%x id=%u\n",
+                  line, final_id);
+      return false;
+    }
+    ++final_id;
+    if (!issue_read(env, MASTER_UNCORE_LSU_R, line + 8, 15, final_id, true) ||
+        !wait_read_resp(env, MASTER_UNCORE_LSU_R, final_id, shadow[line][2],
+                        shadow[line][3])) {
+      std::printf("FAIL: mixed stress final bypass sweep failed line=0x%x id=%u\n",
+                  line, final_id);
+      return false;
+    }
+    ++final_id;
+  }
+
+  const auto &perf = env.interconnect.get_llc_perf_counters();
+  if (perf.read_hit == 0 || perf.read_miss == 0 || perf.bypass_read == 0) {
+    std::printf("FAIL: mixed stress perf coverage too weak hit=%llu miss=%llu bypass=%llu\n",
+                static_cast<unsigned long long>(perf.read_hit),
+                static_cast<unsigned long long>(perf.read_miss),
+                static_cast<unsigned long long>(perf.bypass_read));
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_seeded_invalidate_all_epoch_stress() {
+  std::printf("=== AXI4 LLC Integration Test 12: seeded invalidate-all epoch stress ===\n");
+
+  Axi4LlcTestEnv env;
+  init_env(env);
+
+  const std::vector<uint32_t> lines = {0x200, 0x240, 0x280, 0x2C0};
+  std::unordered_map<uint32_t, std::vector<uint32_t>> shadow;
+  for (size_t idx = 0; idx < lines.size(); ++idx) {
+    const uint32_t base = 0x8800 + static_cast<uint32_t>(idx) * 0x80;
+    write_memory_line(lines[idx], base);
+    shadow[lines[idx]].resize(16);
+    for (uint32_t word = 0; word < 16; ++word) {
+      shadow[lines[idx]][word] = base + word;
+    }
+  }
+
+  std::mt19937 rng(0x2468ACE0u);
+  for (uint32_t step = 0; step < 24; ++step) {
+    const uint32_t line = lines[rng() % lines.size()];
+    const uint32_t word_idx = static_cast<uint32_t>(rng() % 14);
+    const uint32_t addr = line + word_idx * 4;
+    const uint8_t seed_id = static_cast<uint8_t>((step & 0x1F) + 1);
+
+    WideWriteData_t wdata;
+    wdata.clear();
+    const uint32_t write_value = 0xD0000000u + step * 0x20u + word_idx;
+    wdata[0] = write_value;
+    WideWriteStrb_t wstrb;
+    wstrb.clear();
+    for (uint32_t i = 0; i < 4; ++i) {
+      wstrb.set(i, true);
+    }
+    if (!issue_write(env, MASTER_UNCORE_LSU_W, addr, wdata, wstrb, 3, seed_id, true) ||
+        !wait_write_resp(env, MASTER_UNCORE_LSU_W, seed_id)) {
+      std::printf("FAIL: epoch stress bypass write failed step=%u addr=0x%x\n",
+                  step, addr);
+      return false;
+    }
+    shadow[line][word_idx] = write_value;
+
+    env.interconnect.set_llc_invalidate_all(true);
+    cycle_outputs(env);
+    cycle_inputs(env);
+    env.interconnect.set_llc_invalidate_all(false);
+
+    env.ar_events.clear();
+    const uint8_t miss_id = static_cast<uint8_t>(0x40 + step);
+    if (!issue_read(env, MASTER_ICACHE, addr, 15, miss_id, false)) {
+      std::printf("FAIL: epoch stress cacheable read issue failed step=%u addr=0x%x\n",
+                  step, addr);
+      return false;
+    }
+
+    int timeout = sim_ddr::SIM_DDR_LATENCY * 20;
+    bool saw_ar = false;
+    while (!saw_ar && timeout-- > 0) {
+      cycle_outputs(env);
+      saw_ar = env.interconnect.axi_io.ar.arvalid && env.interconnect.axi_io.ar.arready;
+      cycle_inputs(env);
+    }
+    if (!saw_ar) {
+      std::printf("FAIL: epoch stress did not observe DDR AR before invalidate_all step=%u\n",
+                  step);
+      return false;
+    }
+
+    env.interconnect.set_llc_invalidate_all(true);
+    cycle_outputs(env);
+    cycle_inputs(env);
+    env.interconnect.set_llc_invalidate_all(false);
+
+    if (!wait_read_resp(env, MASTER_ICACHE, miss_id, shadow[line][word_idx],
+                        shadow[line][word_idx + 1])) {
+      std::printf("FAIL: epoch stress demand response failed step=%u addr=0x%x\n",
+                  step, addr);
+      return false;
+    }
+
+    env.ar_events.clear();
+    const uint8_t reread_id = static_cast<uint8_t>(0x80 + step);
+    if (!issue_read(env, MASTER_DCACHE_R, addr, 15, reread_id, false) ||
+        !wait_read_resp(env, MASTER_DCACHE_R, reread_id, shadow[line][word_idx],
+                        shadow[line][word_idx + 1])) {
+      std::printf("FAIL: epoch stress reread after invalidate_all failed step=%u addr=0x%x\n",
+                  step, addr);
+      return false;
+    }
+    if (env.ar_events.size() != 1) {
+      std::printf("FAIL: epoch stress reread should re-miss once after invalidate_all, got %zu\n",
+                  env.ar_events.size());
+      return false;
+    }
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
 } // namespace
 
 int main() {
@@ -1333,6 +1300,12 @@ int main() {
     failed++;
   }
 
+  if (test_bypass_write_hit_preserves_dirty_on_eviction()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
   if (test_invalidate_all_drops_stale_refill_install()) {
     passed++;
   } else {
@@ -1364,6 +1337,18 @@ int main() {
   }
 
   if (test_llc_same_master_multi_write_accepts_before_first_resp()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_seeded_mixed_read_write_coherence_stress()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_seeded_invalidate_all_epoch_stress()) {
     passed++;
   } else {
     failed++;

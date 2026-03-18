@@ -887,9 +887,11 @@ bool AXI_LLC::try_complete_lookup() {
                             io.regs.write_total_size_r);
       AXI_LLCMetaEntry_t meta{};
       meta.tag = tag;
-      meta.flags = static_cast<uint8_t>(
-          AXI_LLC_META_VALID |
-          (is_bypass_lookup ? 0 : AXI_LLC_META_DIRTY));
+      const uint8_t preserved_dirty =
+          static_cast<uint8_t>(hit_meta.flags & AXI_LLC_META_DIRTY);
+      meta.flags = static_cast<uint8_t>(AXI_LLC_META_VALID |
+                                        (is_bypass_lookup ? preserved_dirty
+                                                          : AXI_LLC_META_DIRTY));
       io.table_out.data.enable = true;
       io.table_out.data.write = true;
       io.table_out.data.index = set;

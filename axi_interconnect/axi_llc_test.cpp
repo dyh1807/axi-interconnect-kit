@@ -465,7 +465,8 @@ bool test_bypass_write_hit_updates_table() {
     return false;
   }
   const auto meta = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
-  if (meta.tag != tag || meta.flags != AXI_LLC_META_VALID) {
+  if (meta.tag != tag ||
+      meta.flags != static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY)) {
     printf("FAIL: bypass write-hit meta mismatch tag=0x%x flags=0x%x\n",
            meta.tag, meta.flags);
     return false;

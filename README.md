@@ -158,6 +158,39 @@ Current behavior and defaults:
 - AXI3 support is still present for transition/testing, but LLC functionality
   is intentionally centered on the AXI4 path.
 
+## Closure Boundary and Next-Step Policy
+
+- The current closure point for correctness is:
+  - AXI4 read path supports multiple outstanding contexts.
+  - AXI4 write path supports "multiple pending at interconnect + pending queue
+    inside LLC", while preserving correct ordering among write hit/miss,
+    victim writeback, maintenance, and demand miss interactions.
+  - LLC intentionally stops at "queued writes + single active write pipeline"
+    instead of implementing multiple active write-contexts in parallel.
+- The queued-single-pipeline choice is deliberate:
+  - current correctness risk is dominated by write-hit/miss sequencing,
+    victim writeback, stale refill, and maintenance interlocks
+  - multiple pending writes are already accepted and drained correctly
+  - a true multi-active internal write pipeline is treated as a later
+    performance phase, not part of the current correctness closure
+- AXI3 is now on a freeze/retirement track:
+  - keep existing smoke tests, common-subset protocol equivalence, and basic
+    router/MMIO/DDR coverage
+  - do not extend new LLC features onto AXI3
+  - remove AXI3 once parent-simulator migration to AXI4 is complete
+
+## Test Tiers
+
+- `P0`: pure component-level deterministic tests.
+  - LLC read/write hit/miss, bypass read/write, maintenance, stale refill,
+    victim writeback, and write-queue edge cases.
+- `P1`: deterministic AXI4 + LLC + SimDDR integration regressions.
+  - cacheable+bypass coexistence, queued writes, maintenance interlocks,
+    invalidate-all epoch behavior.
+- `P2`: fixed-seed mixed stress and protocol smoke.
+  - mixed coherence stress, AXI3/AXI4 common-subset equivalence, and AXI3
+    transition-path minimum guarantees.
+
 ## Interface Signals
 
 Detailed signal lists are in:
