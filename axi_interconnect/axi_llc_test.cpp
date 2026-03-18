@@ -1691,8 +1691,80 @@ bool test_cacheable_write_wins_lookup_slot() {
   return true;
 }
 
+bool test_refill_commit_and_new_lookup_do_not_clobber() {
+  printf("=== LLC Test 18: refill commit and new lookup both survive ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t refill_addr = 0x180;
+  const uint32_t refill_line = AXI_LLC::line_addr(config, refill_addr);
+  const uint32_t lookup_addr = 0x440;
+
+  auto &entry = llc.io.regs.mshr[0];
+  entry = {};
+  entry.valid = true;
+  entry.bypass = false;
+  entry.refill_valid = true;
+  entry.refill_committed = false;
+  entry.victim_writeback_done = true;
+  entry.addr = refill_addr;
+  entry.line_addr = refill_line;
+  entry.set = AXI_LLC::set_index(config, refill_addr);
+  entry.tag = AXI_LLC::tag_of(config, refill_addr);
+  entry.way = 0;
+  entry.total_size = 15;
+  entry.master = MASTER_ICACHE;
+  entry.id = 0x51;
+  entry.refill_data = make_line_data(0xB000);
+  llc.io.regs.state = AXI_LLCState::kRefill;
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_req[MASTER_DCACHE_R].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_DCACHE_R].addr = lookup_addr;
+  llc.io.ext_in.upstream.read_req[MASTER_DCACHE_R].total_size = 15;
+  llc.io.ext_in.upstream.read_req[MASTER_DCACHE_R].id = 0x52;
+  llc.comb();
+  if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
+      !llc.io.table_out.repl.write) {
+    printf("FAIL: refill commit table writes missing\n");
+    return false;
+  }
+  if (!llc.io.ext_out.upstream.read_req[MASTER_DCACHE_R].ready ||
+      !llc.io.reg_write.lookup_valid_r ||
+      llc.io.reg_write.lookup_addr_r != lookup_addr) {
+    printf("FAIL: new lookup not preserved beside refill commit ready=%d lookup=%d addr=0x%x\n",
+           static_cast<int>(llc.io.ext_out.upstream.read_req[MASTER_DCACHE_R].ready),
+           static_cast<int>(llc.io.reg_write.lookup_valid_r),
+           llc.io.reg_write.lookup_addr_r);
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.reg_write.read_resp_valid_r[MASTER_ICACHE] ||
+      llc.io.reg_write.read_resp_id_r[MASTER_ICACHE] != 0x51 ||
+      llc.io.reg_write.read_resp_data_r[MASTER_ICACHE][0] != 0xB000) {
+    printf("FAIL: refill response was not latched in reg_write id=%u d0=0x%x\n",
+           llc.io.reg_write.read_resp_id_r[MASTER_ICACHE],
+           llc.io.reg_write.read_resp_data_r[MASTER_ICACHE][0]);
+    return false;
+  }
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable ||
+      llc.io.table_out.data.index != AXI_LLC::set_index(config, lookup_addr)) {
+    printf("FAIL: queued lookup was not issued after refill commit\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_cacheable_write_hit_then_read_latest() {
-  printf("=== LLC Test 18: cacheable write hit is immediately readable ===\n");
+  printf("=== LLC Test 19: cacheable write hit is immediately readable ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -2184,6 +2256,11 @@ int main() {
     failed++;
 
   if (test_cacheable_write_wins_lookup_slot())
+    passed++;
+  else
+    failed++;
+
+  if (test_refill_commit_and_new_lookup_do_not_clobber())
     passed++;
   else
     failed++;
