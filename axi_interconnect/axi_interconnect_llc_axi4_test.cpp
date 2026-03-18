@@ -348,6 +348,7 @@ bool wait_write_resp(TestEnv &env, uint8_t master, uint8_t id) {
     cycle_inputs(env);
   }
   std::printf("FAIL: write resp timeout master=%u id=%u\n", master, id);
+  env.interconnect.debug_print();
   return false;
 }
 
@@ -1011,6 +1012,104 @@ bool test_seeded_small_depth_stress() {
   return true;
 }
 
+bool test_llc_same_master_multi_write_accepts_before_first_resp() {
+  std::printf("=== AXI4 LLC Integration Test 10: LLC path queues same-master writes ===\n");
+
+  TestEnv env;
+  init_env(env);
+
+  const uint32_t line0 = 0xA000;
+  const uint32_t line1 = 0xA040;
+  write_memory_line(line0, 0x1000);
+  write_memory_line(line1, 0x2000);
+
+  auto make_line = [](uint32_t base_word) {
+    WideWriteData_t wdata;
+    wdata.clear();
+    for (uint32_t i = 0; i < 16; ++i) {
+      wdata[i] = base_word + i;
+    }
+    return wdata;
+  };
+  WideWriteData_t wdata0 = make_line(0x3300);
+  WideWriteData_t wdata1 = make_line(0x4400);
+  WideWriteStrb_t full_strobe;
+  full_strobe.clear();
+  for (uint32_t i = 0; i < 64; ++i) {
+    full_strobe.set(i, true);
+  }
+
+  bool first_issued = false;
+  int timeout = 200;
+  while (!first_issued && timeout-- > 0) {
+    cycle_outputs(env);
+    const bool ready_snapshot = env.interconnect.write_ports[MASTER_DCACHE_W].req.ready;
+    auto &req = env.interconnect.write_ports[MASTER_DCACHE_W].req;
+    req.valid = true;
+    req.addr = line0;
+    req.wdata = wdata0;
+    req.wstrb = full_strobe;
+    req.total_size = 63;
+    req.id = 0x51;
+    req.bypass = false;
+    cycle_inputs(env);
+    if (ready_snapshot) {
+      first_issued = true;
+    }
+  }
+  if (!first_issued) {
+    std::printf("FAIL: first LLC write was not accepted\n");
+    return false;
+  }
+
+  bool second_issued = false;
+  timeout = 200;
+  while (!second_issued && timeout-- > 0) {
+    cycle_outputs(env);
+    if (env.interconnect.write_ports[MASTER_DCACHE_W].resp.valid) {
+      std::printf("FAIL: first LLC write response became visible before second issue\n");
+      return false;
+    }
+    const bool ready_snapshot = env.interconnect.write_ports[MASTER_DCACHE_W].req.ready;
+    auto &req = env.interconnect.write_ports[MASTER_DCACHE_W].req;
+    req.valid = true;
+    req.addr = line1;
+    req.wdata = wdata1;
+    req.wstrb = full_strobe;
+    req.total_size = 63;
+    req.id = 0x52;
+    req.bypass = false;
+    cycle_inputs(env);
+    if (ready_snapshot) {
+      second_issued = true;
+    }
+  }
+  if (!second_issued) {
+    std::printf("FAIL: second LLC write was not accepted before first response\n");
+    return false;
+  }
+
+  if (!wait_write_resp(env, MASTER_DCACHE_W, 0x51) ||
+      !wait_write_resp(env, MASTER_DCACHE_W, 0x52)) {
+    std::printf("FAIL: LLC queued write responses did not complete\n");
+    return false;
+  }
+
+  if (!issue_read(env, MASTER_DCACHE_R, line0, 15, 0x61, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x61, 0x3300, 0x3301)) {
+    std::printf("FAIL: LLC queued first write not visible to readback\n");
+    return false;
+  }
+  if (!issue_read(env, MASTER_DCACHE_R, line1, 15, 0x62, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x62, 0x4400, 0x4401)) {
+    std::printf("FAIL: LLC queued second write not visible to readback\n");
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
 } // namespace
 
 int main() {
@@ -1069,6 +1168,12 @@ int main() {
   }
 
   if (test_seeded_small_depth_stress()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_llc_same_master_multi_write_accepts_before_first_resp()) {
     passed++;
   } else {
     failed++;

@@ -146,8 +146,12 @@ Current behavior and defaults:
   Pending prefetch queue entries are dropped once a new demand is accepted, so
   the prefetch path behaves like best-effort background traffic instead of a
   competing upstream path.
-- AXI4 write-side concurrency is still conservative today: only one
-  write-context / write outstanding transaction is supported at a time.
+- AXI4 write-side concurrency is now split by path:
+  - non-LLC path can accept up to `MAX_WRITE_OUTSTANDING` pending writes and
+    stream them downstream in AXI order with ID-matched B responses
+  - LLC-enabled path can also queue up to `MAX_WRITE_OUTSTANDING` upstream
+    writes in the interconnect, but the LLC core still executes only one
+    active write context at a time
 - AXI3 support is still present for transition/testing, but LLC functionality
   is intentionally centered on the AXI4 path.
 

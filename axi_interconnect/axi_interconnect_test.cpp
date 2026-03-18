@@ -72,14 +72,16 @@ void clear_upstream_inputs(axi_interconnect::AXI_Interconnect &interconnect) {
     interconnect.read_ports[i].req.bypass = false;
     interconnect.read_ports[i].resp.ready = false;
   }
-  interconnect.write_port.req.valid = false;
-  interconnect.write_port.req.addr = 0;
-  interconnect.write_port.req.wdata.clear();
-  interconnect.write_port.req.wstrb = 0;
-  interconnect.write_port.req.total_size = 0;
-  interconnect.write_port.req.id = 0;
-  interconnect.write_port.req.bypass = false;
-  interconnect.write_port.resp.ready = false;
+  for (int i = 0; i < axi_interconnect::NUM_WRITE_MASTERS; ++i) {
+    interconnect.write_ports[i].req.valid = false;
+    interconnect.write_ports[i].req.addr = 0;
+    interconnect.write_ports[i].req.wdata.clear();
+    interconnect.write_ports[i].req.wstrb.clear();
+    interconnect.write_ports[i].req.total_size = 0;
+    interconnect.write_ports[i].req.id = 0;
+    interconnect.write_ports[i].req.bypass = false;
+    interconnect.write_ports[i].resp.ready = false;
+  }
 }
 
 void cycle_outputs(TestEnv &env) {
@@ -502,11 +504,7 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
     printf("FAIL: expected 1 AW handshake, got %zu\n", env.aw_events.size());
     return false;
   }
-  uint8_t exp_awid =
-      static_cast<uint8_t>((axi_interconnect::MASTER_DCACHE_W << 2) |
-                           (req_id & 0x3));
-  if (env.aw_events[0].addr != base_addr || env.aw_events[0].len != 7 ||
-      env.aw_events[0].id != exp_awid) {
+  if (env.aw_events[0].addr != base_addr || env.aw_events[0].len != 7) {
     printf("FAIL: AW mismatch addr=0x%x len=%u id=0x%x\n", env.aw_events[0].addr,
            env.aw_events[0].len, env.aw_events[0].id);
     return false;
@@ -1115,8 +1113,8 @@ bool test_llc_write_resp_holds_until_ready() {
   return true;
 }
 
-bool test_single_write_context_limit(TestEnv &env) {
-  printf("=== Test 12: Single write context blocks second accept ===\n");
+bool test_multi_write_outstanding(TestEnv &env) {
+  printf("=== Test 12: multiple write outstanding contexts ===\n");
 
   env.clear_events();
   env.interconnect.init();
@@ -1135,14 +1133,15 @@ bool test_single_write_context_limit(TestEnv &env) {
   int timeout = 200;
   while (!first_issued && timeout-- > 0) {
     cycle_outputs(env);
-    bool ready_snapshot = env.interconnect.write_port.req.ready;
+    bool ready_snapshot =
+        env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.ready;
 
-    env.interconnect.write_port.req.valid = true;
-    env.interconnect.write_port.req.addr = addr0;
-    env.interconnect.write_port.req.wdata = data0;
-    env.interconnect.write_port.req.wstrb = 0xF;
-    env.interconnect.write_port.req.total_size = 3;
-    env.interconnect.write_port.req.id = 1;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.valid = true;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.addr = addr0;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.wdata = data0;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.wstrb = 0xF;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.total_size = 3;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.id = 1;
 
     cycle_inputs(env);
     if (ready_snapshot) {
@@ -1154,59 +1153,23 @@ bool test_single_write_context_limit(TestEnv &env) {
     return false;
   }
 
-  for (int cyc = 0; cyc < 6; ++cyc) {
-    cycle_outputs(env);
-    bool ready_snapshot = env.interconnect.write_port.req.ready;
-
-    env.interconnect.write_port.req.valid = true;
-    env.interconnect.write_port.req.addr = addr1;
-    env.interconnect.write_port.req.wdata = data1;
-    env.interconnect.write_port.req.wstrb = 0xF;
-    env.interconnect.write_port.req.total_size = 3;
-    env.interconnect.write_port.req.id = 2;
-
-    cycle_inputs(env);
-    if (ready_snapshot) {
-      printf("FAIL: second write accepted while first context still busy cyc=%d\n",
-             cyc);
-      return false;
-    }
-  }
-
-  bool first_done = false;
-  timeout = sim_ddr::SIM_DDR_LATENCY * 40;
-  while (!first_done && timeout-- > 0) {
-    cycle_outputs(env);
-    if (env.interconnect.write_port.resp.valid) {
-      if (env.interconnect.write_port.resp.id != 1 ||
-          env.interconnect.write_port.resp.resp != sim_ddr::AXI_RESP_OKAY) {
-        printf("FAIL: first write resp mismatch id=%u resp=%u\n",
-               env.interconnect.write_port.resp.id,
-               env.interconnect.write_port.resp.resp);
-        return false;
-      }
-      env.interconnect.write_port.resp.ready = true;
-      first_done = true;
-    }
-    cycle_inputs(env);
-  }
-  if (!first_done) {
-    printf("FAIL: first write response timeout\n");
-    return false;
-  }
-
   bool second_issued = false;
   timeout = 200;
   while (!second_issued && timeout-- > 0) {
     cycle_outputs(env);
-    bool ready_snapshot = env.interconnect.write_port.req.ready;
+    if (env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp.valid) {
+      printf("FAIL: first response became visible before second issue\n");
+      return false;
+    }
+    bool ready_snapshot =
+        env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.ready;
 
-    env.interconnect.write_port.req.valid = true;
-    env.interconnect.write_port.req.addr = addr1;
-    env.interconnect.write_port.req.wdata = data1;
-    env.interconnect.write_port.req.wstrb = 0xF;
-    env.interconnect.write_port.req.total_size = 3;
-    env.interconnect.write_port.req.id = 2;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.valid = true;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.addr = addr1;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.wdata = data1;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.wstrb = 0xF;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.total_size = 3;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.id = 2;
 
     cycle_inputs(env);
     if (ready_snapshot) {
@@ -1214,34 +1177,52 @@ bool test_single_write_context_limit(TestEnv &env) {
     }
   }
   if (!second_issued) {
-    printf("FAIL: second write was not accepted after first completed\n");
+    printf("FAIL: second write was not accepted before first response\n");
     return false;
   }
 
+  bool first_done = false;
   bool second_done = false;
   timeout = sim_ddr::SIM_DDR_LATENCY * 40;
-  while (!second_done && timeout-- > 0) {
+  while ((!first_done || !second_done) && timeout-- > 0) {
     cycle_outputs(env);
-    if (env.interconnect.write_port.resp.valid) {
-      if (env.interconnect.write_port.resp.id != 2 ||
-          env.interconnect.write_port.resp.resp != sim_ddr::AXI_RESP_OKAY) {
-        printf("FAIL: second write resp mismatch id=%u resp=%u\n",
-               env.interconnect.write_port.resp.id,
-               env.interconnect.write_port.resp.resp);
+    auto &resp0 = env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp;
+    if (!first_done && resp0.valid) {
+      if (resp0.id != 1 || resp0.resp != sim_ddr::AXI_RESP_OKAY) {
+        printf("FAIL: first write resp mismatch id=%u resp=%u\n",
+               resp0.id, resp0.resp);
         return false;
       }
-      env.interconnect.write_port.resp.ready = true;
+      resp0.ready = true;
+      first_done = true;
+    }
+    auto &resp1 =
+        env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].resp;
+    if (!second_done && resp1.valid) {
+      if (resp1.id != 2 || resp1.resp != sim_ddr::AXI_RESP_OKAY) {
+        printf("FAIL: second write resp mismatch id=%u resp=%u\n", resp1.id,
+               resp1.resp);
+        return false;
+      }
+      resp1.ready = true;
       second_done = true;
     }
     cycle_inputs(env);
   }
-  if (!second_done) {
-    printf("FAIL: second write response timeout\n");
+  if (!first_done || !second_done) {
+    printf("FAIL: multi-write response timeout first=%d second=%d\n",
+           static_cast<int>(first_done), static_cast<int>(second_done));
+    return false;
+  }
+
+  if (env.aw_events.size() < 2) {
+    printf("FAIL: expected at least two AW handshakes, got %zu\n",
+           env.aw_events.size());
     return false;
   }
 
   if (p_memory[addr0 >> 2] != data0[0] || p_memory[addr1 >> 2] != data1[0]) {
-    printf("FAIL: write context limit memory mismatch got0=0x%08x got1=0x%08x\n",
+    printf("FAIL: multi-write memory mismatch got0=0x%08x got1=0x%08x\n",
            p_memory[addr0 >> 2], p_memory[addr1 >> 2]);
     return false;
   }
@@ -1317,7 +1298,7 @@ int main() {
   else
     failed++;
 
-  if (test_single_write_context_limit(env))
+  if (test_multi_write_outstanding(env))
     passed++;
   else
     failed++;

@@ -15,6 +15,7 @@
 #include "AXI_LLC.h"
 #include "SimDDR_IO.h"
 #include "axi_interconnect_compat.h"
+#include <deque>
 #include <queue>
 #include <vector>
 
@@ -80,6 +81,7 @@ struct LlcUpstreamWriteReqLatch {
 };
 
 struct WritePendingTxn {
+  uint8_t axi_id;
   uint8_t master_id;
   uint8_t orig_id;
   uint32_t addr;
@@ -149,6 +151,13 @@ private:
   uint8_t count_master_read_pending(uint8_t master_id) const;
   uint8_t count_total_read_inflight() const;
   bool can_accept_read_master(uint8_t master_id) const;
+  uint8_t alloc_write_axi_id() const;
+  bool can_accept_write_now() const;
+  uint32_t count_llc_write_pending() const;
+  int find_write_pending_by_axi_id(uint8_t axi_id) const;
+  int find_next_aw_pending() const;
+  int find_next_w_pending() const;
+  void refresh_non_llc_w_active();
 
   // Read arbiter state
   uint8_t r_arb_rr_idx;
@@ -162,6 +171,7 @@ private:
   uint8_t w_arb_rr_idx;
   int w_current_master;
   bool w_req_ready_r[NUM_WRITE_MASTERS];
+  bool write_req_fire_c[NUM_WRITE_MASTERS];
 
   // AR latch for AXI compliance
   ARLatch_t ar_latched;
@@ -172,6 +182,7 @@ private:
   // Write state
   bool w_active;
   WritePendingTxn w_current;
+  std::deque<WritePendingTxn> w_pending;
   bool w_resp_valid[NUM_WRITE_MASTERS];
   uint8_t w_resp_id[NUM_WRITE_MASTERS];
   uint8_t w_resp_resp[NUM_WRITE_MASTERS];
@@ -200,6 +211,7 @@ private:
   LlcUpstreamWriteReqLatch llc_upstream_write_req[NUM_WRITE_MASTERS] = {};
   LlcUpstreamWriteReqLatch llc_upstream_write_capture_c[NUM_WRITE_MASTERS] = {};
   bool llc_upstream_write_accept_c[NUM_WRITE_MASTERS] = {};
+  std::deque<LlcUpstreamWriteReqLatch> llc_upstream_write_q[NUM_WRITE_MASTERS];
   bool llc_mem_write_resp_valid_ = false;
   uint8_t llc_mem_write_resp_ = 0;
   bool ar_from_llc_c = false;
