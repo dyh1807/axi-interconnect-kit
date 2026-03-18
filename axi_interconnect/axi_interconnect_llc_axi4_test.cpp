@@ -710,8 +710,193 @@ bool test_bypass_read_sees_latest_after_cacheable_write() {
   return true;
 }
 
+bool test_bypass_write_hit_updates_resident_line() {
+  std::printf("=== AXI4 LLC Integration Test 6: bypass write hit updates resident line ===\n");
+
+  TestEnv env;
+  init_env(env);
+
+  const uint32_t line = 0x400;
+  const uint32_t addr = line + 0x10;
+  const uint32_t write_value = 0x8A04DEAD;
+  write_memory_line(line, 0x8100);
+
+  if (!issue_read(env, MASTER_ICACHE, addr, 15, 0x31, false) ||
+      !wait_read_resp(env, MASTER_ICACHE, 0x31, 0x8104, 0x8105)) {
+    std::printf("FAIL: resident-line priming read failed\n");
+    return false;
+  }
+
+  WideWriteData_t wdata;
+  wdata.clear();
+  wdata[0] = write_value;
+  WideWriteStrb_t wstrb;
+  wstrb.clear();
+  for (uint32_t i = 0; i < 4; ++i) {
+    wstrb.set(i, true);
+  }
+
+  if (!issue_write(env, MASTER_UNCORE_LSU_W, addr, wdata, wstrb, 3, 0x32, true) ||
+      !wait_write_resp(env, MASTER_UNCORE_LSU_W, 0x32)) {
+    std::printf("FAIL: bypass write-hit request failed\n");
+    return false;
+  }
+  if (read_mem_word(addr) != write_value) {
+    std::printf("FAIL: bypass write-hit did not update memory got=0x%08x\n",
+                read_mem_word(addr));
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, addr, 15, 0x33, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x33, write_value, 0x8105)) {
+    std::printf("FAIL: cacheable read after bypass write-hit failed\n");
+    return false;
+  }
+  if (!env.ar_events.empty()) {
+    std::printf("FAIL: cacheable read after bypass write-hit should not issue DDR AR, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_bypass_write_miss_does_not_allocate_line() {
+  std::printf("=== AXI4 LLC Integration Test 7: bypass write miss does not allocate ===\n");
+
+  TestEnv env;
+  init_env(env);
+
+  const uint32_t line = 0x480;
+  const uint32_t addr = line + 0x10;
+  const uint32_t write_value = 0x9B04BEEF;
+  write_memory_line(line, 0x9100);
+
+  WideWriteData_t wdata;
+  wdata.clear();
+  wdata[0] = write_value;
+  WideWriteStrb_t wstrb;
+  wstrb.clear();
+  for (uint32_t i = 0; i < 4; ++i) {
+    wstrb.set(i, true);
+  }
+
+  if (!issue_write(env, MASTER_UNCORE_LSU_W, addr, wdata, wstrb, 3, 0x34, true) ||
+      !wait_write_resp(env, MASTER_UNCORE_LSU_W, 0x34)) {
+    std::printf("FAIL: bypass write-miss request failed\n");
+    return false;
+  }
+  if (read_mem_word(addr) != write_value) {
+    std::printf("FAIL: bypass write-miss did not update memory got=0x%08x\n",
+                read_mem_word(addr));
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_ICACHE, addr, 15, 0x35, false) ||
+      !wait_read_resp(env, MASTER_ICACHE, 0x35, write_value, 0x9105)) {
+    std::printf("FAIL: cacheable read after bypass write-miss failed\n");
+    return false;
+  }
+  if (env.ar_events.size() != 1) {
+    std::printf("FAIL: cacheable read after bypass write-miss should issue one DDR AR, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_bypass_write_miss_preserves_same_set_residents() {
+  std::printf("=== AXI4 LLC Integration Test 8: bypass write miss preserves same-set residents ===\n");
+
+  TestEnv env;
+  AXI_LLCConfig cfg = make_config();
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  init_env(env, cfg);
+
+  const uint32_t line_a = 0x000;
+  const uint32_t line_b = 0x100;
+  const uint32_t line_c = 0x200;
+  const uint32_t addr_a = line_a + 0x10;
+  const uint32_t addr_b = line_b + 0x10;
+  const uint32_t addr_c = line_c + 0x10;
+  const uint32_t write_value = 0xCAFE0004;
+  write_memory_line(line_a, 0xA100);
+  write_memory_line(line_b, 0xB100);
+  write_memory_line(line_c, 0xC100);
+
+  if (!issue_read(env, MASTER_ICACHE, addr_a, 15, 0x41, false) ||
+      !wait_read_resp(env, MASTER_ICACHE, 0x41, 0xA104, 0xA105)) {
+    std::printf("FAIL: fill line A failed\n");
+    return false;
+  }
+  if (!issue_read(env, MASTER_DCACHE_R, addr_b, 15, 0x42, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x42, 0xB104, 0xB105)) {
+    std::printf("FAIL: fill line B failed\n");
+    return false;
+  }
+
+  WideWriteData_t wdata;
+  wdata.clear();
+  wdata[0] = write_value;
+  WideWriteStrb_t wstrb;
+  wstrb.clear();
+  for (uint32_t i = 0; i < 4; ++i) {
+    wstrb.set(i, true);
+  }
+  if (!issue_write(env, MASTER_UNCORE_LSU_W, addr_c, wdata, wstrb, 3, 0x43, true) ||
+      !wait_write_resp(env, MASTER_UNCORE_LSU_W, 0x43)) {
+    std::printf("FAIL: bypass write miss failed\n");
+    return false;
+  }
+  if (read_mem_word(addr_c) != write_value) {
+    std::printf("FAIL: bypass write miss did not update backing memory got=0x%08x\n",
+                read_mem_word(addr_c));
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_ICACHE, addr_a, 15, 0x44, false) ||
+      !wait_read_resp(env, MASTER_ICACHE, 0x44, 0xA104, 0xA105)) {
+    std::printf("FAIL: resident line A lost after bypass miss\n");
+    return false;
+  }
+  if (!issue_read(env, MASTER_DCACHE_R, addr_b, 15, 0x45, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x45, 0xB104, 0xB105)) {
+    std::printf("FAIL: resident line B lost after bypass miss\n");
+    return false;
+  }
+  if (!env.ar_events.empty()) {
+    std::printf("FAIL: resident lines should remain in LLC after bypass miss, got %zu ARs\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, addr_c, 15, 0x46, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x46, write_value, 0xC105)) {
+    std::printf("FAIL: cacheable read of bypass-miss line failed\n");
+    return false;
+  }
+  if (env.ar_events.size() != 1) {
+    std::printf("FAIL: bypass-miss line should still require one DDR AR, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
 bool test_seeded_small_depth_stress() {
-  std::printf("=== AXI4 LLC Integration Test 6: seeded small-depth stress ===\n");
+  std::printf("=== AXI4 LLC Integration Test 9: seeded small-depth stress ===\n");
 
   TestEnv env;
   AXI_LLCConfig cfg = make_config();
@@ -860,6 +1045,24 @@ int main() {
   }
 
   if (test_bypass_read_sees_latest_after_cacheable_write()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_bypass_write_hit_updates_resident_line()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_bypass_write_miss_does_not_allocate_line()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_bypass_write_miss_preserves_same_set_residents()) {
     passed++;
   } else {
     failed++;

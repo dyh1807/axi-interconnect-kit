@@ -76,6 +76,14 @@ void write_line_words(AXI_LLC_Bytes_t &data, const AXI_LLCConfig &config,
   }
 }
 
+uint32_t read_line_word(const AXI_LLC_Bytes_t &line, uint32_t word_idx) {
+  const size_t offset = static_cast<size_t>(word_idx) * sizeof(uint32_t);
+  return static_cast<uint32_t>(line.data()[offset + 0]) |
+         (static_cast<uint32_t>(line.data()[offset + 1]) << 8) |
+         (static_cast<uint32_t>(line.data()[offset + 2]) << 16) |
+         (static_cast<uint32_t>(line.data()[offset + 3]) << 24);
+}
+
 AXI_LLC_Bytes_t make_data_set(const AXI_LLCConfig &config, uint32_t hit_way,
                               uint32_t base_word) {
   AXI_LLC_Bytes_t data;
@@ -317,7 +325,7 @@ bool test_bypass_read() {
 }
 
 bool test_write_passthrough() {
-  printf("=== LLC Test 4: write passthrough ===\n");
+  printf("=== LLC Test 4: bypass write miss does not allocate ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -343,6 +351,31 @@ bool test_write_passthrough() {
   llc.seq();
 
   clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: bypass write lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
+  llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
+                               AXI_LLC_META_ENTRY_BYTES);
+  llc.io.lookup_in.repl = make_repl(0);
+  llc.comb();
+  if (llc.io.table_out.data.write || llc.io.table_out.meta.write ||
+      llc.io.table_out.repl.write) {
+    printf("FAIL: bypass write miss should not allocate LLC line\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
   llc.io.ext_in.mem.write_resp_valid = true;
   llc.io.ext_in.mem.write_resp = 0;
   cycle(llc);
@@ -352,6 +385,95 @@ bool test_write_passthrough() {
   auto &resp = llc.io.ext_out.upstream.write_resp[MASTER_DCACHE_W];
   if (!resp.valid || resp.id != 1 || resp.resp != 0) {
     printf("FAIL: write passthrough resp mismatch\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_bypass_write_hit_updates_table() {
+  printf("=== LLC Test 20: bypass write hit updates resident line ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t line_addr = 0x880;
+  const uint32_t addr = line_addr + 4;
+  const uint32_t tag = AXI_LLC::tag_of(config, addr);
+  const uint32_t write_value = 0xABCD1234;
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].addr = addr;
+  llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].total_size = 3;
+  llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].id = 15;
+  llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].bypass = true;
+  llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].wdata[0] = write_value;
+  llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].wstrb = 0xF;
+  llc.io.ext_in.mem.write_req_ready = true;
+  llc.comb();
+  if (!llc.io.ext_out.upstream.write_req[MASTER_UNCORE_LSU_W].ready ||
+      !llc.io.ext_out.mem.write_req_valid ||
+      llc.io.ext_out.mem.write_req_addr != addr) {
+    printf("FAIL: bypass write-hit request not accepted\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: bypass write-hit lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data = make_data_set(config, 1, 0x5100);
+  llc.io.lookup_in.meta = make_meta_set_with_flags(
+      config, 1, tag,
+      static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  llc.io.lookup_in.repl = make_repl(0);
+  llc.comb();
+  if (!llc.io.table_out.data.write || llc.io.table_out.data.way != 1 ||
+      !llc.io.table_out.meta.write || llc.io.table_out.meta.way != 1) {
+    printf("FAIL: bypass write-hit table update missing way=%u meta_way=%u\n",
+           llc.io.table_out.data.way, llc.io.table_out.meta.way);
+    return false;
+  }
+  if (read_line_word(llc.io.table_out.data.payload, 0) != 0x5100 ||
+      read_line_word(llc.io.table_out.data.payload, 1) != write_value ||
+      read_line_word(llc.io.table_out.data.payload, 2) != 0x5102) {
+    printf("FAIL: bypass write-hit data merge mismatch w0=0x%x w1=0x%x w2=0x%x\n",
+           read_line_word(llc.io.table_out.data.payload, 0),
+           read_line_word(llc.io.table_out.data.payload, 1),
+           read_line_word(llc.io.table_out.data.payload, 2));
+    return false;
+  }
+  const auto meta = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
+  if (meta.tag != tag || meta.flags != AXI_LLC_META_VALID) {
+    printf("FAIL: bypass write-hit meta mismatch tag=0x%x flags=0x%x\n",
+           meta.tag, meta.flags);
+    return false;
+  }
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.write_resp_valid = true;
+  llc.io.ext_in.mem.write_resp = 0;
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.comb();
+  auto &resp = llc.io.ext_out.upstream.write_resp[MASTER_UNCORE_LSU_W];
+  if (!resp.valid || resp.id != 15 || resp.resp != 0) {
+    printf("FAIL: bypass write-hit response mismatch id=%u resp=%u\n", resp.id,
+           resp.resp);
     return false;
   }
   printf("PASS\n");
@@ -1727,6 +1849,11 @@ int main() {
     failed++;
 
   if (test_cacheable_write_hit_then_read_latest())
+    passed++;
+  else
+    failed++;
+
+  if (test_bypass_write_hit_updates_table())
     passed++;
   else
     failed++;

@@ -245,6 +245,7 @@ struct AXI_LLC_Regs_t {
   uint8_t write_active_id_r = 0;
   uint8_t write_mem_resp_code_r = 0;
   uint8_t write_total_size_r = 0;
+  uint32_t write_line_addr_r = 0;
   uint32_t write_set_r = 0;
   uint8_t write_way_r = 0;
   uint32_t write_repl_next_way_r = 0;
