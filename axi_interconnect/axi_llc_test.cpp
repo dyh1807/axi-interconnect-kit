@@ -43,6 +43,39 @@ AXI_LLC_Bytes_t make_meta_set(const AXI_LLCConfig &config, uint32_t hit_way,
   return meta;
 }
 
+AXI_LLC_Bytes_t make_meta_set_with_flags(const AXI_LLCConfig &config,
+                                         uint32_t hit_way, uint32_t tag,
+                                         uint8_t flags) {
+  AXI_LLC_Bytes_t meta;
+  meta.resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
+  for (uint32_t way = 0; way < config.ways; ++way) {
+    AXI_LLCMetaEntry_t entry{};
+    if (way == hit_way) {
+      entry.tag = tag;
+      entry.flags = flags;
+    }
+    AXI_LLC_Bytes_t enc;
+    AXI_LLC::encode_meta(entry, enc);
+    std::memcpy(meta.data() + static_cast<size_t>(way) * AXI_LLC_META_ENTRY_BYTES,
+                enc.data(), AXI_LLC_META_ENTRY_BYTES);
+  }
+  return meta;
+}
+
+void write_line_words(AXI_LLC_Bytes_t &data, const AXI_LLCConfig &config,
+                      uint32_t way, uint32_t base_word) {
+  const uint32_t words = AXI_LLC::line_words(config);
+  for (uint32_t word = 0; word < words; ++word) {
+    const uint32_t value = base_word + word;
+    const size_t offset = static_cast<size_t>(way) * config.line_bytes +
+                          static_cast<size_t>(word) * sizeof(uint32_t);
+    data.data()[offset + 0] = static_cast<uint8_t>(value & 0xFFu);
+    data.data()[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFFu);
+    data.data()[offset + 2] = static_cast<uint8_t>((value >> 16) & 0xFFu);
+    data.data()[offset + 3] = static_cast<uint8_t>((value >> 24) & 0xFFu);
+  }
+}
+
 AXI_LLC_Bytes_t make_data_set(const AXI_LLCConfig &config, uint32_t hit_way,
                               uint32_t base_word) {
   AXI_LLC_Bytes_t data;
@@ -279,6 +312,7 @@ bool test_write_passthrough() {
   llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 1;
   llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[0] = 0xDEADBEEF;
   llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb = 0xF;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].bypass = true;
   llc.io.ext_in.mem.write_req_ready = true;
   llc.comb();
   if (!llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready ||
@@ -306,8 +340,213 @@ bool test_write_passthrough() {
   return true;
 }
 
+bool test_cacheable_write_updates_table() {
+  printf("=== LLC Test 5: cacheable write updates LLC ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t addr = 0x840;
+  const uint32_t tag = AXI_LLC::tag_of(config, addr);
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = addr;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size =
+      static_cast<uint8_t>(config.line_bytes - 1);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 2;
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[i] = 0x7000 + i;
+  }
+  for (uint32_t b = 0; b < config.line_bytes; ++b) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb.set(b, true);
+  }
+  llc.comb();
+  if (!llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready ||
+      llc.io.ext_out.mem.write_req_valid) {
+    printf("FAIL: cacheable write req not accepted\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: cacheable write lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
+  llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
+  llc.io.lookup_in.repl = make_repl(1);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.data.write ||
+      !llc.io.table_out.meta.enable || !llc.io.table_out.meta.write) {
+    printf("FAIL: cacheable write table update missing\n");
+    return false;
+  }
+  if (llc.io.table_out.data.way != 0 || llc.io.table_out.meta.way != 0) {
+    printf("FAIL: cacheable write replacement way mismatch data_way=%u meta_way=%u\n",
+           llc.io.table_out.data.way, llc.io.table_out.meta.way);
+    return false;
+  }
+  const auto meta = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
+  if (meta.tag != tag ||
+      meta.flags != (AXI_LLC_META_VALID | AXI_LLC_META_DIRTY)) {
+    printf("FAIL: cacheable write meta mismatch tag=0x%x flags=0x%x\n", meta.tag,
+           meta.flags);
+    return false;
+  }
+  cycle(llc);
+
+  clear_inputs(llc);
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.comb();
+  auto &resp = llc.io.ext_out.upstream.write_resp[MASTER_DCACHE_W];
+  if (!resp.valid || resp.id != 2 || resp.resp != 0) {
+    printf("FAIL: cacheable write resp mismatch\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_cacheable_write_dirty_victim_writeback() {
+  printf("=== LLC Test 6: cacheable write dirty victim writeback ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim_addr = 0x000;
+  const uint32_t addr = 0x100;
+  const uint32_t clean_addr = 0x080;
+  const uint32_t victim_tag = AXI_LLC::tag_of(config, victim_addr);
+  const uint32_t clean_tag = AXI_LLC::tag_of(config, clean_addr);
+  const uint32_t tag = AXI_LLC::tag_of(config, addr);
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = addr;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size =
+      static_cast<uint8_t>(config.line_bytes - 1);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 3;
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[i] = 0x8800 + i;
+  }
+  for (uint32_t b = 0; b < config.line_bytes; ++b) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb.set(b, true);
+  }
+  llc.comb();
+  if (!llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready ||
+      llc.io.ext_out.mem.write_req_valid) {
+    printf("FAIL: dirty victim write req not accepted cleanly\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: dirty victim write lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
+  write_line_words(llc.io.lookup_in.data, config, 0, 0x3300);
+  write_line_words(llc.io.lookup_in.data, config, 1, 0x4400);
+  llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
+                               AXI_LLC_META_ENTRY_BYTES);
+  AXI_LLCMetaEntry_t clean_meta{};
+  clean_meta.tag = clean_tag;
+  clean_meta.flags = AXI_LLC_META_VALID;
+  AXI_LLC_Bytes_t enc_clean;
+  AXI_LLC::encode_meta(clean_meta, enc_clean);
+  std::memcpy(llc.io.lookup_in.meta.data(), enc_clean.data(), AXI_LLC_META_ENTRY_BYTES);
+  AXI_LLCMetaEntry_t dirty_meta{};
+  dirty_meta.tag = victim_tag;
+  dirty_meta.flags = AXI_LLC_META_VALID | AXI_LLC_META_DIRTY;
+  AXI_LLC_Bytes_t enc_dirty;
+  AXI_LLC::encode_meta(dirty_meta, enc_dirty);
+  std::memcpy(llc.io.lookup_in.meta.data() + AXI_LLC_META_ENTRY_BYTES,
+              enc_dirty.data(), AXI_LLC_META_ENTRY_BYTES);
+  llc.io.lookup_in.repl = make_repl(1);
+  cycle(llc);
+
+  clear_inputs(llc);
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.write_req_ready = true;
+  llc.comb();
+  if (!llc.io.ext_out.mem.write_req_valid ||
+      llc.io.ext_out.mem.write_req_addr != victim_addr ||
+      llc.io.ext_out.mem.write_req_size != config.line_bytes - 1) {
+    printf("FAIL: dirty victim wb req mismatch valid=%d addr=0x%x size=%u\n",
+           llc.io.ext_out.mem.write_req_valid, llc.io.ext_out.mem.write_req_addr,
+           llc.io.ext_out.mem.write_req_size);
+    return false;
+  }
+  if (llc.io.table_out.data.enable || llc.io.table_out.meta.enable) {
+    printf("FAIL: dirty victim prematurely updated tables\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.write_resp_valid = true;
+  llc.io.ext_in.mem.write_resp = 0;
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.data.write ||
+      !llc.io.table_out.meta.enable || !llc.io.table_out.meta.write ||
+      llc.io.table_out.data.way != 1) {
+    printf("FAIL: dirty victim post-wb table update missing way=%u\n",
+           llc.io.table_out.data.way);
+    return false;
+  }
+  const auto meta = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
+  if (meta.tag != tag ||
+      meta.flags != (AXI_LLC_META_VALID | AXI_LLC_META_DIRTY)) {
+    printf("FAIL: dirty victim meta mismatch tag=0x%x flags=0x%x\n", meta.tag,
+           meta.flags);
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  cycle(llc);
+
+  clear_inputs(llc);
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.comb();
+  auto &resp = llc.io.ext_out.upstream.write_resp[MASTER_DCACHE_W];
+  if (!resp.valid || resp.id != 3 || resp.resp != 0) {
+    printf("FAIL: dirty victim final resp mismatch\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
 bool test_same_master_multi_mshr_bypass() {
-  printf("=== LLC Test 5: same-master multi-MSHR bypass ===\n");
+  printf("=== LLC Test 7: same-master multi-MSHR bypass ===\n");
   AXI_LLC llc;
   auto config = make_config();
   config.mshr_num = 2;
@@ -441,7 +680,7 @@ bool test_same_master_multi_mshr_bypass() {
 }
 
 bool test_read_resp_holds_until_ready() {
-  printf("=== LLC Test 6: read response holds until ready ===\n");
+  printf("=== LLC Test 8: read response holds until ready ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -499,7 +738,7 @@ bool test_read_resp_holds_until_ready() {
 }
 
 bool test_stream_prefetch_table_fill() {
-  printf("=== LLC Test 7: stream prefetch table fill ===\n");
+  printf("=== LLC Test 9: stream prefetch table fill ===\n");
   AXI_LLC llc;
   auto config = make_config();
   config.prefetch_enable = true;
@@ -686,7 +925,7 @@ bool test_stream_prefetch_table_fill() {
 }
 
 bool test_prefetch_degree_two_queue() {
-  printf("=== LLC Test 8: prefetch degree two queue ===\n");
+  printf("=== LLC Test 10: prefetch degree two queue ===\n");
   AXI_LLC llc;
   auto config = make_config();
   config.prefetch_enable = true;
@@ -812,7 +1051,7 @@ bool test_prefetch_degree_two_queue() {
 }
 
 bool test_demand_mem_issue_preempts_prefetch() {
-  printf("=== LLC Test 9: demand mem issue preempts prefetch ===\n");
+  printf("=== LLC Test 11: demand mem issue preempts prefetch ===\n");
   AXI_LLC llc;
   auto config = make_config();
   config.prefetch_enable = true;
@@ -839,7 +1078,7 @@ bool test_demand_mem_issue_preempts_prefetch() {
 }
 
 bool test_lookup_request_is_one_shot() {
-  printf("=== LLC Test 10: lookup request is one-shot ===\n");
+  printf("=== LLC Test 12: lookup request is one-shot ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -894,7 +1133,7 @@ bool test_lookup_request_is_one_shot() {
 }
 
 bool test_same_line_inflight_not_ready() {
-  printf("=== LLC Test 11: same-line inflight blocks early ready ===\n");
+  printf("=== LLC Test 13: same-line inflight blocks early ready ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -914,7 +1153,7 @@ bool test_same_line_inflight_not_ready() {
 }
 
 bool test_line_invalidate_maintenance() {
-  printf("=== LLC Test 12: line invalidate maintenance ===\n");
+  printf("=== LLC Test 14: line invalidate maintenance ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -971,6 +1210,131 @@ bool test_line_invalidate_maintenance() {
   return true;
 }
 
+bool test_cacheable_write_wins_lookup_slot() {
+  printf("=== LLC Test 15: cacheable write wins shared lookup slot ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t write_addr = 0x840;
+  const uint32_t read_addr = 0x180;
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = write_addr;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size =
+      static_cast<uint8_t>(config.line_bytes - 1);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 4;
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[i] = 0x9900 + i;
+  }
+  for (uint32_t b = 0; b < config.line_bytes; ++b) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb.set(b, true);
+  }
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].addr = read_addr;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].total_size = 15;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].id = 7;
+  llc.comb();
+  if (!llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready) {
+    printf("FAIL: cacheable write not accepted\n");
+    return false;
+  }
+  if (llc.io.ext_out.upstream.read_req[MASTER_ICACHE].ready) {
+    printf("FAIL: read incorrectly accepted in same cycle as write lookup allocation\n");
+    return false;
+  }
+  llc.seq();
+
+  if (!llc.io.regs.write_active_r || llc.io.regs.write_is_bypass_r ||
+      !llc.io.regs.lookup_valid_r || !llc.io.regs.lookup_is_write_r ||
+      llc.io.regs.lookup_addr_r != write_addr) {
+    printf(
+        "FAIL: write lookup state corrupted active=%d bypass=%d lookup=%d is_write=%d addr=0x%x\n",
+        static_cast<int>(llc.io.regs.write_active_r),
+        static_cast<int>(llc.io.regs.write_is_bypass_r),
+        static_cast<int>(llc.io.regs.lookup_valid_r),
+        static_cast<int>(llc.io.regs.lookup_is_write_r),
+        llc.io.regs.lookup_addr_r);
+    return false;
+  }
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: write lookup request not issued after arbitration\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_pending_upstream_write_blocks_same_line_read() {
+  printf("=== LLC Test 16: pending upstream write blocks same-line read ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t line_addr = 0x840;
+  const uint32_t same_line_read = line_addr + 8;
+  const uint32_t other_line_read = 0x900;
+
+  llc.io.regs.write_active_r = true;
+  llc.io.regs.write_is_bypass_r = true;
+  llc.io.regs.write_active_master_r = MASTER_UNCORE_LSU_W;
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = line_addr;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size =
+      static_cast<uint8_t>(config.line_bytes - 1);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 9;
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[i] = 0xAA00 + i;
+  }
+  for (uint32_t b = 0; b < config.line_bytes; ++b) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb.set(b, true);
+  }
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].addr = same_line_read;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].total_size = 15;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].id = 10;
+  llc.comb();
+  if (llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready) {
+    printf("FAIL: queued write unexpectedly accepted while another write is active\n");
+    return false;
+  }
+  if (llc.io.ext_out.upstream.read_req[MASTER_ICACHE].ready) {
+    printf("FAIL: same-line read incorrectly accepted while queued write is pending\n");
+    return false;
+  }
+
+  clear_inputs(llc);
+  llc.io.regs.write_active_r = true;
+  llc.io.regs.write_is_bypass_r = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = line_addr;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size =
+      static_cast<uint8_t>(config.line_bytes - 1);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 9;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].addr = other_line_read;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].total_size = 15;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].id = 11;
+  llc.comb();
+  if (!llc.io.ext_out.upstream.read_req[MASTER_ICACHE].ready) {
+    printf("FAIL: other-line read should not be blocked by queued write\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 } // namespace
 
 int main() {
@@ -993,6 +1357,16 @@ int main() {
     failed++;
 
   if (test_write_passthrough())
+    passed++;
+  else
+    failed++;
+
+  if (test_cacheable_write_updates_table())
+    passed++;
+  else
+    failed++;
+
+  if (test_cacheable_write_dirty_victim_writeback())
     passed++;
   else
     failed++;
@@ -1033,6 +1407,16 @@ int main() {
     failed++;
 
   if (test_line_invalidate_maintenance())
+    passed++;
+  else
+    failed++;
+
+  if (test_cacheable_write_wins_lookup_slot())
+    passed++;
+  else
+    failed++;
+
+  if (test_pending_upstream_write_blocks_same_line_read())
     passed++;
   else
     failed++;

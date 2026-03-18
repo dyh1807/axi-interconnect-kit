@@ -69,6 +69,16 @@ struct LlcUpstreamReqLatch {
   bool bypass = false;
 };
 
+struct LlcUpstreamWriteReqLatch {
+  bool valid = false;
+  uint32_t addr = 0;
+  uint8_t total_size = 0;
+  uint8_t id = 0;
+  WideWriteData_t wdata{};
+  WideWriteStrb_t wstrb{};
+  bool bypass = false;
+};
+
 struct WritePendingTxn {
   uint8_t master_id;
   uint8_t orig_id;
@@ -187,6 +197,9 @@ private:
   LlcUpstreamReqLatch llc_upstream_req[NUM_READ_MASTERS] = {};
   LlcUpstreamReqLatch llc_upstream_capture_c[NUM_READ_MASTERS] = {};
   bool llc_upstream_accept_c[NUM_READ_MASTERS] = {};
+  LlcUpstreamWriteReqLatch llc_upstream_write_req[NUM_WRITE_MASTERS] = {};
+  LlcUpstreamWriteReqLatch llc_upstream_write_capture_c[NUM_WRITE_MASTERS] = {};
+  bool llc_upstream_write_accept_c[NUM_WRITE_MASTERS] = {};
   bool llc_mem_write_resp_valid_ = false;
   uint8_t llc_mem_write_resp_ = 0;
   bool ar_from_llc_c = false;

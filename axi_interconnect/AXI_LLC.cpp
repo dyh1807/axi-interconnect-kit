@@ -1,5 +1,6 @@
 #include "AXI_LLC.h"
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 extern long long sim_time;
@@ -8,6 +9,8 @@ namespace axi_interconnect {
 
 namespace {
 constexpr uint8_t kInvalidReadMaster = NUM_READ_MASTERS;
+constexpr uint32_t kFocusLlcLine0 = 0x807a17c0u;
+constexpr uint32_t kFocusLlcLine1 = 0x807a1800u;
 
 uint32_t read_u32_le(const uint8_t *ptr) {
   return static_cast<uint32_t>(ptr[0]) |
@@ -55,6 +58,73 @@ AXI_LLC_Bytes_t wide_to_line_bytes(const AXI_LLCConfig &config,
   return bytes;
 }
 
+WideWriteData_t line_bytes_to_write_words(const AXI_LLC_Bytes_t &line) {
+  WideWriteData_t out;
+  out.clear();
+  const uint32_t words =
+      std::min<uint32_t>(MAX_WRITE_TRANSACTION_WORDS,
+                         static_cast<uint32_t>(line.size() / sizeof(uint32_t)));
+  for (uint32_t i = 0; i < words; ++i) {
+    out[i] = read_u32_le(line.data() + static_cast<size_t>(i) * sizeof(uint32_t));
+  }
+  return out;
+}
+
+WideWriteStrb_t full_line_strobe(const AXI_LLCConfig &config) {
+  WideWriteStrb_t out;
+  out.clear();
+  for (uint32_t b = 0; b < config.line_bytes && b < MAX_WRITE_TRANSACTION_BYTES; ++b) {
+    out.set(b, true);
+  }
+  return out;
+}
+
+AXI_LLC_Bytes_t write_words_to_line_bytes(const AXI_LLCConfig &config,
+                                          const WideWriteData_t &data) {
+  AXI_LLC_Bytes_t bytes;
+  bytes.resize(config.line_bytes);
+  const uint32_t words = AXI_LLC::line_words(config);
+  for (uint32_t i = 0; i < words; ++i) {
+    write_u32_le(bytes.data() + static_cast<size_t>(i) * sizeof(uint32_t), data.words[i]);
+  }
+  return bytes;
+}
+
+AXI_LLC_Bytes_t extract_way_line_bytes(const AXI_LLCConfig &config,
+                                       const AXI_LLC_Bytes_t &payload,
+                                       uint32_t way) {
+  AXI_LLC_Bytes_t line;
+  line.resize(config.line_bytes);
+  const size_t offset = static_cast<size_t>(way) * config.line_bytes;
+  if (offset + config.line_bytes <= payload.size()) {
+    std::memcpy(line.data(), payload.data() + offset, config.line_bytes);
+  }
+  return line;
+}
+
+uint32_t build_line_addr_from_tag_set(const AXI_LLCConfig &config, uint32_t tag,
+                                      uint32_t set) {
+  if (!config.valid()) {
+    return 0;
+  }
+  return ((tag * config.set_count()) + set) * config.line_bytes;
+}
+
+void merge_write_into_line(AXI_LLC_Bytes_t &line, const WideWriteData_t &data,
+                           const WideWriteStrb_t &strobe, uint32_t total_size) {
+  const uint32_t limit =
+      std::min<uint32_t>(total_size + 1u, static_cast<uint32_t>(line.size()));
+  for (uint32_t byte = 0; byte < limit; ++byte) {
+    if (!strobe.test(byte)) {
+      continue;
+    }
+    const uint32_t word_idx = byte / sizeof(uint32_t);
+    const uint32_t byte_off = byte % sizeof(uint32_t);
+    const uint32_t word = data[word_idx];
+    line.data()[byte] = static_cast<uint8_t>((word >> (byte_off * 8)) & 0xFFu);
+  }
+}
+
 AXI_LLC_Bytes_t build_repl_payload(uint32_t next_way) {
   AXI_LLC_Bytes_t bytes;
   bytes.resize(AXI_LLC_REPL_BYTES);
@@ -68,9 +138,44 @@ uint32_t decode_repl_way(const AXI_LLC_Bytes_t &payload) {
   }
   return read_u32_le(payload.data());
 }
+
+bool is_focus_llc_line(uint32_t addr) {
+  (void)addr;
+  return false;
+}
 } // namespace
 
 AXI_LLC::AXI_LLC() { reset(); }
+
+void AXI_LLC::debug_print() const {
+  std::printf(
+      "    llc_write: active=%d bypass=%d mem_done=%d cache_done=%d cache_pending=%d master=%u id=%u total_size=%u set=%u way=%u repl_next=%u tag=0x%08x\n",
+      static_cast<int>(io.regs.write_active_r),
+      static_cast<int>(io.regs.write_is_bypass_r),
+      static_cast<int>(io.regs.write_mem_done_r),
+      static_cast<int>(io.regs.write_cache_done_r),
+      static_cast<int>(io.regs.write_cache_pending_r),
+      static_cast<unsigned>(io.regs.write_active_master_r),
+      static_cast<unsigned>(io.regs.write_active_id_r),
+      static_cast<unsigned>(io.regs.write_total_size_r),
+      io.regs.write_set_r,
+      static_cast<unsigned>(io.regs.write_way_r),
+      io.regs.write_repl_next_way_r,
+      io.regs.write_tag_r);
+  std::printf(
+      "    llc_victim: valid=%d issued=%d for_write=%d slot=%u addr=0x%08x\n",
+      static_cast<int>(io.regs.victim_wb_valid_r),
+      static_cast<int>(io.regs.victim_wb_issued_r),
+      static_cast<int>(io.regs.victim_wb_for_write_r),
+      static_cast<unsigned>(io.regs.victim_wb_mshr_slot_r),
+      io.regs.victim_wb_addr_r);
+  for (int i = 0; i < NUM_WRITE_MASTERS; ++i) {
+    std::printf("    llc_write_resp[%d]: valid=%d id=%u code=%u\n",
+                i, static_cast<int>(io.regs.write_resp_valid_r[i]),
+                static_cast<unsigned>(io.regs.write_resp_id_r[i]),
+                static_cast<unsigned>(io.regs.write_resp_code_r[i]));
+  }
+}
 
 bool AXI_LLC::can_accept_read_now(uint8_t master, bool bypass,
                                   uint32_t addr) const {
@@ -84,6 +189,12 @@ bool AXI_LLC::can_accept_read_now(uint8_t master, bool bypass,
     if (io.regs.lookup_valid_r) {
       return false;
     }
+    if (has_pending_upstream_write_line(line_addr(config_, addr))) {
+      return false;
+    }
+    if (write_line_pending(io.regs, line_addr(config_, addr))) {
+      return false;
+    }
     if (find_mshr_by_line_addr(io.regs, line_addr(config_, addr)) >= 0) {
       return false;
     }
@@ -95,6 +206,30 @@ bool AXI_LLC::can_accept_read_now(uint8_t master, bool bypass,
     return false;
   }
   return true;
+}
+
+bool AXI_LLC::has_pending_upstream_write_line(uint32_t line_addr_value) const {
+  for (uint8_t master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    const auto &req = io.ext_in.upstream.write_req[master];
+    if (!req.valid || req.bypass) {
+      continue;
+    }
+    if (line_addr(config_, req.addr) == line_addr_value) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool AXI_LLC::write_line_pending(const AXI_LLC_Regs_t &regs,
+                                 uint32_t line_addr_value) const {
+  if (!regs.write_active_r || regs.write_is_bypass_r ||
+      !regs.write_cache_pending_r) {
+    return false;
+  }
+  const uint32_t pending_line = build_line_addr_from_tag_set(
+      config_, regs.write_tag_r, regs.write_set_r);
+  return pending_line == line_addr_value;
 }
 
 uint32_t AXI_LLC::line_words(const AXI_LLCConfig &config) {
@@ -256,6 +391,13 @@ int AXI_LLC::pick_new_read_master(const AXI_LLC_Regs_t &regs) const {
     if (!req.bypass && regs.lookup_valid_r) {
       continue;
     }
+    if (!req.bypass &&
+        has_pending_upstream_write_line(line_addr(config_, req.addr))) {
+      continue;
+    }
+    if (!req.bypass && write_line_pending(regs, line_addr(config_, req.addr))) {
+      continue;
+    }
     if (req.bypass && find_free_mshr(regs) < 0) {
       continue;
     }
@@ -393,25 +535,27 @@ void AXI_LLC::try_schedule_prefetch(const AXI_LLCMissEntry_t &entry) {
 }
 
 void AXI_LLC::try_launch_prefetch_lookup() {
-  const uint32_t mshr_limit = std::min<uint32_t>(config_.mshr_num, MAX_OUTSTANDING);
-  if (io.reg_write.lookup_valid_r || !io.ext_in.mem.prefetch_allow ||
-      io.regs.lookup_valid_r || has_demand_mshr(io.regs) ||
-      count_free_mshrs(io.regs) != mshr_limit ||
-      io.regs.prefetch_quiet_cycles_r == 0) {
+  const auto &regs = io.reg_write;
+  const uint32_t mshr_limit =
+      std::min<uint32_t>(config_.mshr_num, MAX_OUTSTANDING);
+  if (regs.lookup_valid_r || !io.ext_in.mem.prefetch_allow ||
+      has_demand_mshr(regs) || count_free_mshrs(regs) != mshr_limit ||
+      regs.prefetch_quiet_cycles_r == 0) {
     return;
   }
-  const int slot = pick_prefetch_queue_slot(io.regs);
+  const int slot = pick_prefetch_queue_slot(regs);
   if (slot < 0) {
     return;
   }
   io.reg_write.lookup_valid_r = true;
   io.reg_write.lookup_issued_r = false;
-  io.reg_write.lookup_addr_r = io.regs.prefetch_q[slot].line_addr;
+  io.reg_write.lookup_addr_r = regs.prefetch_q[slot].line_addr;
   io.reg_write.lookup_size_r = static_cast<uint8_t>(config_.line_bytes - 1);
   io.reg_write.lookup_master_r = kInvalidReadMaster;
   io.reg_write.lookup_id_r = static_cast<uint8_t>(slot);
   io.reg_write.lookup_is_prefetch_r = true;
   io.reg_write.lookup_is_invalidate_r = false;
+  io.reg_write.lookup_is_write_r = false;
   io.reg_write.state = AXI_LLCState::kLookup;
 }
 
@@ -441,34 +585,160 @@ void AXI_LLC::drive_write_path() {
   }
 
   io.ext_out.mem.write_resp_ready = true;
-  if (io.ext_in.mem.write_resp_valid && io.regs.write_active_r) {
+  if (io.ext_in.mem.write_resp_valid) {
+    if (io.regs.victim_wb_valid_r && io.regs.victim_wb_issued_r) {
+      io.reg_write.victim_wb_valid_r = false;
+      io.reg_write.victim_wb_issued_r = false;
+      io.reg_write.victim_wb_for_write_r = false;
+      io.reg_write.victim_wb_mshr_slot_r = 0;
+      io.reg_write.victim_wb_addr_r = 0;
+      io.reg_write.victim_wb_data_r.clear();
+      io.reg_write.victim_wb_strobe_r.clear();
+
+      if (io.regs.victim_wb_for_write_r) {
+        AXI_LLCMetaEntry_t meta{};
+        meta.tag = io.regs.write_tag_r;
+        meta.flags = static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY);
+
+        io.table_out.data.enable = true;
+        io.table_out.data.write = true;
+        io.table_out.data.index = io.regs.write_set_r;
+        io.table_out.data.way = io.regs.write_way_r;
+        io.table_out.data.payload =
+            write_words_to_line_bytes(config_, io.regs.write_line_r);
+        io.table_out.data.byte_enable.assign(config_.line_bytes, 1);
+
+        io.table_out.meta.enable = true;
+        io.table_out.meta.write = true;
+        io.table_out.meta.index = io.regs.write_set_r;
+        io.table_out.meta.way = io.regs.write_way_r;
+        encode_meta(meta, io.table_out.meta.payload);
+        io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
+
+        io.table_out.repl.enable = true;
+        io.table_out.repl.write = true;
+        io.table_out.repl.index = io.regs.write_set_r;
+        io.table_out.repl.payload =
+            build_repl_payload(io.regs.write_repl_next_way_r);
+        io.table_out.repl.byte_enable.assign(AXI_LLC_REPL_BYTES, 1);
+
+        io.reg_write.write_cache_done_r = true;
+        io.reg_write.write_cache_pending_r = false;
+      } else {
+        const uint8_t slot = io.regs.victim_wb_mshr_slot_r;
+        if (slot < config_.mshr_num && slot < MAX_OUTSTANDING &&
+            io.regs.mshr[slot].valid) {
+          io.reg_write.mshr[slot].victim_writeback_done = true;
+        }
+      }
+    } else if (io.regs.write_active_r && io.regs.write_is_bypass_r) {
+      io.reg_write.write_mem_done_r = true;
+      io.reg_write.write_mem_resp_code_r = io.ext_in.mem.write_resp;
+    }
+  }
+  const bool bypass_mem_done =
+      io.regs.write_mem_done_r ||
+      (io.ext_in.mem.write_resp_valid && io.regs.write_active_r &&
+       io.regs.write_is_bypass_r &&
+       !(io.regs.victim_wb_valid_r && io.regs.victim_wb_issued_r));
+  const uint8_t bypass_resp_code =
+      (io.ext_in.mem.write_resp_valid && io.regs.write_active_r &&
+       io.regs.write_is_bypass_r &&
+       !(io.regs.victim_wb_valid_r && io.regs.victim_wb_issued_r))
+          ? io.ext_in.mem.write_resp
+          : io.regs.write_mem_resp_code_r;
+  const bool cacheable_done =
+      io.regs.write_cache_done_r &&
+      !(io.regs.victim_wb_valid_r || io.regs.write_cache_pending_r);
+  if (io.regs.write_active_r &&
+      ((io.regs.write_is_bypass_r && bypass_mem_done) ||
+       (!io.regs.write_is_bypass_r && cacheable_done))) {
     const uint8_t master = io.regs.write_active_master_r;
     io.reg_write.write_resp_valid_r[master] = true;
     io.reg_write.write_resp_id_r[master] = io.regs.write_active_id_r;
-    io.reg_write.write_resp_code_r[master] = io.ext_in.mem.write_resp;
+    io.reg_write.write_resp_code_r[master] =
+        io.regs.write_is_bypass_r ? bypass_resp_code : 0;
     io.reg_write.write_active_r = false;
+    io.reg_write.write_is_bypass_r = false;
+    io.reg_write.write_mem_done_r = false;
+    io.reg_write.write_cache_done_r = false;
+    io.reg_write.write_cache_pending_r = false;
+    io.reg_write.write_mem_resp_code_r = 0;
+    io.reg_write.write_total_size_r = 0;
+    io.reg_write.write_set_r = 0;
+    io.reg_write.write_way_r = 0;
+    io.reg_write.write_repl_next_way_r = 0;
+    io.reg_write.write_tag_r = 0;
+    io.reg_write.write_data_r.clear();
+    io.reg_write.write_strobe_r.clear();
+    io.reg_write.write_line_r.clear();
+  }
+
+  if (io.regs.victim_wb_valid_r && !io.regs.victim_wb_issued_r) {
+    io.ext_out.mem.write_req_valid = true;
+    io.ext_out.mem.write_req_addr = io.regs.victim_wb_addr_r;
+    io.ext_out.mem.write_req_data = io.regs.victim_wb_data_r;
+    io.ext_out.mem.write_req_strobe = io.regs.victim_wb_strobe_r;
+    io.ext_out.mem.write_req_size = static_cast<uint8_t>(config_.line_bytes - 1);
+    io.ext_out.mem.write_req_id = 0;
+    if (io.ext_in.mem.write_req_ready) {
+      io.reg_write.victim_wb_issued_r = true;
+    }
+    return;
   }
 
   const int write_master = pick_new_write_master(io.regs);
   if (write_master >= 0) {
     const auto &req = io.ext_in.upstream.write_req[write_master];
-    io.ext_out.upstream.write_req[write_master].ready = io.ext_in.mem.write_req_ready;
-    io.ext_out.mem.write_req_valid = req.valid;
-    io.ext_out.mem.write_req_addr = req.addr;
-    io.ext_out.mem.write_req_data = req.wdata;
-    io.ext_out.mem.write_req_strobe = req.wstrb;
-    io.ext_out.mem.write_req_size = req.total_size;
-    io.ext_out.mem.write_req_id = req.id;
-    if (req.valid && io.ext_in.mem.write_req_ready) {
-      if (!req.bypass) {
-        io.table_out.invalidate_all = true;
+    const bool cacheable_write = !req.bypass;
+    const bool can_accept_cacheable =
+        !io.regs.lookup_valid_r && !io.regs.victim_wb_valid_r;
+    const bool can_accept = cacheable_write ? can_accept_cacheable
+                                            : io.ext_in.mem.write_req_ready;
+    io.ext_out.upstream.write_req[write_master].ready = can_accept;
+    if (req.bypass) {
+      io.ext_out.mem.write_req_valid = req.valid && can_accept;
+      io.ext_out.mem.write_req_addr = req.addr;
+      io.ext_out.mem.write_req_data = req.wdata;
+      io.ext_out.mem.write_req_strobe = req.wstrb;
+      io.ext_out.mem.write_req_size = req.total_size;
+      io.ext_out.mem.write_req_id = req.id;
+    }
+    if (req.valid && can_accept) {
+      if (!req.bypass && is_focus_llc_line(req.addr)) {
+        std::printf("[FOCUS][LLC][WR ACCEPT] cyc=%lld master=%d addr=0x%08x size=%u id=%u\n",
+                    sim_time, write_master, req.addr,
+                    static_cast<unsigned>(req.total_size),
+                    static_cast<unsigned>(req.id));
       }
       io.reg_write.write_active_r = true;
+      io.reg_write.write_is_bypass_r = req.bypass;
+      io.reg_write.write_mem_done_r = false;
+      io.reg_write.write_cache_done_r = req.bypass;
+      io.reg_write.write_cache_pending_r = false;
       io.reg_write.write_active_master_r = static_cast<uint8_t>(write_master);
       io.reg_write.write_active_id_r = req.id;
+      io.reg_write.write_mem_resp_code_r = 0;
+      io.reg_write.write_total_size_r = req.total_size;
+      io.reg_write.write_data_r = req.wdata;
+      io.reg_write.write_strobe_r = req.wstrb;
       io.reg_write.rr_write_master_r =
           static_cast<uint8_t>((write_master + 1) % NUM_WRITE_MASTERS);
-      io.reg_write.perf.write_passthrough++;
+      io.reg_write.write_line_r.clear();
+      if (!req.bypass) {
+        io.reg_write.lookup_valid_r = true;
+        io.reg_write.lookup_issued_r = false;
+        io.reg_write.lookup_addr_r = req.addr;
+        io.reg_write.lookup_size_r = req.total_size;
+        io.reg_write.lookup_master_r = static_cast<uint8_t>(write_master);
+        io.reg_write.lookup_id_r = req.id;
+        io.reg_write.lookup_is_prefetch_r = false;
+        io.reg_write.lookup_is_invalidate_r = false;
+        io.reg_write.lookup_is_write_r = true;
+        io.reg_write.state = AXI_LLCState::kLookup;
+      } else {
+        io.reg_write.perf.write_passthrough++;
+      }
     }
   }
 }
@@ -489,6 +759,7 @@ void AXI_LLC::accept_maintenance_request() {
   io.reg_write.lookup_id_r = 0;
   io.reg_write.lookup_is_prefetch_r = false;
   io.reg_write.lookup_is_invalidate_r = true;
+  io.reg_write.lookup_is_write_r = false;
   io.reg_write.state = AXI_LLCState::kLookup;
   io.ext_out.mem.invalidate_line_accepted = true;
 }
@@ -526,6 +797,7 @@ bool AXI_LLC::try_complete_lookup() {
 
   const bool is_prefetch_lookup = io.regs.lookup_is_prefetch_r;
   const bool is_invalidate_lookup = io.regs.lookup_is_invalidate_r;
+  const bool is_write_lookup = io.regs.lookup_is_write_r;
   const uint8_t lookup_slot_id = io.regs.lookup_id_r;
   const uint32_t set = set_index(config_, io.regs.lookup_addr_r);
   const uint32_t tag = tag_of(config_, io.regs.lookup_addr_r);
@@ -537,6 +809,47 @@ bool AXI_LLC::try_complete_lookup() {
                             &hit_meta);
 
   if (hit_way >= 0) {
+    if (is_write_lookup) {
+      if (is_focus_llc_line(io.regs.lookup_addr_r)) {
+        std::printf("[FOCUS][LLC][WR HIT] cyc=%lld addr=0x%08x set=%u way=%d tag=0x%08x word0=0x%08x word1=0x%08x word2=0x%08x word3=0x%08x\n",
+                    sim_time, io.regs.lookup_addr_r, set, hit_way, tag,
+                    io.regs.write_data_r[0], io.regs.write_data_r[1],
+                    io.regs.write_data_r[2], io.regs.write_data_r[3]);
+      }
+      AXI_LLC_Bytes_t line =
+          extract_way_line_bytes(config_, io.lookup_in.data, hit_way);
+      merge_write_into_line(line, io.regs.write_data_r, io.regs.write_strobe_r,
+                            io.regs.write_total_size_r);
+      AXI_LLCMetaEntry_t meta{};
+      meta.tag = tag;
+      meta.flags = static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY);
+      io.table_out.data.enable = true;
+      io.table_out.data.write = true;
+      io.table_out.data.index = set;
+      io.table_out.data.way = static_cast<uint32_t>(hit_way);
+      io.table_out.data.payload = line;
+      io.table_out.data.byte_enable.assign(config_.line_bytes, 1);
+      io.table_out.meta.enable = true;
+      io.table_out.meta.write = true;
+      io.table_out.meta.index = set;
+      io.table_out.meta.way = static_cast<uint32_t>(hit_way);
+      encode_meta(meta, io.table_out.meta.payload);
+      io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
+      io.table_out.repl.enable = true;
+      io.table_out.repl.write = true;
+      io.table_out.repl.index = set;
+      io.table_out.repl.payload =
+          build_repl_payload(static_cast<uint32_t>((hit_way + 1) % config_.ways));
+      io.table_out.repl.byte_enable.assign(AXI_LLC_REPL_BYTES, 1);
+      io.reg_write.lookup_valid_r = false;
+      io.reg_write.lookup_issued_r = false;
+      io.reg_write.lookup_is_prefetch_r = false;
+      io.reg_write.lookup_is_invalidate_r = false;
+      io.reg_write.lookup_is_write_r = false;
+      io.reg_write.write_cache_done_r = true;
+      io.reg_write.state = AXI_LLCState::kIdle;
+      return true;
+    }
     if (is_invalidate_lookup) {
       AXI_LLCMetaEntry_t meta = hit_meta;
       meta.flags = 0;
@@ -550,6 +863,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.lookup_issued_r = false;
       io.reg_write.lookup_is_prefetch_r = false;
       io.reg_write.lookup_is_invalidate_r = false;
+      io.reg_write.lookup_is_write_r = false;
       io.reg_write.state = AXI_LLCState::kIdle;
       return true;
     }
@@ -561,6 +875,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.lookup_issued_r = false;
       io.reg_write.lookup_is_prefetch_r = false;
       io.reg_write.lookup_is_invalidate_r = false;
+      io.reg_write.lookup_is_write_r = false;
       io.reg_write.state = AXI_LLCState::kIdle;
       io.reg_write.perf.prefetch_drop_table_hit++;
       return true;
@@ -574,6 +889,11 @@ bool AXI_LLC::try_complete_lookup() {
     }
     const uint8_t master = io.regs.lookup_master_r;
     io.reg_write.read_resp_valid_r[master] = true;
+    if (is_focus_llc_line(io.regs.lookup_addr_r)) {
+      std::printf("[FOCUS][LLC][RD HIT] cyc=%lld addr=0x%08x set=%u way=%d tag=0x%08x word0=0x%08x word1=0x%08x\n",
+                  sim_time, io.regs.lookup_addr_r, set, hit_way, tag,
+                  read_u32_le(line.data() + 0), read_u32_le(line.data() + 4));
+    }
     io.reg_write.read_resp_id_r[master] = io.regs.lookup_id_r;
     io.reg_write.read_resp_data_r[master] =
         extract_line_response(config_, io.regs.lookup_addr_r, line);
@@ -598,8 +918,92 @@ bool AXI_LLC::try_complete_lookup() {
     io.reg_write.lookup_issued_r = false;
     io.reg_write.lookup_is_prefetch_r = false;
     io.reg_write.lookup_is_invalidate_r = false;
+    io.reg_write.lookup_is_write_r = false;
     io.reg_write.state = AXI_LLCState::kIdle;
     io.reg_write.perf.read_hit++;
+    return true;
+  }
+
+  if (is_write_lookup) {
+    const uint32_t repl_way_raw = decode_repl_way(io.lookup_in.repl);
+    const uint8_t victim_way = static_cast<uint8_t>(
+        first_invalid_way >= 0 ? first_invalid_way : (repl_way_raw % config_.ways));
+    if (is_focus_llc_line(io.regs.lookup_addr_r)) {
+      std::printf("[FOCUS][LLC][WR MISS] cyc=%lld addr=0x%08x set=%u victim_way=%u invalid_way=%d repl=%u tag=0x%08x\n",
+                  sim_time, io.regs.lookup_addr_r, set,
+                  static_cast<unsigned>(victim_way), first_invalid_way,
+                  repl_way_raw, tag);
+    }
+    AXI_LLC_Bytes_t line;
+    line.resize(config_.line_bytes);
+    merge_write_into_line(line, io.regs.write_data_r, io.regs.write_strobe_r,
+                          io.regs.write_total_size_r);
+    const auto victim_meta =
+        decode_meta(io.lookup_in.meta, static_cast<uint32_t>(victim_way));
+    const bool victim_valid = (victim_meta.flags & AXI_LLC_META_VALID) != 0;
+    const bool victim_dirty = victim_valid &&
+                              ((victim_meta.flags & AXI_LLC_META_DIRTY) != 0);
+    const auto victim_line =
+        extract_way_line_bytes(config_, io.lookup_in.data, victim_way);
+    AXI_LLCMetaEntry_t meta{};
+    meta.tag = tag;
+    meta.flags = static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY);
+    const uint32_t repl_next_way =
+        static_cast<uint32_t>((victim_way + 1) % config_.ways);
+    if (victim_dirty) {
+      if (is_focus_llc_line(io.regs.lookup_addr_r)) {
+        std::printf("[FOCUS][LLC][WR MISS VICTIM] cyc=%lld addr=0x%08x victim_addr=0x%08x victim_way=%u\n",
+                    sim_time, io.regs.lookup_addr_r,
+                    build_line_addr_from_tag_set(config_, victim_meta.tag, set),
+                    static_cast<unsigned>(victim_way));
+      }
+      io.reg_write.victim_wb_valid_r = true;
+      io.reg_write.victim_wb_issued_r = false;
+      io.reg_write.victim_wb_for_write_r = true;
+      io.reg_write.victim_wb_mshr_slot_r = 0;
+      io.reg_write.victim_wb_addr_r =
+          build_line_addr_from_tag_set(config_, victim_meta.tag, set);
+      io.reg_write.victim_wb_data_r = line_bytes_to_write_words(victim_line);
+      io.reg_write.victim_wb_strobe_r = full_line_strobe(config_);
+      io.reg_write.write_cache_pending_r = true;
+      io.reg_write.write_set_r = set;
+      io.reg_write.write_way_r = victim_way;
+      io.reg_write.write_repl_next_way_r = repl_next_way;
+      io.reg_write.write_tag_r = tag;
+      io.reg_write.write_line_r = line_bytes_to_write_words(line);
+    } else {
+      if (is_focus_llc_line(io.regs.lookup_addr_r)) {
+        std::printf("[FOCUS][LLC][WR MISS INSTALL] cyc=%lld addr=0x%08x set=%u way=%u word0=0x%08x word1=0x%08x word2=0x%08x word3=0x%08x\n",
+                    sim_time, io.regs.lookup_addr_r, set,
+                    static_cast<unsigned>(victim_way),
+                    io.regs.write_data_r[0], io.regs.write_data_r[1],
+                    io.regs.write_data_r[2], io.regs.write_data_r[3]);
+      }
+      io.table_out.data.enable = true;
+      io.table_out.data.write = true;
+      io.table_out.data.index = set;
+      io.table_out.data.way = victim_way;
+      io.table_out.data.payload = line;
+      io.table_out.data.byte_enable.assign(config_.line_bytes, 1);
+      io.table_out.meta.enable = true;
+      io.table_out.meta.write = true;
+      io.table_out.meta.index = set;
+      io.table_out.meta.way = victim_way;
+      encode_meta(meta, io.table_out.meta.payload);
+      io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
+      io.table_out.repl.enable = true;
+      io.table_out.repl.write = true;
+      io.table_out.repl.index = set;
+      io.table_out.repl.payload = build_repl_payload(repl_next_way);
+      io.table_out.repl.byte_enable.assign(AXI_LLC_REPL_BYTES, 1);
+      io.reg_write.write_cache_done_r = true;
+    }
+    io.reg_write.lookup_valid_r = false;
+    io.reg_write.lookup_issued_r = false;
+    io.reg_write.lookup_is_prefetch_r = false;
+    io.reg_write.lookup_is_invalidate_r = false;
+    io.reg_write.lookup_is_write_r = false;
+    io.reg_write.state = AXI_LLCState::kIdle;
     return true;
   }
 
@@ -608,6 +1012,7 @@ bool AXI_LLC::try_complete_lookup() {
     io.reg_write.lookup_issued_r = false;
     io.reg_write.lookup_is_prefetch_r = false;
     io.reg_write.lookup_is_invalidate_r = false;
+    io.reg_write.lookup_is_write_r = false;
     io.reg_write.state = AXI_LLCState::kIdle;
     return true;
   }
@@ -622,6 +1027,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.lookup_issued_r = false;
       io.reg_write.lookup_is_prefetch_r = false;
       io.reg_write.lookup_is_invalidate_r = false;
+      io.reg_write.lookup_is_write_r = false;
       io.reg_write.state = AXI_LLCState::kMiss;
       io.reg_write.perf.prefetch_drop_inflight++;
       return true;
@@ -642,6 +1048,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.lookup_issued_r = false;
       io.reg_write.lookup_is_prefetch_r = false;
       io.reg_write.lookup_is_invalidate_r = false;
+      io.reg_write.lookup_is_write_r = false;
       io.reg_write.state = AXI_LLCState::kMiss;
       io.reg_write.perf.prefetch_drop_mshr_full++;
       return true;
@@ -655,6 +1062,12 @@ bool AXI_LLC::try_complete_lookup() {
   const uint8_t victim_way = static_cast<uint8_t>(
       first_invalid_way >= 0 ? first_invalid_way : (repl_way_raw % config_.ways));
   auto &entry = io.reg_write.mshr[free_slot];
+  if (is_focus_llc_line(io.regs.lookup_addr_r)) {
+    std::printf("[FOCUS][LLC][RD MISS ALLOC] cyc=%lld addr=0x%08x slot=%d set=%u tag=0x%08x master=%u id=%u\n",
+                sim_time, io.regs.lookup_addr_r, free_slot, set, tag,
+                static_cast<unsigned>(io.regs.lookup_master_r),
+                static_cast<unsigned>(io.regs.lookup_id_r));
+  }
   entry = {};
   entry.valid = true;
   entry.is_prefetch = is_prefetch_lookup;
@@ -667,11 +1080,26 @@ bool AXI_LLC::try_complete_lookup() {
   entry.total_size = io.regs.lookup_size_r;
   entry.master = io.regs.lookup_master_r;
   entry.id = is_prefetch_lookup ? 0 : io.regs.lookup_id_r;
+  const auto victim_meta =
+      decode_meta(io.lookup_in.meta, static_cast<uint32_t>(victim_way));
+  const bool victim_valid = (victim_meta.flags & AXI_LLC_META_VALID) != 0;
+  entry.victim_dirty =
+      victim_valid && ((victim_meta.flags & AXI_LLC_META_DIRTY) != 0);
+  entry.victim_writeback_done = !entry.victim_dirty;
+  if (entry.victim_dirty) {
+    entry.victim_addr = build_line_addr_from_tag_set(config_, victim_meta.tag, set);
+    entry.victim_data = line_bytes_to_write_words(
+        extract_way_line_bytes(config_, io.lookup_in.data, victim_way));
+  } else {
+    entry.victim_addr = 0;
+    entry.victim_data.clear();
+  }
 
   io.reg_write.lookup_valid_r = false;
   io.reg_write.lookup_issued_r = false;
   io.reg_write.lookup_is_prefetch_r = false;
   io.reg_write.lookup_is_invalidate_r = false;
+  io.reg_write.lookup_is_write_r = false;
   io.reg_write.state = AXI_LLCState::kMiss;
   if (is_prefetch_lookup) {
     if (lookup_slot_id < AXI_LLC_MAX_PREFETCH_QUEUE) {
@@ -723,6 +1151,18 @@ void AXI_LLC::drive_mem_read_path() {
 
   const auto &entry = io.regs.mshr[commit_slot];
   if (!entry.refill_committed && !entry.bypass) {
+    if (entry.victim_dirty && !entry.victim_writeback_done) {
+      if (!io.regs.victim_wb_valid_r) {
+        io.reg_write.victim_wb_valid_r = true;
+        io.reg_write.victim_wb_issued_r = false;
+        io.reg_write.victim_wb_for_write_r = false;
+        io.reg_write.victim_wb_mshr_slot_r = static_cast<uint8_t>(commit_slot);
+        io.reg_write.victim_wb_addr_r = entry.victim_addr;
+        io.reg_write.victim_wb_data_r = entry.victim_data;
+        io.reg_write.victim_wb_strobe_r = full_line_strobe(config_);
+      }
+      return;
+    }
     const auto line_bytes = wide_to_line_bytes(config_, entry.refill_data);
     AXI_LLCMetaEntry_t meta{};
     meta.tag = entry.tag;
@@ -780,7 +1220,8 @@ void AXI_LLC::drive_mem_read_path() {
 }
 
 void AXI_LLC::accept_new_requests() {
-  const int master = pick_new_read_master(io.regs);
+  const auto &regs = io.reg_write;
+  const int master = pick_new_read_master(regs);
   if (master < 0) {
     return;
   }
@@ -791,7 +1232,7 @@ void AXI_LLC::accept_new_requests() {
   }
 
   if (req.bypass) {
-    const int free_slot = find_free_mshr(io.regs);
+    const int free_slot = find_free_mshr(regs);
     if (free_slot < 0) {
       return;
     }
@@ -817,7 +1258,13 @@ void AXI_LLC::accept_new_requests() {
   }
 
   const uint32_t req_line_addr = line_addr(config_, req.addr);
-  const int merge_slot = find_mshr_by_line_addr(io.regs, req_line_addr);
+  if (has_pending_upstream_write_line(req_line_addr)) {
+    return;
+  }
+  if (write_line_pending(regs, req_line_addr)) {
+    return;
+  }
+  const int merge_slot = find_mshr_by_line_addr(regs, req_line_addr);
   if (merge_slot >= 0) {
     return;
   }
@@ -837,6 +1284,7 @@ void AXI_LLC::accept_new_requests() {
   io.reg_write.lookup_id_r = req.id;
   io.reg_write.lookup_is_prefetch_r = false;
   io.reg_write.lookup_is_invalidate_r = false;
+  io.reg_write.lookup_is_write_r = false;
   io.reg_write.state = AXI_LLCState::kLookup;
 }
 

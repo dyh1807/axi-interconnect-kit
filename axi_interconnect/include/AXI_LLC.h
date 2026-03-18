@@ -197,6 +197,10 @@ struct AXI_LLCMissEntry_t {
   uint8_t total_size = 0;
   uint8_t master = 0;
   uint8_t id = 0;
+  bool victim_dirty = false;
+  bool victim_writeback_done = false;
+  uint32_t victim_addr = 0;
+  WideWriteData_t victim_data{};
   WideReadData_t refill_data{};
 };
 
@@ -218,6 +222,7 @@ struct AXI_LLC_Regs_t {
   uint8_t lookup_id_r = 0;
   bool lookup_is_prefetch_r = false;
   bool lookup_is_invalidate_r = false;
+  bool lookup_is_write_r = false;
   bool prefetch_stream_valid_r = false;
   uint32_t prefetch_last_miss_line_r = 0;
   uint8_t prefetch_quiet_cycles_r = 0;
@@ -231,11 +236,32 @@ struct AXI_LLC_Regs_t {
   uint8_t read_resp_id_r[NUM_READ_MASTERS] = {0};
 
   bool write_active_r = false;
+  bool write_is_bypass_r = false;
+  bool write_mem_done_r = false;
+  bool write_cache_done_r = false;
+  bool write_cache_pending_r = false;
   uint8_t write_active_master_r = 0;
   uint8_t write_active_id_r = 0;
+  uint8_t write_mem_resp_code_r = 0;
+  uint8_t write_total_size_r = 0;
+  uint32_t write_set_r = 0;
+  uint8_t write_way_r = 0;
+  uint32_t write_repl_next_way_r = 0;
+  uint32_t write_tag_r = 0;
+  WideWriteData_t write_data_r{};
+  WideWriteStrb_t write_strobe_r{};
+  WideWriteData_t write_line_r{};
   bool write_resp_valid_r[NUM_WRITE_MASTERS] = {false};
   uint8_t write_resp_id_r[NUM_WRITE_MASTERS] = {0};
   uint8_t write_resp_code_r[NUM_WRITE_MASTERS] = {0};
+
+  bool victim_wb_valid_r = false;
+  bool victim_wb_issued_r = false;
+  bool victim_wb_for_write_r = false;
+  uint8_t victim_wb_mshr_slot_r = 0;
+  uint32_t victim_wb_addr_r = 0;
+  WideWriteData_t victim_wb_data_r{};
+  WideWriteStrb_t victim_wb_strobe_r{};
 
   AXI_LLCMissEntry_t mshr[MAX_OUTSTANDING] = {};
 };
@@ -263,6 +289,7 @@ public:
   void seq();
   bool can_accept_read_now(uint8_t master, bool bypass, uint32_t addr) const;
   const AXI_LLCPerfCounters_t &perf_counters() const { return io.regs.perf; }
+  void debug_print() const;
 
   static uint32_t line_words(const AXI_LLCConfig &config);
   static uint32_t line_addr(const AXI_LLCConfig &config, uint32_t addr);
@@ -290,7 +317,9 @@ private:
   int find_free_prefetch_queue_slot(const AXI_LLC_Regs_t &regs) const;
   int pick_prefetch_queue_slot(const AXI_LLC_Regs_t &regs) const;
   bool prefetch_candidate_exists(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  bool has_pending_upstream_write_line(uint32_t line_addr) const;
   bool can_allocate_prefetch_mshr(const AXI_LLC_Regs_t &regs) const;
+  bool write_line_pending(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
   bool line_has_valid_meta(const AXI_LLC_Bytes_t &meta_payload, uint32_t tag,
                            int *hit_way, int *first_invalid_way,
                            AXI_LLCMetaEntry_t *hit_meta) const;
