@@ -81,15 +81,16 @@
 
 ## LLC（AXI4 路径）
 
-`AXI_LLC` 是 AXI4 路径上的可选共享统一 LLC。当前父模拟器的接线是
-`icache-first`：只有 `icache` 读主设备目前走 LLC 上游路径，因此这里不
-表示 `dcache` 已经接入 LLC。
+`AXI_LLC` 是 AXI4 路径上的可选共享统一 LLC。在
+`axi-interconnect-kit` 子模块内部，它已经按“AXI4 interconnect 之后的共享
+LLC”来建模：cacheable 读主设备以及 cacheable/bypass 写主设备，都可以走
+同一套 LLC 上游协议。父模拟器最终接哪些端口，仍由上层决定，但子模块实现
+和测试本身已经不再假设“只先接 icache”。
 
 当前组织形态：
 
 ```text
-上游读主设备
-（当前 simulator 接线：先接 icache）
+上游读/写主设备
             |
             v
    +----------------------+
@@ -114,14 +115,22 @@
 
 当前行为与默认配置：
 
-- 它是 AXI4 路径上的可选共享统一 LLC；当前父模拟器先接入的是 `icache`
-  读路径。
+- 它是 AXI4 路径上的可选共享统一 LLC。
 - 默认配置为 `8MB`、`64B` cache line、`16-way`、`4` 个 MSHR、lookup
   latency 为 `8` cycles。
 - 当前 prefetch 路径可由 `prefetch_enable` 和 `prefetch_degree` 配置；
   在当前 simulator 分支里，`degree=1` 和 `degree=2` 都有实现。
-- `bypass` 请求不会进入 LLC 的 lookup/fill 路径，而是直接下发到下游，
-  不占用 LLC 表项状态。
+- AXI4 读路径支持多个 outstanding：当前上限为全局 `8` 个、单个读 master
+  `4` 个。
+- cacheable write 在 AXI4 路径下已经由 LLC 自己接管：write hit/miss、
+  victim writeback、写响应返回都在 LLC 内部完成。
+- `bypass read` 会先查询 LLC：命中时可以直接返回 LLC 中的最新 resident line，
+  失配时才直接下发到下游，并且不会分配 LLC 表项。
+- `bypass write` 现在按“write-through maintenance”处理：命中 resident
+  line 时会更新 LLC 中的该 line，但不会设置 `DIRTY`；失配时直接下发到下游，
+  且不会为此分配新的 LLC line。
+- 子行 `bypass write` 会按 `addr % line_bytes` 合并到正确的 byte offset，
+  不再默认从 line 起始位置覆盖。
 - cacheable demand miss 使用父模拟器提供的外部 SRAM 风格 `data` /
   `meta` / `repl` 表。
 - 当前 next-line prefetch 逻辑是“保守但回填到表”的版本：检测到连续两个
@@ -131,6 +140,9 @@
 - demand 流量始终优先于 prefetch lookup / memory issue；一旦 LLC 真正接受
   新的 demand，请求队列中的 prefetch 候选会被丢弃，因此 prefetch 更像
   “后台尽力而为”流量，而不会与主请求路径竞争。
+- AXI4 写侧当前仍是保守实现：同一时刻只支持 `1` 个 write context /
+  write outstanding。
+- AXI3 支持仍然保留给过渡和测试使用，但 LLC 机制当前明确集中在 AXI4 路径。
 
 ## 接口信号文档
 

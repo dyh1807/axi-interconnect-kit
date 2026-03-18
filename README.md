@@ -83,16 +83,17 @@ Note:
 
 ## LLC (AXI4 path)
 
-`AXI_LLC` is an optional shared unified LLC on the AXI4 path. In the current
-parent-simulator hookup, the LLC upstream side is connected `icache`-first:
-only the `icache` read master is currently routed through the LLC path, so
-this README does not imply that `dcache` is already connected.
+`AXI_LLC` is an optional shared unified LLC on the AXI4 path. Inside
+`axi-interconnect-kit`, the LLC is modeled as a generic shared cache behind the
+AXI4 interconnect: cacheable read masters and cacheable/bypass write masters
+can all be driven through the same LLC-facing protocol. Parent-simulator
+hookup may still choose a narrower subset, but the submodule implementation and
+tests no longer assume an `icache-first`-only integration.
 
 Current organization:
 
 ```text
-Upstream read masters
-(current simulator hookup: icache first)
+Upstream read/write masters
             |
             v
    +----------------------+
@@ -117,15 +118,23 @@ Upstream read masters
 
 Current behavior and defaults:
 
-- Optional shared unified LLC only on the AXI4 path; the parent simulator
-  currently hooks up the `icache` read side first.
+- Optional shared unified LLC only on the AXI4 path.
 - Default config is `8MB`, `64B` lines, `16-way`, `4` MSHRs, lookup latency
   `8` cycles.
 - The current prefetch path is configurable by `prefetch_enable` and
   `prefetch_degree`; `degree=1` and `degree=2` are both supported in the
   current simulator branch.
-- Bypass requests do not enter the LLC lookup/fill path; they go downstream
-  without allocating LLC table state.
+- Cacheable reads allocate/refill through the LLC tables and can use multiple
+  read outstanding contexts (`8` global / `4` per read master in AXI4).
+- Cacheable writes are owned by the LLC path on AXI4. Write hit/miss handling,
+  victim writeback, and write response generation are all sequenced inside LLC.
+- Bypass reads consult LLC first: a hit can return the latest resident line,
+  while a miss goes downstream without allocating LLC state.
+- Bypass writes are modeled as write-through maintenance operations: on hit
+  they update the resident LLC line without setting `DIRTY`, and on miss they
+  go downstream without allocating a new LLC line.
+- Sub-line bypass writes are merged by `addr % line_bytes`, so partial writes
+  update the correct offset inside a resident line.
 - Cacheable demand misses use external SRAM-style `data` / `meta` / `repl`
   tables supplied by the parent simulator.
 - The current next-line prefetch logic is conservative but table-backed: after
@@ -137,6 +146,10 @@ Current behavior and defaults:
   Pending prefetch queue entries are dropped once a new demand is accepted, so
   the prefetch path behaves like best-effort background traffic instead of a
   competing upstream path.
+- AXI4 write-side concurrency is still conservative today: only one
+  write-context / write outstanding transaction is supported at a time.
+- AXI3 support is still present for transition/testing, but LLC functionality
+  is intentionally centered on the AXI4 path.
 
 ## Interface Signals
 
