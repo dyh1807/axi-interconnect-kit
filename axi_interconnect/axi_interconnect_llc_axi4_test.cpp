@@ -764,6 +764,61 @@ bool test_bypass_write_hit_updates_resident_line() {
   return true;
 }
 
+bool test_invalidate_all_drops_stale_refill_install() {
+  std::printf("=== AXI4 LLC Integration Test 7: invalidate_all drops stale refill install ===\n");
+
+  TestEnv env;
+  init_env(env);
+
+  const uint32_t line = 0x500;
+  const uint32_t addr = line + 0x10;
+  write_memory_line(line, 0x9100);
+
+  if (!issue_read(env, MASTER_ICACHE, addr, 15, 0x41, false)) {
+    std::printf("FAIL: first cacheable read not accepted\n");
+    return false;
+  }
+
+  int timeout = sim_ddr::SIM_DDR_LATENCY * 20;
+  while (env.ar_events.empty() && timeout-- > 0) {
+    cycle_outputs(env);
+    cycle_inputs(env);
+  }
+  if (env.ar_events.size() != 1) {
+    std::printf("FAIL: expected one outstanding DDR AR before invalidate_all, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  env.interconnect.set_llc_invalidate_all(true);
+  cycle_outputs(env);
+  cycle_inputs(env);
+  env.interconnect.set_llc_invalidate_all(false);
+
+  if (!wait_read_resp(env, MASTER_ICACHE, 0x41, 0x9104, 0x9105)) {
+    std::printf("FAIL: demand response after invalidate_all did not complete\n");
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, addr, 15, 0x42, false)) {
+    std::printf("FAIL: second cacheable read not accepted\n");
+    return false;
+  }
+  if (!wait_read_resp(env, MASTER_DCACHE_R, 0x42, 0x9104, 0x9105)) {
+    std::printf("FAIL: second cacheable read after invalidate_all failed\n");
+    return false;
+  }
+  if (env.ar_events.size() != 1) {
+    std::printf("FAIL: second cacheable read should miss LLC once after stale refill drop, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
 bool test_bypass_write_miss_does_not_allocate_line() {
   std::printf("=== AXI4 LLC Integration Test 7: bypass write miss does not allocate ===\n");
 
@@ -1150,6 +1205,12 @@ int main() {
   }
 
   if (test_bypass_write_hit_updates_resident_line()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_invalidate_all_drops_stale_refill_install()) {
     passed++;
   } else {
     failed++;

@@ -197,6 +197,7 @@ struct AXI_LLCMissEntry_t {
   uint8_t total_size = 0;
   uint8_t master = 0;
   uint8_t id = 0;
+  uint8_t epoch = 0;
   bool victim_dirty = false;
   bool victim_writeback_done = false;
   uint32_t victim_addr = 0;
@@ -242,6 +243,7 @@ struct AXI_LLC_Regs_t {
 
   uint8_t rr_read_master_r = 0;
   uint8_t rr_write_master_r = 0;
+  uint8_t invalidate_epoch_r = 0;
 
   bool read_resp_valid_r[NUM_READ_MASTERS] = {false};
   WideReadData_t read_resp_data_r[NUM_READ_MASTERS] = {};

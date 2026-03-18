@@ -1161,6 +1161,7 @@ bool AXI_LLC::try_complete_lookup() {
   entry.total_size = io.regs.lookup_size_r;
   entry.master = io.regs.lookup_master_r;
   entry.id = is_prefetch_lookup ? 0 : io.regs.lookup_id_r;
+  entry.epoch = io.regs.invalidate_epoch_r;
   const auto victim_meta =
       decode_meta(io.lookup_in.meta, static_cast<uint32_t>(victim_way));
   const bool victim_valid = (victim_meta.flags & AXI_LLC_META_VALID) != 0;
@@ -1232,6 +1233,33 @@ void AXI_LLC::drive_mem_read_path() {
   }
 
   const auto &entry = io.regs.mshr[commit_slot];
+  const bool stale_refill_epoch = entry.epoch != io.regs.invalidate_epoch_r;
+  if (entry.refill_valid && stale_refill_epoch) {
+    if (entry.is_prefetch) {
+      io.reg_write.mshr[commit_slot] = {};
+      io.reg_write.state = io.regs.lookup_valid_r ? AXI_LLCState::kLookup
+                                                  : AXI_LLCState::kIdle;
+      return;
+    }
+
+    if (io.regs.read_resp_valid_r[entry.master]) {
+      return;
+    }
+
+    WideReadData_t resp_data = entry.refill_data;
+    if (!entry.bypass) {
+      const auto line_bytes = wide_to_line_bytes(config_, entry.refill_data);
+      resp_data = extract_line_response(config_, entry.addr, line_bytes);
+    }
+    io.reg_write.read_resp_valid_r[entry.master] = true;
+    io.reg_write.read_resp_id_r[entry.master] = entry.id;
+    io.reg_write.read_resp_data_r[entry.master] = resp_data;
+    io.reg_write.mshr[commit_slot] = {};
+    io.reg_write.state = io.regs.lookup_valid_r ? AXI_LLCState::kLookup
+                                                : AXI_LLCState::kIdle;
+    return;
+  }
+
   if (!entry.refill_committed && !entry.bypass) {
     if (entry.victim_dirty && !entry.victim_writeback_done) {
       if (!io.regs.victim_wb_valid_r) {
@@ -1383,6 +1411,8 @@ void AXI_LLC::comb() {
     io.table_out.invalidate_all = true;
     io.reg_write = io.regs;
     io.reg_write.enable_r = true;
+    io.reg_write.invalidate_epoch_r =
+        static_cast<uint8_t>(io.regs.invalidate_epoch_r + 1);
     if (io.regs.lookup_valid_r) {
       // Re-run the lookup against the invalidated tables on the next cycle so
       // an in-flight demand degrades into a cache miss instead of being

@@ -1534,6 +1534,101 @@ bool test_line_invalidate_same_line_inflight_rejected() {
   return true;
 }
 
+bool test_invalidate_all_drops_stale_refill_install() {
+  printf("=== LLC Test 17: invalidate_all drops stale refill install ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t addr = 0x540;
+  const uint32_t line_addr = AXI_LLC::line_addr(config, addr);
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].addr = addr;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].total_size = 15;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].id = 0x41;
+  cycle(llc);
+
+  drive_lookup_miss(llc, config);
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.read_req_ready = true;
+  llc.comb();
+  if (!llc.io.ext_out.mem.read_req_valid ||
+      llc.io.ext_out.mem.read_req_addr != line_addr) {
+    printf("FAIL: stale-refill setup mem req mismatch valid=%d addr=0x%x\n",
+           static_cast<int>(llc.io.ext_out.mem.read_req_valid),
+           llc.io.ext_out.mem.read_req_addr);
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.invalidate_all = true;
+  llc.comb();
+  if (!llc.io.table_out.invalidate_all) {
+    printf("FAIL: invalidate_all pulse was not emitted\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.read_resp_valid = true;
+  llc.io.ext_in.mem.read_resp_id = 0;
+  llc.io.ext_in.mem.read_resp_data = make_line_data(0x9000);
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.comb();
+  if (llc.io.table_out.data.write || llc.io.table_out.meta.write ||
+      llc.io.table_out.repl.write) {
+    printf("FAIL: stale refill incorrectly installed into LLC\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].valid ||
+      llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].id != 0x41 ||
+      llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].data[0] != 0x9000) {
+    printf("FAIL: stale refill did not return correct demand response id=%u d0=0x%x\n",
+           llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].id,
+           llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].data[0]);
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_resp[MASTER_ICACHE].ready = true;
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_req[MASTER_DCACHE_R].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_DCACHE_R].addr = addr;
+  llc.io.ext_in.upstream.read_req[MASTER_DCACHE_R].total_size = 15;
+  llc.io.ext_in.upstream.read_req[MASTER_DCACHE_R].id = 0x42;
+  llc.comb();
+  if (!llc.io.ext_out.upstream.read_req[MASTER_DCACHE_R].ready) {
+    printf("FAIL: post-invalidate demand re-read not accepted\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: post-invalidate re-read did not miss LLC\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_cacheable_write_wins_lookup_slot() {
   printf("=== LLC Test 17: cacheable write wins shared lookup slot ===\n");
   AXI_LLC llc;
@@ -2079,6 +2174,11 @@ int main() {
     failed++;
 
   if (test_line_invalidate_same_line_inflight_rejected())
+    passed++;
+  else
+    failed++;
+
+  if (test_invalidate_all_drops_stale_refill_install())
     passed++;
   else
     failed++;
