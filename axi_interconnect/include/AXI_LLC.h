@@ -209,6 +209,17 @@ struct AXI_LLCPrefetchReq_t {
   uint32_t line_addr = 0;
 };
 
+struct AXI_LLCWritePendingReq_t {
+  bool valid = false;
+  bool bypass = false;
+  uint8_t master = 0;
+  uint8_t id = 0;
+  uint8_t total_size = 0;
+  uint32_t addr = 0;
+  WideWriteData_t wdata{};
+  WideWriteStrb_t wstrb{};
+};
+
 struct AXI_LLC_Regs_t {
   bool enable_r = false;
   AXI_LLCState state = AXI_LLCState::kDisabled;
@@ -238,6 +249,7 @@ struct AXI_LLC_Regs_t {
 
   bool write_active_r = false;
   bool write_is_bypass_r = false;
+  bool write_mem_issued_r = false;
   bool write_mem_done_r = false;
   bool write_cache_done_r = false;
   bool write_cache_pending_r = false;
@@ -245,6 +257,7 @@ struct AXI_LLC_Regs_t {
   uint8_t write_active_id_r = 0;
   uint8_t write_mem_resp_code_r = 0;
   uint8_t write_total_size_r = 0;
+  uint32_t write_addr_r = 0;
   uint32_t write_line_addr_r = 0;
   uint32_t write_set_r = 0;
   uint8_t write_way_r = 0;
@@ -253,6 +266,10 @@ struct AXI_LLC_Regs_t {
   WideWriteData_t write_data_r{};
   WideWriteStrb_t write_strobe_r{};
   WideWriteData_t write_line_r{};
+  uint8_t write_q_head_r = 0;
+  uint8_t write_q_tail_r = 0;
+  uint8_t write_q_count_r = 0;
+  AXI_LLCWritePendingReq_t write_q[MAX_WRITE_OUTSTANDING] = {};
   bool write_resp_valid_r[NUM_WRITE_MASTERS] = {false};
   uint8_t write_resp_id_r[NUM_WRITE_MASTERS] = {0};
   uint8_t write_resp_code_r[NUM_WRITE_MASTERS] = {0};
@@ -315,6 +332,10 @@ private:
   int pick_refill_commit_slot(const AXI_LLC_Regs_t &regs) const;
   int pick_new_read_master(const AXI_LLC_Regs_t &regs) const;
   int pick_new_write_master(const AXI_LLC_Regs_t &regs) const;
+  bool write_queue_full(const AXI_LLC_Regs_t &regs) const;
+  bool write_queue_empty(const AXI_LLC_Regs_t &regs) const;
+  const AXI_LLCWritePendingReq_t *write_queue_front(
+      const AXI_LLC_Regs_t &regs) const;
   int find_prefetch_queue_slot(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
   int find_free_prefetch_queue_slot(const AXI_LLC_Regs_t &regs) const;
   int pick_prefetch_queue_slot(const AXI_LLC_Regs_t &regs) const;

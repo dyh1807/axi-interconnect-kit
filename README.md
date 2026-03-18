@@ -150,8 +150,11 @@ Current behavior and defaults:
   - non-LLC path can accept up to `MAX_WRITE_OUTSTANDING` pending writes and
     stream them downstream in AXI order with ID-matched B responses
   - LLC-enabled path can also queue up to `MAX_WRITE_OUTSTANDING` upstream
-    writes in the interconnect, but the LLC core still executes only one
-    active write context at a time
+    writes in the interconnect, and the LLC core now keeps its own pending
+    write queue behind the upstream latch
+  - LLC still serializes actual write execution through a single active
+    write pipeline; queued writes are promoted one-at-a-time, and same-master
+    promotion waits until the previous write response slot has been consumed
 - AXI3 support is still present for transition/testing, but LLC functionality
   is intentionally centered on the AXI4 path.
 

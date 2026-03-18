@@ -222,22 +222,25 @@ bool AXI_LLC::has_pending_upstream_write_line(uint32_t line_addr_value) const {
 
 bool AXI_LLC::write_line_pending(const AXI_LLC_Regs_t &regs,
                                  uint32_t line_addr_value) const {
-  if (!regs.write_active_r) {
-    return false;
+  if (regs.write_active_r && regs.write_line_addr_r == line_addr_value) {
+    if (regs.write_is_bypass_r) {
+      return !regs.write_mem_done_r;
+    }
+    if (!regs.write_cache_done_r) {
+      return true;
+    }
   }
-  if (regs.write_line_addr_r != line_addr_value) {
-    return false;
+  for (uint32_t i = 0; i < regs.write_q_count_r && i < MAX_WRITE_OUTSTANDING; ++i) {
+    const uint32_t slot = (regs.write_q_head_r + i) % MAX_WRITE_OUTSTANDING;
+    const auto &entry = regs.write_q[slot];
+    if (!entry.valid) {
+      continue;
+    }
+    if (line_addr(config_, entry.addr) == line_addr_value) {
+      return true;
+    }
   }
-  if (regs.write_is_bypass_r) {
-    return !regs.write_cache_done_r;
-  }
-  if (regs.write_cache_done_r) {
-    return false;
-  }
-  if (regs.write_cache_pending_r) {
-    return true;
-  }
-  return true;
+  return false;
 }
 
 uint32_t AXI_LLC::line_words(const AXI_LLCConfig &config) {
@@ -417,17 +420,31 @@ int AXI_LLC::pick_new_read_master(const AXI_LLC_Regs_t &regs) const {
 }
 
 int AXI_LLC::pick_new_write_master(const AXI_LLC_Regs_t &regs) const {
-  if (regs.write_active_r) {
-    return -1;
-  }
   for (uint32_t off = 0; off < NUM_WRITE_MASTERS; ++off) {
     const uint32_t idx = (regs.rr_write_master_r + off) % NUM_WRITE_MASTERS;
     const auto &req = io.ext_in.upstream.write_req[idx];
-    if (req.valid && !regs.write_resp_valid_r[idx]) {
+    if (req.valid) {
       return static_cast<int>(idx);
     }
   }
   return -1;
+}
+
+bool AXI_LLC::write_queue_full(const AXI_LLC_Regs_t &regs) const {
+  return regs.write_q_count_r >= MAX_WRITE_OUTSTANDING;
+}
+
+bool AXI_LLC::write_queue_empty(const AXI_LLC_Regs_t &regs) const {
+  return regs.write_q_count_r == 0;
+}
+
+const AXI_LLCWritePendingReq_t *AXI_LLC::write_queue_front(
+    const AXI_LLC_Regs_t &regs) const {
+  if (write_queue_empty(regs)) {
+    return nullptr;
+  }
+  const auto &entry = regs.write_q[regs.write_q_head_r % MAX_WRITE_OUTSTANDING];
+  return entry.valid ? &entry : nullptr;
 }
 
 int AXI_LLC::find_prefetch_queue_slot(const AXI_LLC_Regs_t &regs,
@@ -642,7 +659,8 @@ void AXI_LLC::drive_write_path() {
           io.reg_write.mshr[slot].victim_writeback_done = true;
         }
       }
-    } else if (io.regs.write_active_r && io.regs.write_is_bypass_r) {
+    } else if (io.regs.write_active_r && io.regs.write_is_bypass_r &&
+               io.regs.write_mem_issued_r) {
       io.reg_write.write_mem_done_r = true;
       io.reg_write.write_mem_resp_code_r = io.ext_in.mem.write_resp;
     }
@@ -671,11 +689,13 @@ void AXI_LLC::drive_write_path() {
         io.regs.write_is_bypass_r ? bypass_resp_code : 0;
     io.reg_write.write_active_r = false;
     io.reg_write.write_is_bypass_r = false;
+    io.reg_write.write_mem_issued_r = false;
     io.reg_write.write_mem_done_r = false;
     io.reg_write.write_cache_done_r = false;
     io.reg_write.write_cache_pending_r = false;
     io.reg_write.write_mem_resp_code_r = 0;
     io.reg_write.write_total_size_r = 0;
+    io.reg_write.write_addr_r = 0;
     io.reg_write.write_line_addr_r = 0;
     io.reg_write.write_set_r = 0;
     io.reg_write.write_way_r = 0;
@@ -699,54 +719,90 @@ void AXI_LLC::drive_write_path() {
     return;
   }
 
-  const int write_master = pick_new_write_master(io.regs);
-  if (write_master >= 0) {
-    const auto &req = io.ext_in.upstream.write_req[write_master];
-    const bool cacheable_write = !req.bypass;
-    const bool can_accept_cacheable =
-        !io.regs.lookup_valid_r && !io.regs.victim_wb_valid_r;
-    const bool can_accept =
-        can_accept_cacheable &&
-        (cacheable_write || io.ext_in.mem.write_req_ready);
-    io.ext_out.upstream.write_req[write_master].ready = can_accept;
-    if (req.bypass && req.valid && can_accept) {
-      io.ext_out.mem.write_req_valid = req.valid && can_accept;
-      io.ext_out.mem.write_req_addr = req.addr;
-      io.ext_out.mem.write_req_data = req.wdata;
-      io.ext_out.mem.write_req_strobe = req.wstrb;
-      io.ext_out.mem.write_req_size = req.total_size;
-      io.ext_out.mem.write_req_id = req.id;
+  if (io.regs.write_active_r && io.regs.write_is_bypass_r &&
+      !io.regs.write_mem_done_r && !io.regs.write_mem_issued_r) {
+    io.ext_out.mem.write_req_valid = true;
+    io.ext_out.mem.write_req_addr = io.regs.write_addr_r;
+    io.ext_out.mem.write_req_data = io.regs.write_data_r;
+    io.ext_out.mem.write_req_strobe = io.regs.write_strobe_r;
+    io.ext_out.mem.write_req_size = io.regs.write_total_size_r;
+    io.ext_out.mem.write_req_id = io.regs.write_active_id_r;
+    if (io.ext_in.mem.write_req_ready) {
+      io.reg_write.write_mem_issued_r = true;
     }
-    if (req.valid && can_accept) {
+  }
+
+  const int write_master = pick_new_write_master(io.regs);
+  if (write_master >= 0 && !write_queue_full(io.regs)) {
+    const auto &req = io.ext_in.upstream.write_req[write_master];
+    io.ext_out.upstream.write_req[write_master].ready = true;
+    if (req.valid) {
+      const uint8_t slot = io.regs.write_q_tail_r % MAX_WRITE_OUTSTANDING;
+      auto &entry = io.reg_write.write_q[slot];
+      entry = {};
+      entry.valid = true;
+      entry.bypass = req.bypass;
+      entry.master = static_cast<uint8_t>(write_master);
+      entry.id = req.id;
+      entry.total_size = req.total_size;
+      entry.addr = req.addr;
+      entry.wdata = req.wdata;
+      entry.wstrb = req.wstrb;
+      io.reg_write.write_q_tail_r =
+          static_cast<uint8_t>((slot + 1) % MAX_WRITE_OUTSTANDING);
+      io.reg_write.write_q_count_r =
+          static_cast<uint8_t>(io.regs.write_q_count_r + 1);
+      io.reg_write.rr_write_master_r =
+          static_cast<uint8_t>((write_master + 1) % NUM_WRITE_MASTERS);
+    }
+  }
+
+  if (!io.regs.write_active_r && !io.reg_write.write_active_r &&
+      !io.regs.lookup_valid_r && !io.reg_write.lookup_valid_r &&
+      !io.regs.victim_wb_valid_r && !io.reg_write.victim_wb_valid_r) {
+    const auto *entry = write_queue_front(io.reg_write);
+    if (entry != nullptr &&
+        !io.regs.write_resp_valid_r[entry->master] &&
+        !io.reg_write.write_resp_valid_r[entry->master]) {
       io.reg_write.write_active_r = true;
-      io.reg_write.write_is_bypass_r = req.bypass;
+      io.reg_write.write_is_bypass_r = entry->bypass;
+      io.reg_write.write_mem_issued_r = false;
       io.reg_write.write_mem_done_r = false;
       io.reg_write.write_cache_done_r = false;
       io.reg_write.write_cache_pending_r = false;
-      io.reg_write.write_active_master_r = static_cast<uint8_t>(write_master);
-      io.reg_write.write_active_id_r = req.id;
+      io.reg_write.write_active_master_r = entry->master;
+      io.reg_write.write_active_id_r = entry->id;
       io.reg_write.write_mem_resp_code_r = 0;
-      io.reg_write.write_total_size_r = req.total_size;
-      io.reg_write.write_line_addr_r = line_addr(config_, req.addr);
-      io.reg_write.write_data_r = req.wdata;
-      io.reg_write.write_strobe_r = req.wstrb;
-      io.reg_write.rr_write_master_r =
-          static_cast<uint8_t>((write_master + 1) % NUM_WRITE_MASTERS);
+      io.reg_write.write_total_size_r = entry->total_size;
+      io.reg_write.write_addr_r = entry->addr;
+      io.reg_write.write_line_addr_r = line_addr(config_, entry->addr);
+      io.reg_write.write_set_r = 0;
+      io.reg_write.write_way_r = 0;
+      io.reg_write.write_repl_next_way_r = 0;
+      io.reg_write.write_tag_r = 0;
+      io.reg_write.write_data_r = entry->wdata;
+      io.reg_write.write_strobe_r = entry->wstrb;
       io.reg_write.write_line_r.clear();
       io.reg_write.lookup_valid_r = true;
       io.reg_write.lookup_issued_r = false;
-      io.reg_write.lookup_addr_r = req.addr;
-      io.reg_write.lookup_size_r = req.total_size;
-      io.reg_write.lookup_master_r = static_cast<uint8_t>(write_master);
-      io.reg_write.lookup_id_r = req.id;
+      io.reg_write.lookup_addr_r = entry->addr;
+      io.reg_write.lookup_size_r = entry->total_size;
+      io.reg_write.lookup_master_r = entry->master;
+      io.reg_write.lookup_id_r = entry->id;
       io.reg_write.lookup_is_prefetch_r = false;
       io.reg_write.lookup_is_invalidate_r = false;
       io.reg_write.lookup_is_write_r = true;
-      io.reg_write.lookup_is_bypass_r = req.bypass;
+      io.reg_write.lookup_is_bypass_r = entry->bypass;
       io.reg_write.state = AXI_LLCState::kLookup;
-      if (req.bypass) {
+      if (entry->bypass) {
         io.reg_write.perf.write_passthrough++;
       }
+      io.reg_write.write_q[io.reg_write.write_q_head_r % MAX_WRITE_OUTSTANDING] = {};
+      io.reg_write.write_q_head_r =
+          static_cast<uint8_t>((io.reg_write.write_q_head_r + 1) %
+                               MAX_WRITE_OUTSTANDING);
+      io.reg_write.write_q_count_r =
+          static_cast<uint8_t>(io.reg_write.write_q_count_r - 1);
     }
   }
 }
