@@ -1037,6 +1037,219 @@ bool test_llc_latched_ar_not_ready_upstream() {
   return true;
 }
 
+bool test_llc_upstream_slot_blocks_ready() {
+  printf("=== Test 10: Occupied LLC upstream slot blocks new ready ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+  interconnect.req_ready_r[axi_interconnect::MASTER_ICACHE] = true;
+  interconnect.llc_upstream_req[axi_interconnect::MASTER_ICACHE].valid = true;
+  interconnect.llc_upstream_req[axi_interconnect::MASTER_ICACHE].addr = 0x80001000;
+  interconnect.llc_upstream_req[axi_interconnect::MASTER_ICACHE].total_size = 63;
+  interconnect.llc_upstream_req[axi_interconnect::MASTER_ICACHE].id = 2;
+
+  interconnect.comb_outputs();
+  if (interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.ready) {
+    printf("FAIL: occupied LLC upstream slot leaked ready\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_llc_write_resp_holds_until_ready() {
+  printf("=== Test 11: LLC write resp holds payload until ready ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  interconnect.llc.io.regs.write_resp_valid_r[axi_interconnect::MASTER_DCACHE_W] = true;
+  interconnect.llc.io.regs.write_resp_id_r[axi_interconnect::MASTER_DCACHE_W] = 5;
+  interconnect.llc.io.regs.write_resp_code_r[axi_interconnect::MASTER_DCACHE_W] =
+      sim_ddr::AXI_RESP_OKAY;
+
+  for (int cyc = 0; cyc < 4; ++cyc) {
+    clear_upstream_inputs(interconnect);
+    interconnect.comb_outputs();
+    auto &resp = interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp;
+    if (!resp.valid || resp.id != 5 || resp.resp != sim_ddr::AXI_RESP_OKAY) {
+      printf("FAIL: LLC write resp changed under backpressure cyc=%d valid=%d id=%u resp=%u\n",
+             cyc, static_cast<int>(resp.valid), resp.id, resp.resp);
+      return false;
+    }
+    interconnect.seq();
+  }
+
+  clear_upstream_inputs(interconnect);
+  interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp.ready = true;
+  interconnect.comb_outputs();
+  if (!interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp.valid) {
+    printf("FAIL: LLC write resp missing before handshake\n");
+    return false;
+  }
+  interconnect.seq();
+
+  clear_upstream_inputs(interconnect);
+  interconnect.comb_outputs();
+  if (interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp.valid) {
+    printf("FAIL: LLC write resp not cleared after handshake\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_single_write_context_limit(TestEnv &env) {
+  printf("=== Test 12: Single write context blocks second accept ===\n");
+
+  env.clear_events();
+  env.interconnect.init();
+  env.ddr.init();
+
+  const uint32_t addr0 = 0x1A000;
+  const uint32_t addr1 = 0x1A040;
+  axi_interconnect::WideData256_t data0;
+  axi_interconnect::WideData256_t data1;
+  data0.clear();
+  data1.clear();
+  data0[0] = 0xABCDEF01;
+  data1[0] = 0x12345678;
+
+  bool first_issued = false;
+  int timeout = 200;
+  while (!first_issued && timeout-- > 0) {
+    cycle_outputs(env);
+    bool ready_snapshot = env.interconnect.write_port.req.ready;
+
+    env.interconnect.write_port.req.valid = true;
+    env.interconnect.write_port.req.addr = addr0;
+    env.interconnect.write_port.req.wdata = data0;
+    env.interconnect.write_port.req.wstrb = 0xF;
+    env.interconnect.write_port.req.total_size = 3;
+    env.interconnect.write_port.req.id = 1;
+
+    cycle_inputs(env);
+    if (ready_snapshot) {
+      first_issued = true;
+    }
+  }
+  if (!first_issued) {
+    printf("FAIL: first write was not accepted\n");
+    return false;
+  }
+
+  for (int cyc = 0; cyc < 6; ++cyc) {
+    cycle_outputs(env);
+    bool ready_snapshot = env.interconnect.write_port.req.ready;
+
+    env.interconnect.write_port.req.valid = true;
+    env.interconnect.write_port.req.addr = addr1;
+    env.interconnect.write_port.req.wdata = data1;
+    env.interconnect.write_port.req.wstrb = 0xF;
+    env.interconnect.write_port.req.total_size = 3;
+    env.interconnect.write_port.req.id = 2;
+
+    cycle_inputs(env);
+    if (ready_snapshot) {
+      printf("FAIL: second write accepted while first context still busy cyc=%d\n",
+             cyc);
+      return false;
+    }
+  }
+
+  bool first_done = false;
+  timeout = sim_ddr::SIM_DDR_LATENCY * 40;
+  while (!first_done && timeout-- > 0) {
+    cycle_outputs(env);
+    if (env.interconnect.write_port.resp.valid) {
+      if (env.interconnect.write_port.resp.id != 1 ||
+          env.interconnect.write_port.resp.resp != sim_ddr::AXI_RESP_OKAY) {
+        printf("FAIL: first write resp mismatch id=%u resp=%u\n",
+               env.interconnect.write_port.resp.id,
+               env.interconnect.write_port.resp.resp);
+        return false;
+      }
+      env.interconnect.write_port.resp.ready = true;
+      first_done = true;
+    }
+    cycle_inputs(env);
+  }
+  if (!first_done) {
+    printf("FAIL: first write response timeout\n");
+    return false;
+  }
+
+  bool second_issued = false;
+  timeout = 200;
+  while (!second_issued && timeout-- > 0) {
+    cycle_outputs(env);
+    bool ready_snapshot = env.interconnect.write_port.req.ready;
+
+    env.interconnect.write_port.req.valid = true;
+    env.interconnect.write_port.req.addr = addr1;
+    env.interconnect.write_port.req.wdata = data1;
+    env.interconnect.write_port.req.wstrb = 0xF;
+    env.interconnect.write_port.req.total_size = 3;
+    env.interconnect.write_port.req.id = 2;
+
+    cycle_inputs(env);
+    if (ready_snapshot) {
+      second_issued = true;
+    }
+  }
+  if (!second_issued) {
+    printf("FAIL: second write was not accepted after first completed\n");
+    return false;
+  }
+
+  bool second_done = false;
+  timeout = sim_ddr::SIM_DDR_LATENCY * 40;
+  while (!second_done && timeout-- > 0) {
+    cycle_outputs(env);
+    if (env.interconnect.write_port.resp.valid) {
+      if (env.interconnect.write_port.resp.id != 2 ||
+          env.interconnect.write_port.resp.resp != sim_ddr::AXI_RESP_OKAY) {
+        printf("FAIL: second write resp mismatch id=%u resp=%u\n",
+               env.interconnect.write_port.resp.id,
+               env.interconnect.write_port.resp.resp);
+        return false;
+      }
+      env.interconnect.write_port.resp.ready = true;
+      second_done = true;
+    }
+    cycle_inputs(env);
+  }
+  if (!second_done) {
+    printf("FAIL: second write response timeout\n");
+    return false;
+  }
+
+  if (p_memory[addr0 >> 2] != data0[0] || p_memory[addr1 >> 2] != data1[0]) {
+    printf("FAIL: write context limit memory mismatch got0=0x%08x got1=0x%08x\n",
+           p_memory[addr0 >> 2], p_memory[addr1 >> 2]);
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 int main() {
   printf("====================================\n");
   printf("AXI-Interconnect Test Suite\n");
@@ -1090,6 +1303,21 @@ int main() {
     failed++;
 
   if (test_llc_latched_ar_not_ready_upstream())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_upstream_slot_blocks_ready())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_write_resp_holds_until_ready())
+    passed++;
+  else
+    failed++;
+
+  if (test_single_write_context_limit(env))
     passed++;
   else
     failed++;

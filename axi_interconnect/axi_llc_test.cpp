@@ -112,6 +112,22 @@ WideReadData_t make_line_data(uint32_t base_word) {
   return data;
 }
 
+void drive_lookup_miss(AXI_LLC &llc, const AXI_LLCConfig &config, uint32_t repl_way = 0) {
+  clear_inputs(llc);
+  llc.comb();
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
+  llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
+                               AXI_LLC_META_ENTRY_BYTES);
+  llc.io.lookup_in.repl = make_repl(repl_way);
+  cycle(llc);
+}
+
 bool test_hit_path() {
   printf("=== LLC Test 1: cacheable hit ===\n");
   AXI_LLC llc;
@@ -254,6 +270,8 @@ bool test_bypass_read() {
   llc.io.ext_in.upstream.read_req[MASTER_UNCORE_LSU_R].id = 6;
   llc.io.ext_in.upstream.read_req[MASTER_UNCORE_LSU_R].bypass = true;
   cycle(llc);
+
+  drive_lookup_miss(llc, config);
 
   clear_inputs(llc);
   llc.io.ext_in.mem.read_req_ready = true;
@@ -576,6 +594,8 @@ bool test_same_master_multi_mshr_bypass() {
   }
   llc.seq();
 
+  drive_lookup_miss(llc, config);
+
   clear_inputs(llc);
   llc.io.ext_in.upstream.read_req[MASTER_ICACHE].valid = true;
   llc.io.ext_in.upstream.read_req[MASTER_ICACHE].addr = reqs[1].addr;
@@ -588,6 +608,8 @@ bool test_same_master_multi_mshr_bypass() {
     return false;
   }
   llc.seq();
+
+  drive_lookup_miss(llc, config);
 
   clear_inputs(llc);
   llc.io.ext_in.mem.read_req_ready = true;
@@ -693,6 +715,8 @@ bool test_read_resp_holds_until_ready() {
   llc.io.ext_in.upstream.read_req[MASTER_ICACHE].id = 9;
   llc.io.ext_in.upstream.read_req[MASTER_ICACHE].bypass = true;
   cycle(llc);
+
+  drive_lookup_miss(llc, config);
 
   clear_inputs(llc);
   llc.io.ext_in.mem.read_req_ready = true;
@@ -1210,8 +1234,163 @@ bool test_line_invalidate_maintenance() {
   return true;
 }
 
+bool test_line_invalidate_same_set_other_way_survives() {
+  printf("=== LLC Test 15: line invalidate keeps other same-set way alive ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim_addr = 0x240;
+  const uint32_t survivor_addr = 0x340;
+  const uint32_t victim_tag = AXI_LLC::tag_of(config, victim_addr);
+  const uint32_t survivor_tag = AXI_LLC::tag_of(config, survivor_addr);
+  const uint32_t exp_word0 = 0x5500 + ((survivor_addr % config.line_bytes) / 4);
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.invalidate_line_valid = true;
+  llc.io.ext_in.mem.invalidate_line_addr = victim_addr;
+  llc.comb();
+  if (!llc.io.ext_out.mem.invalidate_line_accepted) {
+    printf("FAIL: targeted invalidate not accepted\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: targeted invalidate lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
+  write_line_words(llc.io.lookup_in.data, config, 0, 0x4400);
+  write_line_words(llc.io.lookup_in.data, config, 1, 0x5500);
+  llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
+                               AXI_LLC_META_ENTRY_BYTES);
+  AXI_LLCMetaEntry_t victim_meta{};
+  victim_meta.tag = victim_tag;
+  victim_meta.flags = static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY);
+  AXI_LLC_Bytes_t enc_victim;
+  AXI_LLC::encode_meta(victim_meta, enc_victim);
+  std::memcpy(llc.io.lookup_in.meta.data(), enc_victim.data(),
+              AXI_LLC_META_ENTRY_BYTES);
+  AXI_LLCMetaEntry_t survivor_meta{};
+  survivor_meta.tag = survivor_tag;
+  survivor_meta.flags = AXI_LLC_META_VALID;
+  AXI_LLC_Bytes_t enc_survivor;
+  AXI_LLC::encode_meta(survivor_meta, enc_survivor);
+  std::memcpy(llc.io.lookup_in.meta.data() + AXI_LLC_META_ENTRY_BYTES,
+              enc_survivor.data(), AXI_LLC_META_ENTRY_BYTES);
+  llc.io.lookup_in.repl = make_repl(0);
+  llc.comb();
+  if (!llc.io.table_out.meta.enable || !llc.io.table_out.meta.write ||
+      llc.io.table_out.meta.way != 0) {
+    printf("FAIL: targeted invalidate wrote wrong way=%u\n",
+           llc.io.table_out.meta.way);
+    return false;
+  }
+  const auto invalidated = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
+  if (invalidated.flags != 0) {
+    printf("FAIL: targeted invalidate did not clear victim flags=0x%x\n",
+           invalidated.flags);
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].addr = survivor_addr;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].total_size = 15;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].id = 12;
+  llc.comb();
+  if (!llc.io.ext_out.upstream.read_req[MASTER_ICACHE].ready) {
+    printf("FAIL: survivor read not accepted after targeted invalidate\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: survivor lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
+  write_line_words(llc.io.lookup_in.data, config, 0, 0x4400);
+  write_line_words(llc.io.lookup_in.data, config, 1, 0x5500);
+  llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
+                               AXI_LLC_META_ENTRY_BYTES);
+  AXI_LLCMetaEntry_t victim_meta_cleared{};
+  victim_meta_cleared.tag = victim_tag;
+  victim_meta_cleared.flags = 0;
+  AXI_LLC_Bytes_t enc_victim_cleared;
+  AXI_LLC::encode_meta(victim_meta_cleared, enc_victim_cleared);
+  std::memcpy(llc.io.lookup_in.meta.data(), enc_victim_cleared.data(),
+              AXI_LLC_META_ENTRY_BYTES);
+  std::memcpy(llc.io.lookup_in.meta.data() + AXI_LLC_META_ENTRY_BYTES,
+              enc_survivor.data(), AXI_LLC_META_ENTRY_BYTES);
+  llc.io.lookup_in.repl = make_repl(0);
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.comb();
+  auto &resp = llc.io.ext_out.upstream.read_resp[MASTER_ICACHE];
+  if (!resp.valid || resp.id != 12 || resp.data[0] != exp_word0 ||
+      resp.data[1] != exp_word0 + 1) {
+    printf("FAIL: survivor line was lost after targeted invalidate id=%u d0=0x%x d1=0x%x\n",
+           resp.id, resp.data[0], resp.data[1]);
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_line_invalidate_same_line_inflight_rejected() {
+  printf("=== LLC Test 16: same-line invalidate blocked by inflight miss ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t addr = 0x240;
+  llc.io.regs.mshr[0].valid = true;
+  llc.io.regs.mshr[0].line_addr = AXI_LLC::line_addr(config, addr);
+  llc.io.regs.mshr[0].master = MASTER_ICACHE;
+  llc.io.regs.mshr[0].id = 3;
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.invalidate_line_valid = true;
+  llc.io.ext_in.mem.invalidate_line_addr = addr;
+  llc.comb();
+  if (llc.io.ext_out.mem.invalidate_line_accepted) {
+    printf("FAIL: same-line invalidate should not be accepted while miss is inflight\n");
+    return false;
+  }
+  if (llc.io.reg_write.lookup_valid_r) {
+    printf("FAIL: same-line invalidate incorrectly armed lookup state\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
 bool test_cacheable_write_wins_lookup_slot() {
-  printf("=== LLC Test 15: cacheable write wins shared lookup slot ===\n");
+  printf("=== LLC Test 17: cacheable write wins shared lookup slot ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -1272,8 +1451,129 @@ bool test_cacheable_write_wins_lookup_slot() {
   return true;
 }
 
+bool test_cacheable_write_hit_then_read_latest() {
+  printf("=== LLC Test 18: cacheable write hit is immediately readable ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t addr = 0x840;
+  const uint32_t tag = AXI_LLC::tag_of(config, addr);
+  const uint32_t exp_word0 = 0x6600 + ((addr % config.line_bytes) / 4);
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = addr;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size =
+      static_cast<uint8_t>(config.line_bytes - 1);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 13;
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[i] = 0x6600 + i;
+  }
+  for (uint32_t b = 0; b < config.line_bytes; ++b) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb.set(b, true);
+  }
+  llc.comb();
+  if (!llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready) {
+    printf("FAIL: write-hit request not accepted\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: write-hit lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data = make_data_set(config, 1, 0x2200);
+  llc.io.lookup_in.meta = make_meta_set_with_flags(config, 1, tag,
+      static_cast<uint8_t>(AXI_LLC_META_VALID));
+  llc.io.lookup_in.repl = make_repl(0);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.data.write ||
+      llc.io.table_out.data.way != 1 || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.meta.write || llc.io.table_out.meta.way != 1) {
+    printf("FAIL: write-hit table update missing way=%u meta_way=%u\n",
+           llc.io.table_out.data.way, llc.io.table_out.meta.way);
+    return false;
+  }
+  const auto hit_meta = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
+  if (hit_meta.tag != tag ||
+      hit_meta.flags != (AXI_LLC_META_VALID | AXI_LLC_META_DIRTY)) {
+    printf("FAIL: write-hit meta mismatch tag=0x%x flags=0x%x\n", hit_meta.tag,
+           hit_meta.flags);
+    return false;
+  }
+  cycle(llc);
+
+  clear_inputs(llc);
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.comb();
+  auto &wresp = llc.io.ext_out.upstream.write_resp[MASTER_DCACHE_W];
+  if (!wresp.valid || wresp.id != 13 || wresp.resp != 0) {
+    printf("FAIL: write-hit response mismatch id=%u resp=%u\n", wresp.id,
+           wresp.resp);
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].addr = addr;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].total_size = 15;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].id = 14;
+  llc.comb();
+  if (!llc.io.ext_out.upstream.read_req[MASTER_ICACHE].ready) {
+    printf("FAIL: post-write read request not accepted\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: post-write read lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data = make_data_set(config, 1, 0x6600);
+  llc.io.lookup_in.meta = make_meta_set_with_flags(
+      config, 1, tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  llc.io.lookup_in.repl = make_repl(0);
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.comb();
+  auto &rresp = llc.io.ext_out.upstream.read_resp[MASTER_ICACHE];
+  if (!rresp.valid || rresp.id != 14 || rresp.data[0] != exp_word0 ||
+      rresp.data[1] != exp_word0 + 1) {
+    printf("FAIL: post-write read saw stale data id=%u d0=0x%x d1=0x%x\n",
+           rresp.id, rresp.data[0], rresp.data[1]);
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
 bool test_pending_upstream_write_blocks_same_line_read() {
-  printf("=== LLC Test 16: pending upstream write blocks same-line read ===\n");
+  printf("=== LLC Test 19: pending upstream write blocks same-line read ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -1411,7 +1711,22 @@ int main() {
   else
     failed++;
 
+  if (test_line_invalidate_same_set_other_way_survives())
+    passed++;
+  else
+    failed++;
+
+  if (test_line_invalidate_same_line_inflight_rejected())
+    passed++;
+  else
+    failed++;
+
   if (test_cacheable_write_wins_lookup_slot())
+    passed++;
+  else
+    failed++;
+
+  if (test_cacheable_write_hit_then_read_latest())
     passed++;
   else
     failed++;

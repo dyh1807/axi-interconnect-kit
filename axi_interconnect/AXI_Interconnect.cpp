@@ -246,7 +246,9 @@ void AXI_Interconnect::comb_outputs() {
   // Use registered req.ready values (set by previous cycle's comb_inputs)
   // This ensures ICache sees req.ready in the same cycle as it transitions
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
-    read_ports[i].req.ready = req_ready_r[i];
+    const bool llc_slot_busy =
+        llc_enabled() && llc_upstream_req[i].valid && !ar_latched.valid;
+    read_ports[i].req.ready = req_ready_r[i] && !llc_slot_busy;
     read_ports[i].req.accepted = read_req_accepted[i];
   }
 

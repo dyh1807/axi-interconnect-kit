@@ -223,6 +223,7 @@ struct AXI_LLC_Regs_t {
   bool lookup_is_prefetch_r = false;
   bool lookup_is_invalidate_r = false;
   bool lookup_is_write_r = false;
+  bool lookup_is_bypass_r = false;
   bool prefetch_stream_valid_r = false;
   uint32_t prefetch_last_miss_line_r = 0;
   uint8_t prefetch_quiet_cycles_r = 0;
