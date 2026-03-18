@@ -819,6 +819,129 @@ bool test_invalidate_all_drops_stale_refill_install() {
   return true;
 }
 
+bool test_victim_writeback_maintenance_and_miss_interlock() {
+  std::printf("=== AXI4 LLC Integration Test 8: victim writeback + maintenance + miss interlock ===\n");
+
+  TestEnv env;
+  AXI_LLCConfig cfg = make_config();
+  cfg.size_bytes = 128;
+  cfg.line_bytes = 64;
+  cfg.ways = 1;
+  cfg.mshr_num = 2;
+  init_env(env, cfg);
+
+  const uint32_t line_a = 0x000;
+  const uint32_t line_b = 0x080;
+  const uint32_t addr_a = line_a + 0x8;
+  const uint32_t addr_b = line_b + 0x8;
+  write_memory_line(line_a, 0x1000);
+  write_memory_line(line_b, 0x2000);
+
+  WideWriteData_t wdata_a;
+  wdata_a.clear();
+  for (uint32_t i = 0; i < 16; ++i) {
+    wdata_a[i] = 0xA000 + i;
+  }
+  WideWriteStrb_t full_strobe;
+  full_strobe.clear();
+  for (uint32_t i = 0; i < 64; ++i) {
+    full_strobe.set(i, true);
+  }
+
+  if (!issue_write(env, MASTER_DCACHE_W, line_a, wdata_a, full_strobe, 63, 0x51, false) ||
+      !wait_write_resp(env, MASTER_DCACHE_W, 0x51)) {
+    std::printf("FAIL: dirty line A setup write failed\n");
+    return false;
+  }
+
+  if (!issue_read(env, MASTER_ICACHE, addr_b, 15, 0x52, false)) {
+    std::printf("FAIL: demand miss on line B not accepted\n");
+    return false;
+  }
+
+  int timeout = sim_ddr::SIM_DDR_LATENCY * 40;
+  bool saw_ar_b = false;
+  bool saw_aw_a = false;
+  while (timeout-- > 0 && (!saw_ar_b || !saw_aw_a)) {
+    cycle_outputs(env);
+    saw_ar_b = saw_ar_b || env.interconnect.axi_io.ar.arvalid;
+    saw_aw_a = saw_aw_a || env.interconnect.axi_io.aw.awvalid;
+    cycle_inputs(env);
+  }
+
+  if (!saw_ar_b || !saw_aw_a) {
+    std::printf("FAIL: did not observe both miss read and victim writeback traffic ar=%d aw=%d\n",
+                static_cast<int>(saw_ar_b), static_cast<int>(saw_aw_a));
+    return false;
+  }
+
+  env.interconnect.set_llc_invalidate_line(true, line_b);
+  cycle_outputs(env);
+  if (env.interconnect.llc_invalidate_line_accepted()) {
+    std::printf("FAIL: line-B invalidate accepted while line-B miss still inflight\n");
+    return false;
+  }
+  cycle_inputs(env);
+  env.interconnect.set_llc_invalidate_line(false, 0);
+
+  if (!wait_read_resp(env, MASTER_ICACHE, 0x52, 0x2002, 0x2003)) {
+    std::printf("FAIL: demand miss on line B did not complete correctly\n");
+    return false;
+  }
+
+  timeout = 100;
+  bool invalidate_accepted = false;
+  while (timeout-- > 0) {
+    env.interconnect.set_llc_invalidate_line(true, line_b);
+    cycle_outputs(env);
+    if (env.interconnect.llc_invalidate_line_accepted()) {
+      invalidate_accepted = true;
+      cycle_inputs(env);
+      env.interconnect.set_llc_invalidate_line(false, 0);
+      break;
+    }
+    cycle_inputs(env);
+    env.interconnect.set_llc_invalidate_line(false, 0);
+  }
+  if (!invalidate_accepted) {
+    std::printf("FAIL: line-B invalidate was never accepted after miss completion\n");
+    return false;
+  }
+
+  if (read_mem_word(addr_a) != 0xA002) {
+    std::printf("FAIL: dirty victim writeback did not reach memory got=0x%08x\n",
+                read_mem_word(addr_a));
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, addr_b, 15, 0x53, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x53, 0x2002, 0x2003)) {
+    std::printf("FAIL: post-maintenance line-B reread failed\n");
+    return false;
+  }
+  if (env.ar_events.size() != 1) {
+    std::printf("FAIL: post-maintenance line-B reread should miss LLC once, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, addr_a, 15, 0x54, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x54, 0xA002, 0xA003)) {
+    std::printf("FAIL: line-A reread after victim writeback failed\n");
+    return false;
+  }
+  if (env.ar_events.size() != 1) {
+    std::printf("FAIL: line-A reread after eviction should miss once, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
 bool test_bypass_write_miss_does_not_allocate_line() {
   std::printf("=== AXI4 LLC Integration Test 7: bypass write miss does not allocate ===\n");
 
@@ -1211,6 +1334,12 @@ int main() {
   }
 
   if (test_invalidate_all_drops_stale_refill_install()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_victim_writeback_maintenance_and_miss_interlock()) {
     passed++;
   } else {
     failed++;
