@@ -1964,8 +1964,8 @@ bool test_invalidate_all_drops_stale_refill_install() {
   return true;
 }
 
-bool test_invalidate_all_stalls_when_dirty_resident_present() {
-  printf("=== LLC Test 17c: invalidate_all stalls when dirty resident line exists ===\n");
+bool test_invalidate_all_busy_single_cycle_pulse_is_not_silent_accept() {
+  printf("=== LLC Test 17c: invalidate_all busy single-cycle pulse is not silent accept ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -2022,8 +2022,8 @@ bool test_invalidate_all_stalls_when_dirty_resident_present() {
   return true;
 }
 
-bool test_invalidate_all_stalls_until_dirty_victim_dependency_clears() {
-  printf("=== LLC Test 17d: invalidate_all waits for dirty victim dependency ===\n");
+bool test_invalidate_all_hold_until_accept_then_pulse() {
+  printf("=== LLC Test 17d: invalidate_all hold-until-accept then pulse ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -2834,12 +2834,12 @@ int main() {
   else
     failed++;
 
-  if (test_invalidate_all_stalls_when_dirty_resident_present())
+  if (test_invalidate_all_busy_single_cycle_pulse_is_not_silent_accept())
     passed++;
   else
     failed++;
 
-  if (test_invalidate_all_stalls_until_dirty_victim_dependency_clears())
+  if (test_invalidate_all_hold_until_accept_then_pulse())
     passed++;
   else
     failed++;

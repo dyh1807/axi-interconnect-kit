@@ -643,7 +643,7 @@ bool test_invalidate_all_drops_stale_refill_install() {
 }
 
 bool test_invalidate_all_after_dirty_cacheable_write_stalls_and_preserves_latest() {
-  std::printf("=== AXI4 LLC Integration Test 7b: invalidate_all stalls on dirty resident line ===\n");
+  std::printf("=== AXI4 LLC Integration Test 7b: invalidate_all stalls on dirty resident and preserves latest ===\n");
 
   Axi4LlcTestEnv env;
   init_env(env);
@@ -895,6 +895,107 @@ bool test_invalidate_all_waits_for_dirty_victim_writeback() {
   }
   if (env.ar_events.empty()) {
     std::printf("FAIL: reread after accepted invalidate_all should miss once\n");
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_invalidate_all_pending_blocks_new_frontend_requests_but_drains_captured_requests() {
+  std::printf("=== AXI4 LLC Integration Test 8c: invalidate_all pending blocks new frontend requests but drains captured requests ===\n");
+
+  Axi4LlcTestEnv env;
+  AXI_LLCConfig cfg = make_small_llc_config();
+  cfg.size_bytes = 128;
+  cfg.line_bytes = 64;
+  cfg.ways = 1;
+  cfg.mshr_num = 2;
+  init_env(env, cfg);
+
+  const uint32_t line_a = 0x000;
+  const uint32_t line_b = 0x080;
+  const uint32_t line_c = 0x100;
+
+  write_memory_line(line_a, 0x1000);
+  write_memory_line(line_b, 0x2000);
+  write_memory_line(line_c, 0x3000);
+
+  if (!issue_write(env, MASTER_DCACHE_W, line_a, make_line_write_data(0x4000),
+                   make_full_write_strobe(), 63, 0x74, false) ||
+      !wait_write_resp(env, MASTER_DCACHE_W, 0x74)) {
+    std::printf("FAIL: initial dirty line setup failed\n");
+    return false;
+  }
+
+  if (!issue_read(env, MASTER_ICACHE, line_b, 15, 0x75, false)) {
+    std::printf("FAIL: eviction-causing read not accepted\n");
+    return false;
+  }
+
+  bool saw_aw_a = false;
+  bool saw_ar_b = false;
+  int timeout = sim_ddr::SIM_DDR_LATENCY * 40;
+  while (timeout-- > 0 && (!saw_aw_a || !saw_ar_b)) {
+    cycle_outputs(env);
+    saw_aw_a = saw_aw_a || env.interconnect.axi_io.aw.awvalid;
+    saw_ar_b = saw_ar_b || env.interconnect.axi_io.ar.arvalid;
+    cycle_inputs(env);
+  }
+  if (!saw_aw_a || !saw_ar_b) {
+    std::printf("FAIL: did not observe captured dirty-victim traffic before invalidate_all pending ar=%d aw=%d\n",
+                static_cast<int>(saw_ar_b), static_cast<int>(saw_aw_a));
+    return false;
+  }
+
+  bool late_read_ready_while_pending = false;
+  bool invalidate_accept = false;
+  timeout = sim_ddr::SIM_DDR_LATENCY * 120;
+  while (timeout-- > 0) {
+    env.interconnect.set_llc_invalidate_all(true);
+    cycle_outputs(env);
+
+    auto &late_rp = env.interconnect.read_ports[MASTER_DCACHE_R];
+    late_rp.req.valid = true;
+    late_rp.req.addr = line_c;
+    late_rp.req.total_size = 15;
+    late_rp.req.id = 0x76;
+    late_rp.req.bypass = false;
+    if (late_rp.req.ready) {
+      late_read_ready_while_pending = true;
+    }
+
+    if (env.interconnect.llc_invalidate_all_accepted()) {
+      invalidate_accept = true;
+    }
+
+    auto &resp = env.interconnect.read_ports[MASTER_ICACHE].resp;
+    if (resp.valid) {
+      if (resp.id != 0x75 || resp.data[0] != 0x2000 || resp.data[1] != 0x2001) {
+        std::printf("FAIL: drain read resp mismatch id=%u d0=0x%x d1=0x%x\n",
+                    resp.id, resp.data[0], resp.data[1]);
+        return false;
+      }
+      resp.ready = true;
+    }
+
+    cycle_inputs(env);
+    if (invalidate_accept) {
+      break;
+    }
+  }
+  env.interconnect.set_llc_invalidate_all(false);
+
+  if (late_read_ready_while_pending) {
+    std::printf("FAIL: new frontend request should be blocked while invalidate_all is pending\n");
+    return false;
+  }
+  if (!invalidate_accept) {
+    std::printf("FAIL: invalidate_all was never accepted after draining captured traffic\n");
+    return false;
+  }
+  if (read_mem_word(line_a) != 0x4000 || read_mem_word(line_a + 4) != 0x4001) {
+    std::printf("FAIL: dirty victim data did not drain to memory before invalidate_all accept\n");
     return false;
   }
 
@@ -1474,8 +1575,8 @@ bool test_seeded_invalidate_all_epoch_stress() {
   return true;
 }
 
-bool test_invalidate_line_rejects_same_cycle_frontend_write_accept() {
-  std::printf("=== AXI4 LLC Integration Test 12b: invalidate_line rejects same-cycle frontend write accept ===\n");
+bool test_invalidate_line_rejects_same_cycle_frontend_write_accept_ready_first() {
+  std::printf("=== AXI4 LLC Integration Test 12b: invalidate_line rejects same-cycle frontend write accept ready-first ===\n");
 
   Axi4LlcTestEnv env;
   init_env(env);
@@ -1511,13 +1612,66 @@ bool test_invalidate_line_rejects_same_cycle_frontend_write_accept() {
   const bool invalidate_accepted = env.interconnect.llc_invalidate_line_accepted();
   commit_cycle_inputs(env);
   env.interconnect.set_llc_invalidate_line(false, 0);
+  const bool write_accepted = env.interconnect.write_req_accepted[MASTER_DCACHE_W];
 
-  if (!write_ready) {
-    std::printf("FAIL: frontend write should still be accepted in same-cycle race case\n");
+  if (invalidate_accepted) {
+    std::printf("FAIL: invalidate_line must not be accepted together with same-line frontend write accept\n");
     return false;
   }
-  if (invalidate_accepted) {
-    std::printf("FAIL: invalidate_line must not be accepted together with same-line frontend write\n");
+  if (write_accepted) {
+    std::printf("FAIL: ready-first same-line write should be blocked while invalidate_line is pending\n");
+    return false;
+  }
+  if (write_ready) {
+    std::printf("FAIL: ready-first same-line write should not continue advertising ready in conflict cycle\n");
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_invalidate_line_rejects_same_cycle_frontend_write_capture() {
+  std::printf("=== AXI4 LLC Integration Test 12c: invalidate_line rejects same-cycle frontend write capture ===\n");
+
+  Axi4LlcTestEnv env;
+  init_env(env);
+
+  const uint32_t line_addr = 0x4000;
+  auto &wp = env.interconnect.write_ports[MASTER_DCACHE_W];
+  const WideWriteData_t wdata = make_line_write_data(0x9900);
+  const WideWriteStrb_t wstrb = make_full_write_strobe();
+
+  cycle_outputs(env);
+  wp.req.valid = true;
+  wp.req.addr = line_addr;
+  wp.req.wdata = wdata;
+  wp.req.wstrb = wstrb;
+  wp.req.total_size = 63;
+  wp.req.id = 0x82;
+  wp.req.bypass = false;
+  cycle_inputs(env);
+
+  clear_upstream_inputs(env.interconnect);
+  env.interconnect.set_llc_invalidate_line(true, line_addr);
+  wp.req.valid = true;
+  wp.req.addr = line_addr;
+  wp.req.wdata = wdata;
+  wp.req.wstrb = wstrb;
+  wp.req.total_size = 63;
+  wp.req.id = 0x82;
+  wp.req.bypass = false;
+  apply_backend_outputs(env);
+  env.interconnect.comb_outputs();
+  commit_cycle_inputs(env);
+  env.interconnect.set_llc_invalidate_line(false, 0);
+
+  if (env.interconnect.write_req_accepted[MASTER_DCACHE_W]) {
+    std::printf("FAIL: same-line write capture should be blocked while invalidate_line is pending\n");
+    return false;
+  }
+  if (env.interconnect.llc_invalidate_line_accepted()) {
+    std::printf("FAIL: invalidate_line must not be accepted when same-line write capture happens\n");
     return false;
   }
 
@@ -1606,6 +1760,12 @@ int main() {
     failed++;
   }
 
+  if (test_invalidate_all_pending_blocks_new_frontend_requests_but_drains_captured_requests()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
   if (test_bypass_write_miss_does_not_allocate_line()) {
     passed++;
   } else {
@@ -1642,7 +1802,13 @@ int main() {
     failed++;
   }
 
-  if (test_invalidate_line_rejects_same_cycle_frontend_write_accept()) {
+  if (test_invalidate_line_rejects_same_cycle_frontend_write_accept_ready_first()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_invalidate_line_rejects_same_cycle_frontend_write_capture()) {
     passed++;
   } else {
     failed++;

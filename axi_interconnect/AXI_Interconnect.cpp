@@ -373,8 +373,13 @@ void AXI_Interconnect::comb_outputs() {
   for (int i = 0; i < NUM_WRITE_MASTERS; i++) {
     if (llc_enabled()) {
       const bool llc_slot_busy = llc_upstream_write_req[i].valid;
+      const bool blocked_by_line_invalidate =
+          llc_invalidate_line_valid_ && write_ports[i].req.valid &&
+          AXI_LLC::line_addr(llc_config, write_ports[i].req.addr) ==
+              AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
       write_ports[i].req.ready =
           !llc_invalidate_all_req_ &&
+          !blocked_by_line_invalidate &&
           (w_req_ready_r[i] ||
            (!llc_slot_busy && llc.io.ext_out.upstream.write_req[i].ready));
     } else {

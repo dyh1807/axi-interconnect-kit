@@ -79,6 +79,7 @@ router 负责 AXI 侧地址译码。
 - 子行写按 `addr % line_bytes` 合并。
 - `invalidate_all` 当前采用保守语义：
   - 只有在 LLC 处于 quiescent 且不存在 dirty resident/write hazard 状态时才接受
+  - 调用方应持续保持请求，直到观察到 `invalidate_all_accepted`
   - 一旦接受，会通过 epoch 丢弃 stale clean refill install
   - 不会静默丢弃 dirty resident 数据
 
@@ -160,6 +161,7 @@ router 负责 AXI 侧地址译码。
 
 ## 当前收尾结论
 
-本仓库当前已经收敛到 AXI4-only LLC/interconnect 的 correctness 范围，并对
-maintenance 采用保守语义。父模拟器层面的联调问题，应优先在主模拟器中
-单独定位，除非根因能够明确指回本子模块。
+本仓库当前已经在 AXI4-only LLC/interconnect 的 correctness 范围上显著稳
+定，并对 maintenance 采用保守语义。最终 closure 口径仍有意保留到外部
+review 完成之后。父模拟器层面的联调问题，应优先在主模拟器中单独定位，
+除非根因能够明确指回本子模块。

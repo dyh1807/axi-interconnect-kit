@@ -81,6 +81,7 @@ Current behavior:
 - `invalidate_all` is conservative:
   - it is accepted only when the LLC is quiescent with no dirty resident/write
     hazard state
+  - callers should hold the request until `invalidate_all_accepted` is observed
   - it drops stale clean refill installs by epoch once accepted
   - it does not silently discard dirty resident data
 
@@ -164,7 +165,9 @@ Validated toolchains:
 
 ## Current Closure
 
-This repository is currently closed around the AXI4-only LLC/interconnect
+This repository is currently stabilized around the AXI4-only LLC/interconnect
 correctness scope implemented here, with conservative maintenance semantics.
-Parent-simulator integration bugs should be debugged outside this submodule
-unless the root cause is clearly inside the kit itself.
+Final closure wording is intentionally deferred pending external review of the
+maintenance barrier and front-end race regressions. Parent-simulator
+integration bugs should be debugged outside this submodule unless the root
+cause is clearly inside the kit itself.
