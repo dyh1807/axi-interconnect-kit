@@ -71,9 +71,12 @@ Contract:
    - it is accepted only when there is no dirty resident line, dirty victim
      writeback, or write-side hazard pending
 3. `invalidate_line` is targeted maintenance:
-   - it is rejected when the same line conflicts with an inflight miss, active
-     write context, queued write, write lookup, victim writeback, or same-cycle
-     upstream write accept/capture hazard
+   - it is rejected when the same line still has any write-side hazard in the
+     upstream request path, the LLC internal write pipeline/queue/response
+     state, or the downstream write path
+   - concrete examples include inflight miss, active write context, queued
+     write, write lookup, victim writeback, active/pending bypass write, and
+     same-cycle upstream write accept/capture hazards
 4. After `invalidate_all` is accepted, stale clean refill installs from an
    older epoch are dropped instead of being re-installed into the LLC.
 

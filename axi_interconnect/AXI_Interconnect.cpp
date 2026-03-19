@@ -182,7 +182,7 @@ uint32_t AXI_Interconnect::count_llc_write_pending() const {
   return count;
 }
 
-bool AXI_Interconnect::has_same_line_upstream_write_hazard(uint32_t line_addr) const {
+bool AXI_Interconnect::has_same_line_write_hazard(uint32_t line_addr) const {
   if (!llc_enabled()) {
     return false;
   }
@@ -201,6 +201,37 @@ bool AXI_Interconnect::has_same_line_upstream_write_hazard(uint32_t line_addr) c
         AXI_LLC::line_addr(llc_config, write_ports[master].req.addr) == line_addr) {
       return true;
     }
+  }
+  for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    const auto &ctx = llc.io.regs.write_ctx[master];
+    if (ctx.valid && ctx.line_addr == line_addr) {
+      return true;
+    }
+    if (llc.io.regs.write_resp_valid_r[master] &&
+        llc.io.regs.write_resp_line_addr_r[master] == line_addr) {
+      return true;
+    }
+  }
+  for (uint8_t master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    for (uint32_t i = 0;
+         i < llc.io.regs.write_q_count_r[master] && i < MAX_WRITE_OUTSTANDING; ++i) {
+      const uint32_t slot =
+          (llc.io.regs.write_q_head_r[master] + i) % MAX_WRITE_OUTSTANDING;
+      const auto &entry = llc.io.regs.write_q[master][slot];
+      if (!entry.valid) {
+        continue;
+      }
+      if (AXI_LLC::line_addr(llc_config, entry.addr) == line_addr) {
+        return true;
+      }
+    }
+  }
+  if (w_active && AXI_LLC::line_addr(llc_config, w_current.addr) == line_addr) {
+    return true;
+  }
+  if (aw_latched.valid &&
+      AXI_LLC::line_addr(llc_config, aw_latched.addr) == line_addr) {
+    return true;
   }
   return false;
 }
@@ -280,7 +311,7 @@ void AXI_Interconnect::prepare_llc_inputs() {
       AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
   const bool line_hazard =
       llc_invalidate_line_valid_ &&
-      has_same_line_upstream_write_hazard(invalidate_line_addr);
+      has_same_line_write_hazard(invalidate_line_addr);
   llc.io.ext_in.mem.invalidate_line_valid =
       llc_invalidate_line_valid_ && !line_hazard;
   llc.io.ext_in.mem.invalidate_line_addr = llc_invalidate_line_addr_;

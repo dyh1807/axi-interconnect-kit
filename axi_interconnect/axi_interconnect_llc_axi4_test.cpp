@@ -1003,6 +1003,93 @@ bool test_invalidate_all_pending_blocks_new_upstream_requests_but_drains_capture
   return true;
 }
 
+bool test_public_api_invalidate_all_hold_until_accept_contract() {
+  std::printf("=== AXI4 LLC Integration Test 8d: public API invalidate_all must be held until accepted ===\n");
+
+  Axi4LlcTestEnv env;
+  AXI_LLCConfig cfg = make_small_llc_config();
+  cfg.size_bytes = 128;
+  cfg.line_bytes = 64;
+  cfg.ways = 1;
+  cfg.mshr_num = 2;
+  init_env(env, cfg);
+
+  const uint32_t line_a = 0x000;
+  const uint32_t line_b = 0x080;
+  write_memory_line(line_a, 0x1000);
+  write_memory_line(line_b, 0x2000);
+
+  if (!issue_write(env, MASTER_DCACHE_W, line_a, make_line_write_data(0x5000),
+                   make_full_write_strobe(), 63, 0x77, false) ||
+      !wait_write_resp(env, MASTER_DCACHE_W, 0x77)) {
+    std::printf("FAIL: initial dirty line setup failed\n");
+    return false;
+  }
+
+  if (!issue_read(env, MASTER_ICACHE, line_b, 15, 0x78, false)) {
+    std::printf("FAIL: drain read not accepted\n");
+    return false;
+  }
+
+  bool accepted = false;
+  bool saw_read_resp = false;
+  int timeout = sim_ddr::SIM_DDR_LATENCY * 120;
+  while (timeout-- > 0) {
+    env.interconnect.set_llc_invalidate_all(true);
+    cycle_outputs(env);
+    accepted = accepted || env.interconnect.llc_invalidate_all_accepted();
+    auto &resp = env.interconnect.read_ports[MASTER_ICACHE].resp;
+    if (resp.valid) {
+      if (resp.id != 0x78 || resp.data[0] != 0x2000 || resp.data[1] != 0x2001) {
+        std::printf("FAIL: drain read response mismatch id=%u d0=0x%x d1=0x%x\n",
+                    resp.id, resp.data[0], resp.data[1]);
+        return false;
+      }
+      resp.ready = true;
+      saw_read_resp = true;
+    }
+    cycle_inputs(env);
+    if (accepted) {
+      break;
+    }
+  }
+  env.interconnect.set_llc_invalidate_all(false);
+
+  if (!accepted) {
+    std::printf("FAIL: invalidate_all was never accepted while caller held request\n");
+    return false;
+  }
+  if (read_mem_word(line_a) != 0x5000 || read_mem_word(line_a + 4) != 0x5001) {
+    std::printf("FAIL: dirty victim writeback not visible before invalidate_all acceptance\n");
+    return false;
+  }
+  if (saw_read_resp) {
+    std::printf("PASS\n");
+    return true;
+  }
+
+  timeout = sim_ddr::SIM_DDR_LATENCY * 40;
+  while (timeout-- > 0) {
+    cycle_outputs(env);
+    auto &resp = env.interconnect.read_ports[MASTER_ICACHE].resp;
+    if (resp.valid) {
+      if (resp.id != 0x78 || resp.data[0] != 0x2000 || resp.data[1] != 0x2001) {
+        std::printf("FAIL: post-accept drain read response mismatch id=%u d0=0x%x d1=0x%x\n",
+                    resp.id, resp.data[0], resp.data[1]);
+        return false;
+      }
+      resp.ready = true;
+      cycle_inputs(env);
+      std::printf("PASS\n");
+      return true;
+    }
+    cycle_inputs(env);
+  }
+
+  std::printf("FAIL: captured clean LLC-path work never drained to upstream response\n");
+  return false;
+}
+
 bool test_bypass_write_miss_does_not_allocate_line() {
   std::printf("=== AXI4 LLC Integration Test 7: bypass write miss does not allocate ===\n");
 
@@ -1679,6 +1766,154 @@ bool test_invalidate_line_rejects_same_cycle_upstream_write_capture() {
   return true;
 }
 
+bool test_invalidate_line_rejects_same_cycle_upstream_bypass_write_accept() {
+  std::printf("=== AXI4 LLC Integration Test 12d: invalidate_line rejects same-cycle upstream bypass write accept ===\n");
+
+  Axi4LlcTestEnv env;
+  init_env(env);
+
+  const uint32_t line_addr = 0x4400;
+  auto &wp = env.interconnect.write_ports[MASTER_UNCORE_LSU_W];
+  WideWriteData_t wdata{};
+  wdata.clear();
+  wdata[0] = 0xA5A5A5A5;
+  WideWriteStrb_t wstrb{};
+  wstrb.clear();
+  for (uint32_t i = 0; i < 4; ++i) {
+    wstrb.set(i, true);
+  }
+
+  cycle_outputs(env);
+  wp.req.valid = true;
+  wp.req.addr = line_addr;
+  wp.req.wdata = wdata;
+  wp.req.wstrb = wstrb;
+  wp.req.total_size = 3;
+  wp.req.id = 0x83;
+  wp.req.bypass = true;
+  cycle_inputs(env);
+
+  clear_upstream_inputs(env.interconnect);
+  env.interconnect.set_llc_invalidate_line(true, line_addr);
+  wp.req.valid = true;
+  wp.req.addr = line_addr;
+  wp.req.wdata = wdata;
+  wp.req.wstrb = wstrb;
+  wp.req.total_size = 3;
+  wp.req.id = 0x83;
+  wp.req.bypass = true;
+  apply_downstream_outputs(env);
+  env.interconnect.comb_outputs();
+
+  const bool write_ready = env.interconnect.write_ports[MASTER_UNCORE_LSU_W].req.ready;
+  const bool invalidate_accepted = env.interconnect.llc_invalidate_line_accepted();
+  commit_cycle_inputs(env);
+  env.interconnect.set_llc_invalidate_line(false, 0);
+  const bool write_accepted = env.interconnect.write_req_accepted[MASTER_UNCORE_LSU_W];
+
+  if (invalidate_accepted) {
+    std::printf("FAIL: invalidate_line must not be accepted together with same-line upstream bypass write\n");
+    return false;
+  }
+  if (write_accepted) {
+    std::printf("FAIL: same-line upstream bypass write should be blocked while invalidate_line is pending\n");
+    return false;
+  }
+  if (write_ready) {
+    std::printf("FAIL: same-line upstream bypass write should not advertise ready in conflict cycle\n");
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_invalidate_line_rejects_active_same_line_bypass_write_hazard() {
+  std::printf("=== AXI4 LLC Integration Test 12e: invalidate_line rejects active same-line bypass write hazard until response is visible ===\n");
+
+  Axi4LlcTestEnv env;
+  init_env(env);
+
+  const uint32_t line_addr = 0x4480;
+  const uint32_t addr = line_addr + 8;
+  write_memory_line(line_addr, 0x1200);
+
+  WideWriteData_t wdata{};
+  wdata.clear();
+  wdata[0] = 0xCAFEBABE;
+  WideWriteStrb_t wstrb{};
+  wstrb.clear();
+  for (uint32_t i = 0; i < 4; ++i) {
+    wstrb.set(i, true);
+  }
+
+  if (!issue_write(env, MASTER_UNCORE_LSU_W, addr, wdata, wstrb, 3, 0x84, true)) {
+    std::printf("FAIL: bypass write not accepted before hazard test\n");
+    return false;
+  }
+
+  int timeout = sim_ddr::SIM_DDR_LATENCY * 80;
+  bool saw_write_resp = false;
+  bool accepted_with_visible_resp = false;
+  while (timeout-- > 0) {
+    env.interconnect.set_llc_invalidate_line(true, line_addr);
+    cycle_outputs(env);
+    auto &wresp = env.interconnect.write_ports[MASTER_UNCORE_LSU_W].resp;
+    const bool resp_visible = wresp.valid;
+    const bool invalidate_accepted = env.interconnect.llc_invalidate_line_accepted();
+    if (wresp.valid) {
+      wresp.ready = true;
+      saw_write_resp = true;
+    }
+    cycle_inputs(env);
+    env.interconnect.set_llc_invalidate_line(false, 0);
+    if (invalidate_accepted) {
+      if (!resp_visible) {
+        std::printf("FAIL: invalidate_line accepted before same-line bypass write response became visible\n");
+        return false;
+      }
+      accepted_with_visible_resp = true;
+      break;
+    }
+    if (saw_write_resp) {
+      break;
+    }
+  }
+
+  if (!saw_write_resp) {
+    std::printf("FAIL: bypass write never completed while hazard test was running\n");
+    return false;
+  }
+
+  if (accepted_with_visible_resp) {
+    std::printf("PASS\n");
+    return true;
+  }
+
+  bool accepted_after_drain = false;
+  timeout = sim_ddr::SIM_DDR_LATENCY * 40;
+  while (timeout-- > 0) {
+    env.interconnect.set_llc_invalidate_line(true, line_addr);
+    cycle_outputs(env);
+    if (env.interconnect.llc_invalidate_line_accepted()) {
+      accepted_after_drain = true;
+      cycle_inputs(env);
+      env.interconnect.set_llc_invalidate_line(false, 0);
+      break;
+    }
+    cycle_inputs(env);
+    env.interconnect.set_llc_invalidate_line(false, 0);
+  }
+
+  if (!accepted_after_drain) {
+    std::printf("FAIL: invalidate_line never accepted after bypass write hazard drained\n");
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
 } // namespace
 
 int main() {
@@ -1766,6 +2001,12 @@ int main() {
     failed++;
   }
 
+  if (test_public_api_invalidate_all_hold_until_accept_contract()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
   if (test_bypass_write_miss_does_not_allocate_line()) {
     passed++;
   } else {
@@ -1809,6 +2050,18 @@ int main() {
   }
 
   if (test_invalidate_line_rejects_same_cycle_upstream_write_capture()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_invalidate_line_rejects_same_cycle_upstream_bypass_write_accept()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_invalidate_line_rejects_active_same_line_bypass_write_hazard()) {
     passed++;
   } else {
     failed++;

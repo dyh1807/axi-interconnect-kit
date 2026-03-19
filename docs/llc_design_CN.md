@@ -239,9 +239,20 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
 - queued write
 - write lookup
 - victim writeback
+- active / pending bypass write
 - same-cycle upstream write accept/capture 冲突
 
+这里的“写侧冲突”不是只看一拍上游请求，而是看同一条 line 在三个层面是否已经完全排空：
+
+- upstream 请求路径中的 visible request / ready-first capture hazard
+- LLC 内部的 write queue / active write context / write response slot
+- downstream 写路径中的 active write transaction / pending write response
+
 调用方必须保持请求，直到看到 `invalidate_line_accepted` 脉冲。
+对外推荐通过 `AXI_Interconnect` 的 maintenance API 使用：
+
+- `set_llc_invalidate_line(bool, uint32_t)`
+- `llc_invalidate_line_accepted()`
 
 ### 9.2 `invalidate_all`
 
@@ -261,6 +272,11 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
 `invalidate_all` 被接受后会推进一个 epoch。
 
 旧 epoch 的 clean refill install 在返回时会被丢弃，不允许 stale line 因为延迟返回而重新复活到 LLC 中。
+
+对外推荐通过 `AXI_Interconnect` 的 maintenance API 使用：
+
+- `set_llc_invalidate_all(bool)`
+- `llc_invalidate_all_accepted()`
 
 ## 10. corner cases 与当前已覆盖点
 
@@ -291,4 +307,3 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
 - 更激进的 replacement policy
 - 更深的写执行资源并行
 - 更复杂的 prefetch 策略
-

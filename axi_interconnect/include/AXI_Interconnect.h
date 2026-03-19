@@ -199,7 +199,7 @@ private:
   void comb_write_response();
   void prepare_llc_inputs();
   bool can_issue_llc_read_req() const;
-  bool has_same_line_upstream_write_hazard(uint32_t line_addr) const;
+  bool has_same_line_write_hazard(uint32_t line_addr) const;
 
   uint8_t calc_burst_len(uint8_t total_size);
   uint8_t alloc_read_axi_id() const;

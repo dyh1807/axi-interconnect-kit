@@ -284,6 +284,14 @@ bool AXI_LLC::can_accept_invalidate_line_now(uint32_t line_addr_value) const {
     return false;
   }
 
+  const int bypass_write_resp_owner = find_bypass_write_mem_owner(io.regs);
+  if (io.ext_in.mem.write_resp_valid && bypass_write_resp_owner >= 0) {
+    const auto &ctx = io.regs.write_ctx[static_cast<uint8_t>(bypass_write_resp_owner)];
+    if (ctx.valid && ctx.line_addr == line_addr_value) {
+      return false;
+    }
+  }
+
   for (uint8_t master = 0; master < NUM_WRITE_MASTERS; ++master) {
     if (io.ext_in.upstream.write_req[master].valid &&
         line_addr(config_, io.ext_in.upstream.write_req[master].addr) ==
@@ -299,6 +307,10 @@ bool AXI_LLC::can_accept_invalidate_line_now(uint32_t line_addr_value) const {
   for (uint8_t master = 0; master < NUM_WRITE_MASTERS; ++master) {
     const auto &ctx = io.regs.write_ctx[master];
     if (ctx.valid && ctx.line_addr == line_addr_value) {
+      return false;
+    }
+    if (io.regs.write_resp_valid_r[master] &&
+        io.regs.write_resp_line_addr_r[master] == line_addr_value) {
       return false;
     }
   }
@@ -759,6 +771,7 @@ void AXI_LLC::drive_write_path() {
       io.reg_write.write_resp_valid_r[i] = false;
       io.reg_write.write_resp_id_r[i] = 0;
       io.reg_write.write_resp_code_r[i] = 0;
+      io.reg_write.write_resp_line_addr_r[i] = 0;
     }
   }
 
@@ -832,6 +845,7 @@ void AXI_LLC::drive_write_path() {
     io.reg_write.write_resp_valid_r[master] = true;
     io.reg_write.write_resp_id_r[master] = ctx.id;
     io.reg_write.write_resp_code_r[master] = ctx.bypass ? ctx.mem_resp_code : 0;
+    io.reg_write.write_resp_line_addr_r[master] = ctx.line_addr;
     io.reg_write.write_ctx[master] = {};
   }
 

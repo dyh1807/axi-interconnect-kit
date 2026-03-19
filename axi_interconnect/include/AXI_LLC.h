@@ -282,6 +282,7 @@ struct AXI_LLC_Regs_t {
   bool write_resp_valid_r[NUM_WRITE_MASTERS] = {false};
   uint8_t write_resp_id_r[NUM_WRITE_MASTERS] = {0};
   uint8_t write_resp_code_r[NUM_WRITE_MASTERS] = {0};
+  uint32_t write_resp_line_addr_r[NUM_WRITE_MASTERS] = {0};
 
   bool victim_wb_valid_r = false;
   bool victim_wb_issued_r = false;
