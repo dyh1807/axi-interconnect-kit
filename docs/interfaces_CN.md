@@ -51,6 +51,31 @@
 | `id` | 4 | 输出 | 返回上游 ID |
 | `resp` | 2 | 输出 | AXI 响应码 |
 
+### 1.5 LLC maintenance 控制面
+
+AXI4 interconnect 通过 `AXI_Interconnect` 上的方法暴露 LLC maintenance 控制面：
+
+- `set_llc_invalidate_all(bool)`
+- `set_llc_invalidate_line(bool, uint32_t line_addr)`
+- `llc_invalidate_all_accepted()`
+- `llc_invalidate_line_accepted()`
+
+约定如下：
+
+1. 调用方必须持续保持 `invalidate_all` / `invalidate_line` 请求，直到观测到
+   对应的 `*_accepted()` 脉冲。
+2. `invalidate_all` 采用保守语义：
+   - pending 期间会阻止新的前端 LLC 请求进入
+   - 已经捕获的 clean LLC 路径请求允许继续排空
+   - 只有在不存在 dirty resident line、dirty victim writeback、以及写侧
+     hazard 时才会被接受
+3. `invalidate_line` 是按 line 的精确 maintenance：
+   - 当同一条 line 存在 inflight miss、active write context、queued write、
+     write lookup、victim writeback、或 same-cycle 前端写 accept/capture 冲突时，
+     该请求会被拒绝
+4. `invalidate_all` 被接受后，旧 epoch 的 stale clean refill install 会被丢弃，
+   不会重新写回 LLC。
+
 ## 2) AXI4 五通道信号
 
 定义位置：`sim_ddr/include/SimDDR_IO.h`。

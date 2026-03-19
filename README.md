@@ -79,9 +79,11 @@ Current behavior:
   - miss goes downstream without allocation
 - Sub-line writes merge by `addr % line_bytes`.
 - `invalidate_all` is conservative:
-  - it is accepted only when the LLC is quiescent with no dirty resident/write
-    hazard state
+  - it is accepted only when there is no dirty resident line, dirty victim
+    writeback, or write-side hazard pending
   - callers should hold the request until `invalidate_all_accepted` is observed
+  - already captured clean LLC-path work may drain while `invalidate_all` is
+    pending
   - it drops stale clean refill installs by epoch once accepted
   - it does not silently discard dirty resident data
 
@@ -103,9 +105,9 @@ The current AXI4 write design is:
 global bound on every LLC-internal write state bit combined with interconnect
 state.
 
-This is the current correctness closure point. Future performance work, if
-needed, would deepen internal write-resource parallelism rather than reopen
-basic ordering/coherence rules.
+This is the current write-side correctness target for this stage. Future
+performance work, if needed, would deepen internal write-resource parallelism
+rather than reopen basic ordering/coherence rules.
 
 ## Test Tiers
 

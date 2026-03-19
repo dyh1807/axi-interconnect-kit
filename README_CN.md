@@ -78,8 +78,10 @@ router 负责 AXI 侧地址译码。
   - miss 直接下发到下游，不分配 LLC
 - 子行写按 `addr % line_bytes` 合并。
 - `invalidate_all` 当前采用保守语义：
-  - 只有在 LLC 处于 quiescent 且不存在 dirty resident/write hazard 状态时才接受
+  - 只有在不存在 dirty resident line、dirty victim writeback、以及写侧 hazard
+    时才接受
   - 调用方应持续保持请求，直到观察到 `invalidate_all_accepted`
+  - `invalidate_all` pending 期间，已捕获的 clean LLC 路径请求可继续排空
   - 一旦接受，会通过 epoch 丢弃 stale clean refill install
   - 不会静默丢弃 dirty resident 数据
 
@@ -100,7 +102,7 @@ router 负责 AXI 侧地址译码。
 因此，`MAX_WRITE_OUTSTANDING` 表示的是 interconnect 前端的排队上界，
 不是“interconnect 状态 + LLC 内部状态”合并后的总写状态上界。
 
-这就是当前的 correctness 收尾边界。后续如果还要继续追性能，重点会是
+这就是当前阶段写路径 correctness 的目标边界。后续如果还要继续追性能，重点会是
 进一步提高内部写资源并行度，而不是再回头修基本的一致性与顺序语义。
 
 ## 测试分层

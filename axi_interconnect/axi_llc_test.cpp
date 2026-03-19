@@ -655,6 +655,10 @@ bool test_cacheable_partial_write_miss_preserves_untouched_bytes() {
   llc.io.ext_in.mem.read_resp_id = 0;
   llc.io.ext_in.mem.read_resp_data = make_line_data(0x1000);
   llc.comb();
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
   if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
       !llc.io.table_out.repl.write) {
     printf("FAIL: partial write miss did not install merged line\n");
@@ -673,7 +677,7 @@ bool test_cacheable_partial_write_miss_preserves_untouched_bytes() {
     printf("FAIL: partial write merge meta flags wrong flags=0x%x\n", meta.flags);
     return false;
   }
-  llc.seq();
+  cycle(llc);
 
   clear_inputs(llc);
   cycle(llc);
@@ -897,9 +901,15 @@ bool test_cacheable_partial_write_miss_dirty_victim_writes_back_correct_addr_dat
   llc.io.ext_in.mem.read_resp_valid = true;
   llc.io.ext_in.mem.read_resp_id = 0;
   llc.io.ext_in.mem.read_resp_data = make_line_data(0x5500);
-  cycle(llc);
+  llc.comb();
+  llc.seq();
 
   clear_inputs(llc);
+  llc.comb();
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.write_req_ready = true;
   llc.comb();
   if (!llc.io.ext_out.mem.write_req_valid ||
       llc.io.ext_out.mem.write_req_addr != victim_addr ||
@@ -921,6 +931,10 @@ bool test_cacheable_partial_write_miss_dirty_victim_writes_back_correct_addr_dat
   llc.io.ext_in.mem.write_resp_valid = true;
   llc.io.ext_in.mem.write_resp = 0;
   llc.comb();
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
   if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
       llc.io.table_out.data.way != 1) {
     printf("FAIL: partial write install missing after dirty victim writeback\n");
@@ -934,7 +948,7 @@ bool test_cacheable_partial_write_miss_dirty_victim_writes_back_correct_addr_dat
            read_line_word(merged, 2), read_line_word(merged, 3));
     return false;
   }
-  llc.seq();
+  cycle(llc);
 
   clear_inputs(llc);
   cycle(llc);
@@ -2755,6 +2769,16 @@ int main() {
     failed++;
 
   if (test_cacheable_write_updates_table())
+    passed++;
+  else
+    failed++;
+
+  if (test_cacheable_partial_write_miss_preserves_untouched_bytes())
+    passed++;
+  else
+    failed++;
+
+  if (test_cacheable_partial_write_miss_dirty_victim_writes_back_correct_addr_data())
     passed++;
   else
     failed++;

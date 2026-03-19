@@ -9,6 +9,7 @@
 
 #include "AXI_Interconnect.h"
 #include <algorithm>
+#include <cstdio>
 
 extern long long sim_time;
 
