@@ -60,10 +60,16 @@ router 负责 AXI 侧地址译码。
 
 - cacheable read 通过父模拟器提供的外部 SRAM 风格 `data/meta/repl` 表进行
   分配与回填。
-- AXI4 读路径支持 multiple outstanding：
+- AXI4 interconnect 读前端支持 multiple outstanding：
   - 全局上限 `8`
   - 单个读 master 上限 `4`
+- LLC 内部对 cacheable demand miss 的推进仍然更严格：
+  - 同一个读 master 同时最多只能有一个由 LLC 正在处理的 cacheable miss
+  - 其它 master 仍然可以继续占用剩余的全局读资源
+  - bypass read 不受这个 same-master cacheable-miss 串行限制
 - cacheable write 由 LLC 路径接管。
+- cacheable 的 partial write miss 采用“先回填旧 line，再按字节 merge，最后以
+  dirty line 安装”的语义，不会直接在全零 line 上 merge。
 - `bypass read` 会先查 LLC：
   - hit 直接返回 resident line 最新值
   - miss 下发到下游且不分配 LLC
@@ -78,7 +84,7 @@ router 负责 AXI 侧地址译码。
 
 当前 AXI4 写路径设计是：
 
-- interconnect 最多接收 `MAX_WRITE_OUTSTANDING` 个 pending write。
+- interconnect 前端最多接收 `MAX_WRITE_OUTSTANDING` 个 pending write。
 - 非 LLC 路径可直接按 AXI ID 将 B 响应路由回上游。
 - LLC 路径内部具备：
   - 按 master 划分的 pending write queue
@@ -87,6 +93,9 @@ router 负责 AXI 侧地址译码。
   - 共享 victim writeback 资源
   - 共享下游 memory write port
 - 同一个 master 的后继写，仍然要等前一个写响应槽被消费后才继续提升。
+
+因此，`MAX_WRITE_OUTSTANDING` 表示的是 interconnect 前端的排队上界，
+不是“interconnect 状态 + LLC 内部状态”合并后的总写状态上界。
 
 这就是当前的 correctness 收尾边界。后续如果还要继续追性能，重点会是
 进一步提高内部写资源并行度，而不是再回头修基本的一致性与顺序语义。

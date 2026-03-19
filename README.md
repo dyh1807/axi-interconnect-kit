@@ -60,10 +60,17 @@ Current behavior:
 
 - Cacheable reads allocate and refill through external SRAM-style `data/meta/repl`
   tables supplied by the parent simulator.
-- AXI4 read path supports multiple outstanding contexts:
+- AXI4 interconnect read front-end supports multiple outstanding contexts:
   - global limit `8`
   - per-read-master limit `4`
+- LLC cacheable demand-miss execution is still more restrictive:
+  - one read master can have at most one cacheable demand miss actively owned by
+    the LLC at a time
+  - other masters can still consume remaining global read resources
+  - bypass reads are not subject to that same-master cacheable-miss restriction
 - Cacheable writes are owned by the LLC path.
+- Cacheable partial write miss performs `refill old line -> merge bytes ->
+  install dirty line`; it does not merge onto an all-zero line.
 - Bypass reads probe LLC first:
   - hit returns latest resident line
   - miss goes downstream without allocation
@@ -78,7 +85,7 @@ Current behavior:
 
 The current AXI4 write design is:
 
-- Interconnect accepts up to `MAX_WRITE_OUTSTANDING` pending writes.
+- Interconnect-front accepts up to `MAX_WRITE_OUTSTANDING` pending writes.
 - Non-LLC path drains pending writes downstream and routes B responses by AXI ID.
 - LLC path keeps:
   - per-master pending write queues
@@ -87,6 +94,10 @@ The current AXI4 write design is:
   - shared victim-writeback resource
   - shared downstream memory write port
 - Same-master promotion waits until the previous write response slot is consumed.
+
+`MAX_WRITE_OUTSTANDING` is therefore a front-end queueing bound, not a total
+global bound on every LLC-internal write state bit combined with interconnect
+state.
 
 This is the current correctness closure point. Future performance work, if
 needed, would deepen internal write-resource parallelism rather than reopen

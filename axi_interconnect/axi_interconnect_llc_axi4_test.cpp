@@ -336,6 +336,88 @@ bool test_same_set_eviction_roundtrip_latest() {
   return true;
 }
 
+bool test_partial_cacheable_write_miss_refill_merge_and_dirty_eviction() {
+  std::printf("=== AXI4 LLC Integration Test 4b: partial write miss refills then writes back dirty victim ===\n");
+
+  Axi4LlcTestEnv env;
+  AXI_LLCConfig cfg = make_small_llc_config();
+  cfg.size_bytes = 256;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  init_env(env, cfg);
+
+  const uint32_t line_a = 0x000;
+  const uint32_t line_b = 0x080;
+  const uint32_t line_c = 0x100;
+  const uint32_t write_addr = line_a + 8;
+  const uint32_t write_value = 0xDEADBEEF;
+
+  write_memory_line(line_a, 0x1000);
+  write_memory_line(line_b, 0x2000);
+  write_memory_line(line_c, 0x3000);
+
+  WideWriteData_t wdata;
+  wdata.clear();
+  wdata[0] = write_value;
+  WideWriteStrb_t wstrb;
+  wstrb.clear();
+  for (uint32_t i = 0; i < 4; ++i) {
+    wstrb.set(i, true);
+  }
+
+  if (!issue_write(env, MASTER_DCACHE_W, write_addr, wdata, wstrb, 3, 0x41, false)) {
+    std::printf("FAIL: partial cacheable write miss not accepted\n");
+    return false;
+  }
+  if (!wait_write_resp(env, MASTER_DCACHE_W, 0x41)) {
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_ICACHE, line_a, 15, 0x42, false)) {
+    std::printf("FAIL: readback after partial write miss not accepted\n");
+    return false;
+  }
+  if (!wait_read_resp(env, MASTER_ICACHE, 0x42, 0x1000, 0x1001)) {
+    return false;
+  }
+  if (!env.ar_events.empty()) {
+    std::printf("FAIL: resident line should serve readback without DDR AR, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, line_b, 15, 0x43, false)) {
+    std::printf("FAIL: same-set fill line_b not accepted\n");
+    return false;
+  }
+  if (!wait_read_resp(env, MASTER_DCACHE_R, 0x43, 0x2000, 0x2001)) {
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, line_c, 15, 0x44, false)) {
+    std::printf("FAIL: eviction fill line_c not accepted\n");
+    return false;
+  }
+  if (!wait_read_resp(env, MASTER_DCACHE_R, 0x44, 0x3000, 0x3001)) {
+    return false;
+  }
+
+  if (read_mem_word(line_a + 0) != 0x1000 || read_mem_word(line_a + 4) != 0x1001 ||
+      read_mem_word(line_a + 8) != write_value || read_mem_word(line_a + 12) != 0x1003) {
+    std::printf("FAIL: dirty victim writeback corrupted backing memory w0=0x%x w1=0x%x w2=0x%x w3=0x%x\n",
+                read_mem_word(line_a + 0), read_mem_word(line_a + 4),
+                read_mem_word(line_a + 8), read_mem_word(line_a + 12));
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
 bool test_bypass_read_sees_latest_after_cacheable_write() {
   std::printf("=== AXI4 LLC Integration Test 5: bypass read sees latest after cacheable write ===\n");
 
@@ -1283,6 +1365,12 @@ int main() {
   }
 
   if (test_same_set_eviction_roundtrip_latest()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_partial_cacheable_write_miss_refill_merge_and_dirty_eviction()) {
     passed++;
   } else {
     failed++;

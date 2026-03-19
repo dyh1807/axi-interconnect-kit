@@ -185,6 +185,7 @@ struct AXI_LLCMissEntry_t {
   bool valid = false;
   bool bypass = false;
   bool is_prefetch = false;
+  bool is_write = false;
   bool prefetch_train = false;
   bool mem_req_issued = false;
   bool refill_valid = false;
@@ -353,6 +354,7 @@ private:
   bool has_pending_upstream_write_line(uint32_t line_addr) const;
   bool can_allocate_prefetch_mshr(const AXI_LLC_Regs_t &regs) const;
   bool write_line_pending(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  bool can_accept_invalidate_line_now(uint32_t line_addr) const;
   bool line_has_valid_meta(const AXI_LLC_Bytes_t &meta_payload, uint32_t tag,
                            int *hit_way, int *first_invalid_way,
                            AXI_LLCMetaEntry_t *hit_meta) const;
