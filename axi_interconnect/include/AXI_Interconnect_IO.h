@@ -23,7 +23,7 @@ constexpr uint8_t NUM_WRITE_MASTERS = 2; // dcache + uncore-lsu
 constexpr uint8_t MAX_OUTSTANDING = 8;
 constexpr uint8_t MAX_READ_OUTSTANDING_PER_MASTER = 4;
 constexpr uint8_t MAX_WRITE_OUTSTANDING = 8;
-constexpr uint8_t AXI_BEAT_WORDS = 8; // AXI3 data beat = 256-bit = 8 x 32-bit
+constexpr uint8_t AXI_BEAT_WORDS = 8; // upstream/cache payload granularity = 8 x 32-bit
 constexpr uint8_t AXI_BEAT_BYTES = AXI_BEAT_WORDS * sizeof(uint32_t);
 constexpr uint8_t CACHELINE_WORDS = AXI_BEAT_WORDS; // legacy beat-width alias
 constexpr uint16_t MAX_READ_TRANSACTION_BYTES = 256;

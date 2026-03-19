@@ -1,490 +1,153 @@
 # AXI Interconnect Kit（中文说明）
 
-这是从原模拟器中抽离出的独立 AXI 子系统，可单独编译运行。
+这是从原模拟器中抽离出的独立 AXI4 内存子系统。
 
-## 组件组成
+## 范围
 
-- AXI4 路径：`interconnect + AXI4 router + SimDDR + MMIO bus + UART16550`
-- AXI3 路径：`interconnect + AXI3 router + SimDDR + MMIO bus + UART16550`
-- 上游 CPU 简化主设备端口：
-  - 接口容量为 `read_ports[4]`、`write_ports[2]`
-  - 当前面向 simulator 的准备映射：
-    - 读侧：`icache`、`dcache_r`、`uncore_lsu_r`、`extra_r`
-    - 写侧：`dcache_w`、`uncore_lsu_w`
+- 一套 AXI4 interconnect，对外提供简化上游端口：
+  - `read_ports[4]`：`icache`、`dcache_r`、`uncore_lsu_r`、`extra_r`
+  - `write_ports[2]`：`dcache_w`、`uncore_lsu_w`
+- AXI4 router、SimDDR、MMIO bus、UART16550
+- AXI4 路径上的可选共享统一 LLC
 
-## 命名选择：为什么叫 `interconnect`
+本仓库已经删除 AXI3 支持，现在是 AXI4-only。
 
-`bridge` 通常表示点到点协议转换。  
-本项目承担的是多主设备仲裁、地址路由和响应分发，更准确的名字是 `interconnect`。
-
-## 连接拓扑（READ 路径）
-
-```
-读主设备（当前 simulator 准备映射）
-  M0 icache, M1 dcache_r, M2 uncore_lsu_r, M3 extra_r
-            |
-            v
-   +----------------------+
-   | AXI_Interconnect     |  （上游简化接口 -> AXI总线）
-   +----------------------+
-            |
-            v
-   +----------------------+
-   | AXI_Router_AXI4/AXI3 |  （按地址选择目标）
-   +----------------------+
-        |            |
-        | DDR区间    | MMIO区间
-        v            v
- +-------------+  +---------------------+
- | SimDDR      |  | MMIO_Bus + UART16550|
- | (slave #0)  |  | (slave #1)          |
- +-------------+  +---------------------+
-```
-
-这里的 `AXI_Router_AXI4/AXI3` 是明确的独立层，不是 `interconnect` 内部细节：
-- `AXI_Interconnect`：负责多主设备仲裁、上游请求/响应调度。
-- `AXI_Router_AXI4/AXI3`：负责 AXI 侧地址译码与目标从设备路径选择。
-
-## 连接拓扑（WRITE 路径）
-
-```
-写主设备（2个）
-  M0 dcache_w, M1 uncore_lsu_w
-            |
-            v
-   +----------------------+
-   | AXI_Interconnect     |  （AW/W/B 调度与响应路由）
-   +----------------------+
-            |
-            v
-   +----------------------+
-   | AXI_Router_AXI4/AXI3 |  （AW/W/B 目标选择）
-   +----------------------+
-        |            |
-        | DDR区间    | MMIO区间
-        v            v
- +-------------+  +---------------------+
- | SimDDR      |  | MMIO_Bus + UART16550|
- | (slave #0)  |  | (slave #1)          |
- +-------------+  +---------------------+
-```
-
-写路径（`AW/W/B`）同样分层：
-- `AXI_Interconnect` 负责上游写端口仲裁和写响应分发。
-- `AXI_Router_AXI4/AXI3` 按地址映射选择 DDR 或 MMIO 目标。
-
-说明：
-- kit 对外仍保留通用接口 `read_ports[4]` 和 `write_ports[2]`。
-- 当前父模拟器的接入规划中，读侧映射为
-  `icache / dcache_r / uncore_lsu_r / extra_r`，写侧映射为
-  `dcache_w / uncore_lsu_w`。
-
-## LLC（AXI4 路径）
-
-`AXI_LLC` 是 AXI4 路径上的可选共享统一 LLC。在
-`axi-interconnect-kit` 子模块内部，它已经按“AXI4 interconnect 之后的共享
-LLC”来建模：cacheable 读主设备以及 cacheable/bypass 写主设备，都可以走
-同一套 LLC 上游协议。父模拟器最终接哪些端口，仍由上层决定，但子模块实现
-和测试本身已经不再假设“只先接 icache”。
-
-当前组织形态：
+## 拓扑
 
 ```text
-上游读/写主设备
-            |
-            v
-   +----------------------+
-   | AXI_Interconnect     |
-   +----------------------+
-            |
-            v
-   +----------------------+
-   | AXI_LLC              |
-   +----------------------+
-      |        |        |
-      |        |        +--> DDR / MMIO 路径
-      |        |
-      |        +--> MSHR 阵列
+读/写主设备
       |
-      +--> 外部 SRAM 风格 data / meta / repl 表
-           （由父模拟器提供）
+      v
++----------------------+
+| AXI_Interconnect     |
++----------------------+
       |
-      +--> 保守型 stream prefetch
-           （quiet-cycle 节流、demand 优先、直接回填 LLC 表）
+      v
++----------------------+
+| AXI_LLC（可选）      |
++----------------------+
+      |
+      v
++----------------------+
+| AXI_Router_AXI4      |
++----------------------+
+    |            |
+    | DDR区间    | MMIO区间
+    v            v
++----------+   +---------------------+
+| SimDDR   |   | MMIO_Bus + UART16550|
++----------+   +---------------------+
 ```
 
-当前行为与默认配置：
+`AXI_Router_AXI4` 是显式层次：interconnect 负责仲裁和上游响应路由，
+router 负责 AXI 侧地址译码。
 
-- 它是 AXI4 路径上的可选共享统一 LLC。
-- 默认配置为 `8MB`、`64B` cache line、`16-way`、`4` 个 MSHR、lookup
-  latency 为 `8` cycles。
-- 当前 prefetch 路径可由 `prefetch_enable` 和 `prefetch_degree` 配置；
-  在当前 simulator 分支里，`degree=1` 和 `degree=2` 都有实现。
-- AXI4 读路径支持多个 outstanding：当前上限为全局 `8` 个、单个读 master
-  `4` 个。
-- cacheable write 在 AXI4 路径下已经由 LLC 自己接管：write hit/miss、
-  victim writeback、写响应返回都在 LLC 内部完成。
-- `bypass read` 会先查询 LLC：命中时可以直接返回 LLC 中的最新 resident line，
-  失配时才直接下发到下游，并且不会分配 LLC 表项。
-- `bypass write` 现在按“write-through maintenance”处理：命中 resident
-  line 时会更新 LLC 中的该 line，但不会设置 `DIRTY`；失配时直接下发到下游，
-  且不会为此分配新的 LLC line。
-- 子行 `bypass write` 会按 `addr % line_bytes` 合并到正确的 byte offset，
-  不再默认从 line 起始位置覆盖。
-- cacheable demand miss 使用父模拟器提供的外部 SRAM 风格 `data` /
-  `meta` / `repl` 表。
-- 当前 next-line prefetch 逻辑是“保守但回填到表”的版本：检测到连续两个
-  demand miss 后，会先把最多 `prefetch_degree` 个 next-line 候选放入队列，
-  只在没有 demand MSHR 的 quiet cycle 中按一次一条的方式发起，并将返回行
-  以 prefetch 标记写入 LLC 表。
-- demand 流量始终优先于 prefetch lookup / memory issue；一旦 LLC 真正接受
-  新的 demand，请求队列中的 prefetch 候选会被丢弃，因此 prefetch 更像
-  “后台尽力而为”流量，而不会与主请求路径竞争。
-- AXI4 写侧当前按路径区分：
-  - 非 LLC 路径最多可接收 `MAX_WRITE_OUTSTANDING` 个 pending write，
-    并按 AXI 顺序向下游发送，B 响应按 AXI ID 路由回上游 master
-  - LLC 打开时，interconnect 侧同样最多可排队 `MAX_WRITE_OUTSTANDING`
-    个上游写请求，LLC 核心自身现在也带有按 master 划分的内部 pending
-    write queue
-  - LLC 写路径现在支持“每个写 master 一个 active write context”；这些
-    active context 共享 lookup engine、victim writeback 资源和下游内存写口
-  - 同一个 master 的后继 queued write 仍然只会在前一个写响应槽被消费后
-    才继续提升执行，因此每个 master 的顺序边界仍是显式的
-- AXI3 支持仍然保留给过渡和测试使用，但 LLC 机制当前明确集中在 AXI4 路径。
+## LLC 概要
 
-## 当前收尾边界与后续路线
+`AXI_LLC` 位于 AXI4 interconnect 之后，建模共享统一缓存。
 
-- 当前收尾版本把 correctness 边界定义为：
-  - AXI4 路径下，读侧支持 multiple outstanding。
-  - 写侧支持“interconnect 多 pending + LLC 内部按 master 排队 +
-    每个写 master 一个 active write context”，并保证写响应、
-    victim writeback、maintenance 与 demand miss 的顺序正确。
-- 当前采用“每个 master 一个 active context + 共享内部资源”的收尾形态，
-  原因是：
-  - 当前 correctness 风险已经集中在写命中/失配、victim writeback、
-    stale refill、maintenance interlock 这些时序点上。
-  - 多个 pending write 现在已经能在两个写 master 上被正确接收、排队、
-    提升与返回响应。
-  - 如果后续还要继续追性能，重点将是进一步提高内部资源并行度，而不是再去
-    修 correctness 语义。
-- AXI3 路径进入冻结/退场路线：
-  - 保留现有 smoke、协议共同子集等价和基础 router/MMIO/DDR 测试。
-  - 不再向 AXI3 路径继续扩 LLC 新特性。
-  - 待上层父模拟器完全切换到 AXI4 后，再删除 AXI3 实现与测试。
+默认配置：
+
+- `8MB`
+- `64B` cache line
+- `16-way`
+- `4` 个 MSHR
+- lookup latency `8`
+- `PIPT`、`unified`、`NINE`
+- 默认关闭 prefetch
+
+当前语义：
+
+- cacheable read 通过父模拟器提供的外部 SRAM 风格 `data/meta/repl` 表进行
+  分配与回填。
+- AXI4 读路径支持 multiple outstanding：
+  - 全局上限 `8`
+  - 单个读 master 上限 `4`
+- cacheable write 由 LLC 路径接管。
+- `bypass read` 会先查 LLC：
+  - hit 直接返回 resident line 最新值
+  - miss 下发到下游且不分配 LLC
+- `bypass write` 是 write-through maintenance：
+  - hit 更新 resident line，但不设置 `DIRTY`
+  - miss 直接下发到下游，不分配 LLC
+- 子行写按 `addr % line_bytes` 合并。
+- `invalidate_all` 通过 epoch 丢弃 stale refill install，但不会破坏原始
+  demand miss 的响应返回。
+
+### AXI4 写并发
+
+当前 AXI4 写路径设计是：
+
+- interconnect 最多接收 `MAX_WRITE_OUTSTANDING` 个 pending write。
+- 非 LLC 路径可直接按 AXI ID 将 B 响应路由回上游。
+- LLC 路径内部具备：
+  - 按 master 划分的 pending write queue
+  - 每个写 master 一个 active write context
+  - 共享 lookup engine
+  - 共享 victim writeback 资源
+  - 共享下游 memory write port
+- 同一个 master 的后继写，仍然要等前一个写响应槽被消费后才继续提升。
+
+这就是当前的 correctness 收尾边界。后续如果还要继续追性能，重点会是
+进一步提高内部写资源并行度，而不是再回头修基本的一致性与顺序语义。
 
 ## 测试分层
 
-- `P0`：纯组件级确定性单测。
-  - LLC 读写命中/失配、bypass read/write、一致性维护、stale refill、
-    victim writeback 等。
-- `P1`：AXI4 + LLC + SimDDR 小型集成确定性回归。
-  - cacheable/bypass 共存、queued write、maintenance interlock、
-    invalidate-all epoch 等。
-- `P2`：固定种子的混合压力回归与协议冒烟。
-  - 混合读写一致性压力、协议共同子集等价、AXI3 过渡期最小保证。
+- `P0`：纯组件级确定性单测
+  - LLC 读写 hit/miss
+  - bypass read/write
+  - victim writeback
+  - maintenance
+  - stale refill 保护
+  - write queue 边界
+- `P1`：AXI4 + LLC + SimDDR 小型集成确定性回归
+  - cacheable+bypass 共存
+  - queued write
+  - maintenance interlock
+  - invalidate-all epoch 行为
+- `P2`：固定种子混合压力
+  - 混合一致性压力
+  - refill / maintenance / writeback 竞争
 
-## 接口信号文档
+已验证编译器：
 
-详细信号列表见：
+- `qm` 环境默认工具链
+- `/usr/bin/g++`
+- `/workspace/S/daiyihao/miniconda3/envs/qm/bin/x86_64-conda-linux-gnu-c++`
 
-- `docs/interfaces.md`（英文）
-- `docs/interfaces_CN.md`（中文）
+## 接口文档
 
-内容包括：
+- [docs/interfaces.md](docs/interfaces.md)
+- [docs/interfaces_CN.md](docs/interfaces_CN.md)
 
-- Interconnect 上游接口（`read_ports[4]`、`write_ports[2]`）
-- AXI3 五通道信号（`AW/W/B/AR/R`，256-bit 数据）
-- AXI4 五通道信号（`AW/W/B/AR/R`，32-bit 数据）
-
-## 项目目录树与文件职责
+## 主要文件
 
 ```text
 .
 ├── CMakeLists.txt
-├── Makefile
 ├── README.md / README_CN.md
-├── include/
 ├── axi_interconnect/
 │   ├── include/
 │   ├── AXI_Interconnect.cpp
-│   ├── AXI_Interconnect_AXI3.cpp
+│   ├── AXI_LLC.cpp
 │   ├── AXI_Router_AXI4.cpp
-│   ├── AXI_Router_AXI3.cpp
 │   ├── axi_interconnect_test.cpp
-│   └── axi_interconnect_axi3_test.cpp
+│   ├── axi_interconnect_llc_axi4_test.cpp
+│   └── axi_llc_test.cpp
 ├── sim_ddr/
 │   ├── include/
 │   ├── SimDDR.cpp
-│   ├── SimDDR_AXI3.cpp
-│   ├── sim_ddr_test.cpp
-│   └── sim_ddr_axi3_test.cpp
+│   └── sim_ddr_test.cpp
 ├── mmio/
 │   ├── include/
 │   ├── MMIO_Bus_AXI4.cpp
-│   ├── MMIO_Bus_AXI3.cpp
 │   ├── UART16550_Device.cpp
-│   ├── mmio_router_axi4_test.cpp
-│   └── mmio_router_axi3_test.cpp
-├── demos/
-│   ├── axi4_smoke.cpp
-│   ├── axi3_smoke.cpp
-│   └── single_cycle/
-│       ├── include/
-│       ├── src/
-│       └── third_party/softfloat/softfloat.a
-├── docs/
-└── .codex/skills/
+│   └── mmio_router_axi4_test.cpp
+└── demos/
+    └── axi4_smoke.cpp
 ```
 
-顶层文件：
-- `CMakeLists.txt`：定义库/测试/demo 目标与构建开关。
-- `Makefile`：对 CMake 构建流程的便捷封装入口。
-- `README.md` / `README_CN.md`：英文/中文说明文档。
-- `.gitignore`：忽略构建产物和生成文件。
+## 当前收尾结论
 
-`include/`：
-- `include/axi_interconnect_compat.h`：给父项目接入使用的兼容辅助定义。
-- `include/axi_mmio_map.h`：DDR/MMIO 地址映射常量定义。
-
-`axi_interconnect/`：
-- `axi_interconnect/include/AXI_Interconnect.h`：AXI4 interconnect 类与接口定义。
-- `axi_interconnect/include/AXI_Interconnect_AXI3.h`：AXI3 interconnect 类与接口定义。
-- `axi_interconnect/include/AXI_Interconnect_IO.h`：上游简化读写端口结构定义。
-- `axi_interconnect/include/AXI_Router_AXI4.h`：AXI4 router 接口定义。
-- `axi_interconnect/include/AXI_Router_AXI3.h`：AXI3 router 接口定义。
-- `axi_interconnect/AXI_Interconnect.cpp`：AXI4 仲裁/请求调度/响应分发实现。
-- `axi_interconnect/AXI_Interconnect_AXI3.cpp`：AXI3 仲裁/请求调度/响应分发实现。
-- `axi_interconnect/AXI_Router_AXI4.cpp`：AXI4 DDR/MMIO 地址译码与转发实现。
-- `axi_interconnect/AXI_Router_AXI3.cpp`：AXI3 DDR/MMIO 地址译码与转发实现。
-- `axi_interconnect/axi_interconnect_test.cpp`：AXI4 interconnect 单元与压力测试。
-- `axi_interconnect/axi_interconnect_axi3_test.cpp`：AXI3 interconnect 单元与压力测试。
-
-`sim_ddr/`：
-- `sim_ddr/include/SimDDR.h`：AXI4 SimDDR 接口定义。
-- `sim_ddr/include/SimDDR_AXI3.h`：AXI3 SimDDR 接口定义。
-- `sim_ddr/include/SimDDR_IO.h`：AXI4 IO bundle 定义。
-- `sim_ddr/include/SimDDR_AXI3_IO.h`：AXI3 IO bundle 定义。
-- `sim_ddr/SimDDR.cpp`：AXI4 内存后端行为实现。
-- `sim_ddr/SimDDR_AXI3.cpp`：AXI3 内存后端行为实现。
-- `sim_ddr/sim_ddr_test.cpp`：AXI4 SimDDR 测试。
-- `sim_ddr/sim_ddr_axi3_test.cpp`：AXI3 SimDDR 测试。
-
-`mmio/`：
-- `mmio/include/MMIO_Device.h`：MMIO 设备抽象基类。
-- `mmio/include/MMIO_Bus_AXI4.h`：AXI4 MMIO 总线接口定义。
-- `mmio/include/MMIO_Bus_AXI3.h`：AXI3 MMIO 总线接口定义。
-- `mmio/include/UART16550_Device.h`：UART16550 设备接口定义。
-- `mmio/MMIO_Bus_AXI4.cpp`：AXI4 MMIO 总线实现。
-- `mmio/MMIO_Bus_AXI3.cpp`：AXI3 MMIO 总线实现。
-- `mmio/UART16550_Device.cpp`：UART16550 设备模型实现。
-- `mmio/mmio_router_axi4_test.cpp`：AXI4 router+MMIO 集成测试。
-- `mmio/mmio_router_axi3_test.cpp`：AXI3 router+MMIO 集成测试。
-
-`demos/`：
-- `demos/axi4_smoke.cpp`：AXI4 最小冒烟示例。
-- `demos/axi3_smoke.cpp`：AXI3 最小冒烟示例。
-- `demos/single_cycle/include/config.h`：单周期示例本地配置与常量。
-- `demos/single_cycle/include/RISCV.h`：RV32 指令/类型/辅助定义。
-- `demos/single_cycle/include/CSR.h`：CSR 常量与定义。
-- `demos/single_cycle/include/single_cycle_cpu.h`：单周期 CPU 类声明。
-- `demos/single_cycle/include/sc_axi4_sim_api.h`：单周期示例的 AXI 仿真 API。
-- `demos/single_cycle/include/softfloat.h`：softfloat 函数声明。
-- `demos/single_cycle/include/softfloat_types.h`：softfloat 类型定义。
-- `demos/single_cycle/src/main.cpp`：单周期示例入口。
-- `demos/single_cycle/src/single_cycle_cpu.cpp`：单周期 CPU 实现。
-- `demos/single_cycle/src/sc_axi4_sim_api.cpp`：AXI 内存/MMIO 胶水逻辑与运行时实现。
-- `demos/single_cycle/third_party/softfloat/softfloat.a`：预编译 softfloat 静态库。
-
-`docs/`：
-- `docs/interfaces.md`：英文接口信号详表（上游端口 + AXI3/AXI4 通道）。
-- `docs/interfaces_CN.md`：中文接口信号详表。
-
-`.codex/skills/`：
-- `.codex/skills/axi-kit-dev/SKILL.md`：本仓库开发流程技能文档。
-- `.codex/skills/axi-kit-verify/SKILL.md`：本仓库验证/回归流程技能文档。
-
-说明：
-- `build/` 为构建生成目录，不属于源码职责范畴。
-
-
-## 推荐阅读路径
-
-如果是第一次阅读这个仓库，建议按以下顺序快速建立全局认知：
-
-1. 先读本 README 的架构和拓扑（READ/WRITE 两张 ASCII 图）。
-2. 再读 `docs/interfaces.md` / `docs/interfaces_CN.md` 的信号字典。
-3. 按一条完整数据路径串读源码：
-   - `axi_interconnect/include/AXI_Interconnect_IO.h`
-   - `axi_interconnect/AXI_Interconnect.cpp`（或 `AXI_Interconnect_AXI3.cpp`）
-   - `axi_interconnect/AXI_Router_AXI4.cpp`（或 `AXI_Router_AXI3.cpp`）
-   - `sim_ddr/SimDDR.cpp` + `mmio/MMIO_Bus_AXI4.cpp`
-4. 再读测试，确认预期行为与边界：
-   - `axi_interconnect/axi_interconnect_test.cpp`
-   - `mmio/mmio_router_axi4_test.cpp`
-5. 最后看可运行示例：
-   - `demos/axi4_smoke.cpp`、`demos/axi3_smoke.cpp`
-   - `demos/single_cycle/src/main.cpp`
-
-经验建议：
-- 优先从 AXI4 路径理解，再对照 AXI3 差异。
-
-
-## 构建
-
-```bash
-cmake -S . -B build
-cmake --build build -j
-```
-
-或：
-
-```bash
-make -j
-```
-
-## 测试
-
-```bash
-cd build
-ctest --output-on-failure
-```
-
-当前测试项：
-
-- `sim_ddr_test`
-- `axi_interconnect_test`
-- `mmio_router_axi4_test`
-- `sim_ddr_axi3_test`
-- `axi_interconnect_axi3_test`
-- `mmio_router_axi3_test`
-
-## Demo
-
-```bash
-./build/axi4_smoke_demo
-./build/axi3_smoke_demo
-```
-
-Demo 用途：
-- `axi4_smoke_demo`：AXI4 路径单读主设备冒烟测试，检查请求被接收、AR 通道发出、读响应返回。
-- `axi3_smoke_demo`：AXI3 路径同类冒烟测试，覆盖带 ID 的读路径握手与响应闭环。
-
-## 单周期 RV32 Case
-
-源码组织：
-
-```text
-demos/single_cycle/
-  include/                # 单周期本地头文件/API/配置
-  src/                    # 运行时与 CPU 模型
-  third_party/softfloat/  # 预编译 softfloat 静态库
-```
-
-构建目标：
-
-```bash
-cmake -S . -B build
-cmake --build build -j --target single_cycle_axi4_demo
-```
-
-延迟说明：
-- `single_cycle_axi4_demo` 使用单独的 AXI4+SimDDR 库变体，默认
-  `AXI_KIT_SINGLE_CYCLE_DDR_LATENCY=8`（避免 demo 运行过慢）。
-- 可通过 CMake 参数覆盖，例如：
-  `cmake -S . -B build -DAXI_KIT_SINGLE_CYCLE_DDR_LATENCY=16`
-
-运行示例（使用父仓库中的程序镜像）：
-
-```bash
-./build/single_cycle_axi4_demo ../baremetal/new_dhrystone/dhrystone.bin
-./build/single_cycle_axi4_demo ../baremetal/new_coremark/coremark.bin
-./build/single_cycle_axi4_demo ../baremetal/linux.bin --max-inst 20000000
-```
-
-该 case 保持“模拟器逻辑”和“互连/内存子系统”分离，并且所有内存相关访问都通过 AXI 上游主设备端口发起（不是直接读写内存数组）：
-- `fetch` -> 读主设备 `M0 (icache)`
-- `load` + `amo read` -> 读主设备 `M1 (dcache_r)`
-- `ptw/va2pa` 页表访问 -> 读主设备 `M2 (mmu)`
-- `store` + `amo writeback`（含 UART MMIO 写）-> 写主设备 `M0 (dcache_w)`
-
-在该单周期 case 中保留但未使用的端口：
-- 读主设备 `M3 (extra_r)`
-- 写主设备 `M1 (extra_w)`
-
-## 回接到父仓库
-
-父仓库可将此项目作为外部依赖，包含以下目录：
-
-- `include/`
-- `axi_interconnect/include/`
-- `sim_ddr/include/`
-- `mmio/include/`
-
-并按需要链接：
-
-- `axi_kit_axi4`
-- `axi_kit_axi3`
-
-## Git Submodule 使用流程
-
-如果要在其他仓库中以 submodule 方式接入本项目：
-
-```bash
-# 在父仓库根目录执行
-git submodule add git@github.com:dyh1807/axi-interconnect-kit.git axi-interconnect-kit
-git commit -m "chore(submodule): add axi-interconnect-kit"
-```
-
-上述命令作用：
-- 在父仓库写入 `.gitmodules`（记录 submodule 的 URL 与路径）
-- 在父仓库记录 `axi-interconnect-kit` 的固定提交指针
-
-克隆父仓库并初始化 submodule：
-
-```bash
-git clone --recurse-submodules <parent-repo-url>
-# 如果父仓库已克隆：
-git submodule update --init --recursive
-```
-
-上述命令作用：
-- 按父仓库锁定的提交，检出对应 submodule 内容
-
-将 submodule 更新到远端最新分支（例如 `main`）：
-
-```bash
-cd axi-interconnect-kit
-git fetch origin
-git checkout main
-git pull --ff-only origin main
-cd ..
-git add axi-interconnect-kit
-git commit -m "chore(submodule): bump axi-interconnect-kit"
-```
-
-上述命令作用：
-- 更新 submodule 工作树到新提交
-- 同步更新父仓库中的 submodule 指针
-
-将 submodule 固定到指定提交：
-
-```bash
-cd axi-interconnect-kit
-git checkout <commit-sha>
-cd ..
-git add axi-interconnect-kit
-git commit -m "chore(submodule): pin axi-interconnect-kit to <sha>"
-```
-
-常用维护命令：
-
-```bash
-git submodule status
-git submodule sync --recursive
-git submodule foreach --recursive 'git status --short --branch'
-```
-
-命令说明：
-- `git submodule status`：查看每个 submodule 当前检出的提交 SHA
-- `git submodule sync --recursive`：根据 `.gitmodules` 刷新 URL/路径配置
-- `git submodule foreach ...`：在每个 submodule 中执行命令，便于批量检查状态
+本仓库当前已经收敛到 AXI4-only 的 correctness 和回归覆盖闭环。父模拟器
+层面的联调问题，应优先在主模拟器中单独定位，除非根因能够明确指回本子模块。
