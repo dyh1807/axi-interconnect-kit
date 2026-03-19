@@ -177,8 +177,7 @@ inline void clear_upstream_inputs(AXI_Interconnect &interconnect) {
   }
 }
 
-inline void cycle_outputs(Axi4LlcTestEnv &env) {
-  clear_upstream_inputs(env.interconnect);
+inline void apply_backend_outputs(Axi4LlcTestEnv &env) {
   env.tables.comb_outputs();
   env.interconnect.set_llc_lookup_in(env.tables.lookup_in);
 
@@ -194,11 +193,15 @@ inline void cycle_outputs(Axi4LlcTestEnv &env) {
   env.interconnect.axi_io.b.bvalid = env.ddr.io.b.bvalid;
   env.interconnect.axi_io.b.bid = env.ddr.io.b.bid;
   env.interconnect.axi_io.b.bresp = env.ddr.io.b.bresp;
+}
 
+inline void cycle_outputs(Axi4LlcTestEnv &env) {
+  clear_upstream_inputs(env.interconnect);
+  apply_backend_outputs(env);
   env.interconnect.comb_outputs();
 }
 
-inline void cycle_inputs(Axi4LlcTestEnv &env) {
+inline void commit_cycle_inputs(Axi4LlcTestEnv &env) {
   env.interconnect.comb_inputs();
 
   if (env.interconnect.axi_io.ar.arvalid && env.interconnect.axi_io.ar.arready) {
@@ -235,6 +238,8 @@ inline void cycle_inputs(Axi4LlcTestEnv &env) {
   env.interconnect.seq();
   ++sim_time;
 }
+
+inline void cycle_inputs(Axi4LlcTestEnv &env) { commit_cycle_inputs(env); }
 
 inline void init_env(Axi4LlcTestEnv &env) {
   const AXI_LLCConfig cfg = make_small_llc_config();

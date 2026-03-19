@@ -77,8 +77,10 @@ router 负责 AXI 侧地址译码。
   - hit 更新 resident line，但不设置 `DIRTY`
   - miss 直接下发到下游，不分配 LLC
 - 子行写按 `addr % line_bytes` 合并。
-- `invalidate_all` 通过 epoch 丢弃 stale refill install，但不会破坏原始
-  demand miss 的响应返回。
+- `invalidate_all` 当前采用保守语义：
+  - 只有在 LLC 处于 quiescent 且不存在 dirty resident/write hazard 状态时才接受
+  - 一旦接受，会通过 epoch 丢弃 stale clean refill install
+  - 不会静默丢弃 dirty resident 数据
 
 ### AXI4 写并发
 
@@ -158,5 +160,6 @@ router 负责 AXI 侧地址译码。
 
 ## 当前收尾结论
 
-本仓库当前已经收敛到 AXI4-only 的 correctness 和回归覆盖闭环。父模拟器
-层面的联调问题，应优先在主模拟器中单独定位，除非根因能够明确指回本子模块。
+本仓库当前已经收敛到 AXI4-only LLC/interconnect 的 correctness 范围，并对
+maintenance 采用保守语义。父模拟器层面的联调问题，应优先在主模拟器中
+单独定位，除非根因能够明确指回本子模块。

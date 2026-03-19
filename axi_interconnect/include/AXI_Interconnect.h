@@ -116,6 +116,9 @@ public:
     llc_invalidate_line_valid_ = valid;
     llc_invalidate_line_addr_ = addr;
   }
+  bool llc_invalidate_all_accepted() const {
+    return llc.io.ext_out.mem.invalidate_all_accepted;
+  }
   bool llc_invalidate_line_accepted() const {
     return llc.io.ext_out.mem.invalidate_line_accepted;
   }
@@ -196,6 +199,7 @@ private:
   void comb_write_response();
   void prepare_llc_inputs();
   bool can_issue_llc_read_req() const;
+  bool has_same_line_frontend_write_hazard(uint32_t line_addr) const;
 
   uint8_t calc_burst_len(uint8_t total_size);
   uint8_t alloc_read_axi_id() const;

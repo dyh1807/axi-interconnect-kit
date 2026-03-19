@@ -181,6 +181,29 @@ uint32_t AXI_Interconnect::count_llc_write_pending() const {
   return count;
 }
 
+bool AXI_Interconnect::has_same_line_frontend_write_hazard(uint32_t line_addr) const {
+  if (!llc_enabled()) {
+    return false;
+  }
+  for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    if (llc_upstream_write_req[master].valid &&
+        AXI_LLC::line_addr(llc_config, llc_upstream_write_req[master].addr) ==
+            line_addr) {
+      return true;
+    }
+    for (const auto &entry : llc_upstream_write_q[master]) {
+      if (entry.valid && AXI_LLC::line_addr(llc_config, entry.addr) == line_addr) {
+        return true;
+      }
+    }
+    if (write_ports[master].req.valid &&
+        AXI_LLC::line_addr(llc_config, write_ports[master].req.addr) == line_addr) {
+      return true;
+    }
+  }
+  return false;
+}
+
 int AXI_Interconnect::find_write_pending_by_axi_id(uint8_t axi_id) const {
   for (size_t i = 0; i < w_pending.size(); ++i) {
     if (w_pending[i].axi_id == axi_id) {
@@ -252,7 +275,13 @@ void AXI_Interconnect::prepare_llc_inputs() {
   }
 
   llc.io.ext_in.mem.invalidate_all = llc_invalidate_all_req_;
-  llc.io.ext_in.mem.invalidate_line_valid = llc_invalidate_line_valid_;
+  const uint32_t invalidate_line_addr =
+      AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
+  const bool line_hazard =
+      llc_invalidate_line_valid_ &&
+      has_same_line_frontend_write_hazard(invalidate_line_addr);
+  llc.io.ext_in.mem.invalidate_line_valid =
+      llc_invalidate_line_valid_ && !line_hazard;
   llc.io.ext_in.mem.invalidate_line_addr = llc_invalidate_line_addr_;
   bool any_upstream_capture_pending = false;
   bool any_upstream_req_visible = false;
@@ -328,7 +357,8 @@ void AXI_Interconnect::comb_outputs() {
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     const bool llc_slot_busy =
         llc_enabled() && llc_upstream_req[i].valid && !ar_latched.valid;
-    read_ports[i].req.ready = req_ready_r[i] && !llc_slot_busy;
+    read_ports[i].req.ready =
+        req_ready_r[i] && !llc_slot_busy && !(llc_enabled() && llc_invalidate_all_req_);
     read_ports[i].req.accepted = read_req_accepted[i];
   }
 
@@ -344,8 +374,9 @@ void AXI_Interconnect::comb_outputs() {
     if (llc_enabled()) {
       const bool llc_slot_busy = llc_upstream_write_req[i].valid;
       write_ports[i].req.ready =
-          w_req_ready_r[i] ||
-          (!llc_slot_busy && llc.io.ext_out.upstream.write_req[i].ready);
+          !llc_invalidate_all_req_ &&
+          (w_req_ready_r[i] ||
+           (!llc_slot_busy && llc.io.ext_out.upstream.write_req[i].ready));
     } else {
       write_ports[i].req.ready = w_req_ready_r[i];
     }
@@ -434,7 +465,8 @@ void AXI_Interconnect::comb_read_arbiter() {
       return;
     }
     for (int master = 0; master < NUM_READ_MASTERS; ++master) {
-      if (llc_upstream_req[master].valid || !read_ports[master].req.valid) {
+      if (llc_upstream_req[master].valid || !read_ports[master].req.valid ||
+          llc_invalidate_all_req_) {
         continue;
       }
       if (req_ready_curr[master]) {
@@ -579,10 +611,17 @@ void AXI_Interconnect::comb_write_request() {
 
     const bool llc_write_queue_has_space =
         count_llc_write_pending() < MAX_WRITE_OUTSTANDING;
-    if (llc_write_queue_has_space) {
+    if (llc_write_queue_has_space && !llc_invalidate_all_req_) {
       for (int k = 0; k < NUM_WRITE_MASTERS; ++k) {
         const int idx = (w_arb_rr_idx + k) % NUM_WRITE_MASTERS;
         if (!write_ports[idx].req.valid) {
+          continue;
+        }
+        const bool blocked_by_line_invalidate =
+            llc_invalidate_line_valid_ &&
+            AXI_LLC::line_addr(llc_config, write_ports[idx].req.addr) ==
+                AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
+        if (blocked_by_line_invalidate) {
           continue;
         }
         if (w_req_ready_curr[idx]) {

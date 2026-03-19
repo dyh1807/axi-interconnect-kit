@@ -78,8 +78,11 @@ Current behavior:
   - hit updates resident line without setting `DIRTY`
   - miss goes downstream without allocation
 - Sub-line writes merge by `addr % line_bytes`.
-- `invalidate_all` drops stale refill installs by epoch, but original demand
-  misses still return responses correctly.
+- `invalidate_all` is conservative:
+  - it is accepted only when the LLC is quiescent with no dirty resident/write
+    hazard state
+  - it drops stale clean refill installs by epoch once accepted
+  - it does not silently discard dirty resident data
 
 ### AXI4 Write Concurrency
 
@@ -161,6 +164,7 @@ Validated toolchains:
 
 ## Current Closure
 
-This repository is now closed around AXI4-only correctness and regression
-coverage. Parent-simulator integration bugs should be debugged outside this
-submodule unless the root cause is clearly inside the kit itself.
+This repository is currently closed around the AXI4-only LLC/interconnect
+correctness scope implemented here, with conservative maintenance semantics.
+Parent-simulator integration bugs should be debugged outside this submodule
+unless the root cause is clearly inside the kit itself.

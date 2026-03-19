@@ -149,6 +149,16 @@ bool is_full_line_write(const AXI_LLCConfig &config, uint32_t addr,
   return true;
 }
 
+uint32_t update_dirty_line_count(uint32_t current, bool old_dirty, bool new_dirty) {
+  if (old_dirty == new_dirty) {
+    return current;
+  }
+  if (new_dirty) {
+    return current + 1u;
+  }
+  return current == 0 ? 0 : current - 1u;
+}
+
 AXI_LLC_Bytes_t build_repl_payload(uint32_t next_way) {
   AXI_LLC_Bytes_t bytes;
   bytes.resize(AXI_LLC_REPL_BYTES);
@@ -312,6 +322,41 @@ bool AXI_LLC::can_accept_invalidate_line_now(uint32_t line_addr_value) const {
   }
 
   return true;
+}
+
+bool AXI_LLC::has_dirty_or_write_hazard(const AXI_LLC_Regs_t &regs) const {
+  if (regs.dirty_line_count_r != 0) {
+    return true;
+  }
+  if (regs.victim_wb_valid_r) {
+    return true;
+  }
+  for (uint32_t slot = 0; slot < config_.mshr_num && slot < MAX_OUTSTANDING; ++slot) {
+    const auto &entry = regs.mshr[slot];
+    if (!entry.valid) {
+      continue;
+    }
+    if (entry.is_write) {
+      return true;
+    }
+    if (entry.victim_dirty && !entry.victim_writeback_done) {
+      return true;
+    }
+  }
+  for (uint8_t master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    if (regs.write_ctx[master].valid || regs.write_q_count_r[master] != 0 ||
+        regs.write_resp_valid_r[master]) {
+      return true;
+    }
+  }
+  if (regs.lookup_valid_r && regs.lookup_is_write_r) {
+    return true;
+  }
+  return false;
+}
+
+bool AXI_LLC::can_accept_invalidate_all_now(const AXI_LLC_Regs_t &regs) const {
+  return !has_dirty_or_write_hazard(regs);
 }
 
 uint32_t AXI_LLC::line_words(const AXI_LLCConfig &config) {
@@ -1008,6 +1053,10 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.lookup_is_invalidate_r = false;
       io.reg_write.lookup_is_write_r = false;
       io.reg_write.lookup_is_bypass_r = false;
+      io.reg_write.dirty_line_count_r = update_dirty_line_count(
+          io.regs.dirty_line_count_r,
+          (hit_meta.flags & AXI_LLC_META_DIRTY) != 0,
+          (meta.flags & AXI_LLC_META_DIRTY) != 0);
       ctx.cache_done = true;
       io.reg_write.state = AXI_LLCState::kIdle;
       return true;
@@ -1027,6 +1076,9 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.lookup_is_invalidate_r = false;
       io.reg_write.lookup_is_write_r = false;
       io.reg_write.lookup_is_bypass_r = false;
+      io.reg_write.dirty_line_count_r = update_dirty_line_count(
+          io.regs.dirty_line_count_r,
+          (hit_meta.flags & AXI_LLC_META_DIRTY) != 0, false);
       io.reg_write.state = AXI_LLCState::kIdle;
       return true;
     }
@@ -1228,6 +1280,8 @@ bool AXI_LLC::try_complete_lookup() {
       io.table_out.repl.index = set;
       io.table_out.repl.payload = build_repl_payload(repl_next_way);
       io.table_out.repl.byte_enable.assign(AXI_LLC_REPL_BYTES, 1);
+      io.reg_write.dirty_line_count_r = update_dirty_line_count(
+          io.regs.dirty_line_count_r, victim_dirty, true);
       ctx.cache_done = true;
     }
     io.reg_write.lookup_valid_r = false;
@@ -1460,10 +1514,14 @@ void AXI_LLC::drive_mem_read_path() {
     if (entry.is_write) {
       io.reg_write.write_ctx[entry.master].cache_done = true;
       io.reg_write.write_ctx[entry.master].cache_pending = false;
+      io.reg_write.dirty_line_count_r = update_dirty_line_count(
+          io.regs.dirty_line_count_r, entry.victim_dirty, true);
       io.reg_write.mshr[commit_slot] = {};
       io.reg_write.state = io.regs.lookup_valid_r ? AXI_LLCState::kLookup
                                                   : AXI_LLCState::kIdle;
     } else {
+      io.reg_write.dirty_line_count_r = update_dirty_line_count(
+          io.regs.dirty_line_count_r, entry.victim_dirty, false);
       io.reg_write.mshr[commit_slot].refill_committed = true;
     }
     return;
@@ -1570,24 +1628,6 @@ void AXI_LLC::comb() {
     return;
   }
 
-  if (io.ext_in.mem.invalidate_all) {
-    io.ext_out = {};
-    io.table_out = {};
-    io.table_out.invalidate_all = true;
-    io.reg_write = io.regs;
-    io.reg_write.enable_r = true;
-    io.reg_write.invalidate_epoch_r =
-        static_cast<uint8_t>(io.regs.invalidate_epoch_r + 1);
-    if (io.regs.lookup_valid_r) {
-      // Re-run the lookup against the invalidated tables on the next cycle so
-      // an in-flight demand degrades into a cache miss instead of being
-      // dropped by the invalidate pulse.
-      io.reg_write.lookup_issued_r = false;
-      io.reg_write.state = AXI_LLCState::kLookup;
-    }
-    return;
-  }
-
   io.reg_write.enable_r = true;
   if (io.regs.state == AXI_LLCState::kDisabled) {
     io.reg_write.state = AXI_LLCState::kIdle;
@@ -1614,9 +1654,26 @@ void AXI_LLC::comb() {
   (void)try_complete_lookup();
   drive_mem_read_path();
   accept_new_requests();
-  accept_maintenance_request();
-  try_launch_prefetch_lookup();
+  if (!io.ext_in.mem.invalidate_all) {
+    accept_maintenance_request();
+    try_launch_prefetch_lookup();
+  }
   drive_lookup_request();
+
+  if (io.ext_in.mem.invalidate_all && can_accept_invalidate_all_now(io.reg_write) &&
+      !io.table_out.data.enable && !io.table_out.meta.enable &&
+      !io.table_out.repl.enable && !io.ext_out.mem.read_req_valid &&
+      !io.ext_out.mem.write_req_valid) {
+    io.ext_out.mem.invalidate_all_accepted = true;
+    io.table_out.invalidate_all = true;
+    io.reg_write.invalidate_epoch_r =
+        static_cast<uint8_t>(io.regs.invalidate_epoch_r + 1);
+    io.reg_write.dirty_line_count_r = 0;
+    if (io.regs.lookup_valid_r) {
+      io.reg_write.lookup_issued_r = false;
+      io.reg_write.state = AXI_LLCState::kLookup;
+    }
+  }
 }
 
 void AXI_LLC::seq() { io.regs = io.reg_write; }

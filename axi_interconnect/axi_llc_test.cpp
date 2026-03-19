@@ -1964,6 +1964,95 @@ bool test_invalidate_all_drops_stale_refill_install() {
   return true;
 }
 
+bool test_invalidate_all_stalls_when_dirty_resident_present() {
+  printf("=== LLC Test 17c: invalidate_all stalls when dirty resident line exists ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t line = 0x600;
+  const uint32_t addr = line + 8;
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = addr;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size = 3;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 0x51;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[0] = 0xCAFEBABE;
+  for (uint32_t b = 0; b < 4; ++b) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb.set(b, true);
+  }
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.comb();
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data = make_data_set(config, 0, 0x1000);
+  llc.io.lookup_in.meta = make_meta_set(config, 0, AXI_LLC::tag_of(config, addr));
+  llc.io.lookup_in.repl = make_repl(1);
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_resp[MASTER_DCACHE_W].ready = true;
+  cycle(llc);
+
+  if (llc.io.regs.dirty_line_count_r == 0) {
+    printf("FAIL: dirty resident line was not tracked\n");
+    return false;
+  }
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.invalidate_all = true;
+  llc.comb();
+  if (llc.io.ext_out.mem.invalidate_all_accepted || llc.io.table_out.invalidate_all) {
+    printf("FAIL: invalidate_all should stall while dirty resident line exists\n");
+    return false;
+  }
+  if (llc.io.reg_write.dirty_line_count_r == 0) {
+    printf("FAIL: invalidate_all stall path should preserve dirty tracking\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_invalidate_all_stalls_until_dirty_victim_dependency_clears() {
+  printf("=== LLC Test 17d: invalidate_all waits for dirty victim dependency ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  llc.io.regs.mshr[0].valid = true;
+  llc.io.regs.mshr[0].victim_dirty = true;
+  llc.io.regs.mshr[0].victim_writeback_done = false;
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.invalidate_all = true;
+  llc.comb();
+  if (llc.io.ext_out.mem.invalidate_all_accepted || llc.io.table_out.invalidate_all) {
+    printf("FAIL: invalidate_all should stall while dirty victim dependency exists\n");
+    return false;
+  }
+
+  llc.io.regs.mshr[0] = {};
+  clear_inputs(llc);
+  llc.io.ext_in.mem.invalidate_all = true;
+  llc.comb();
+  if (!llc.io.ext_out.mem.invalidate_all_accepted || !llc.io.table_out.invalidate_all) {
+    printf("FAIL: invalidate_all did not fire after dirty victim dependency cleared\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
 bool test_same_master_cacheable_miss_serialized() {
   printf("=== LLC Test 17b: same-master cacheable miss is serialized ===\n");
   AXI_LLC llc;
@@ -2741,6 +2830,16 @@ int main() {
     failed++;
 
   if (test_invalidate_all_drops_stale_refill_install())
+    passed++;
+  else
+    failed++;
+
+  if (test_invalidate_all_stalls_when_dirty_resident_present())
+    passed++;
+  else
+    failed++;
+
+  if (test_invalidate_all_stalls_until_dirty_victim_dependency_clears())
     passed++;
   else
     failed++;

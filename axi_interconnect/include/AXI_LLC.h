@@ -123,6 +123,7 @@ struct AXI_LLC_MemIn_t {
 };
 
 struct AXI_LLC_MemOut_t {
+  wire1_t invalidate_all_accepted = false;
   wire1_t invalidate_line_accepted = false;
   wire1_t read_req_valid = false;
   wire32_t read_req_addr = 0;
@@ -267,6 +268,7 @@ struct AXI_LLC_Regs_t {
   uint8_t rr_read_master_r = 0;
   uint8_t rr_write_master_r = 0;
   uint8_t invalidate_epoch_r = 0;
+  uint32_t dirty_line_count_r = 0;
 
   bool read_resp_valid_r[NUM_READ_MASTERS] = {false};
   WideReadData_t read_resp_data_r[NUM_READ_MASTERS] = {};
@@ -355,6 +357,8 @@ private:
   bool can_allocate_prefetch_mshr(const AXI_LLC_Regs_t &regs) const;
   bool write_line_pending(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
   bool can_accept_invalidate_line_now(uint32_t line_addr) const;
+  bool has_dirty_or_write_hazard(const AXI_LLC_Regs_t &regs) const;
+  bool can_accept_invalidate_all_now(const AXI_LLC_Regs_t &regs) const;
   bool line_has_valid_meta(const AXI_LLC_Bytes_t &meta_payload, uint32_t tag,
                            int *hit_way, int *first_invalid_way,
                            AXI_LLCMetaEntry_t *hit_meta) const;
