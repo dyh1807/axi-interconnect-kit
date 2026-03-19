@@ -150,11 +150,13 @@ Current behavior and defaults:
   - non-LLC path can accept up to `MAX_WRITE_OUTSTANDING` pending writes and
     stream them downstream in AXI order with ID-matched B responses
   - LLC-enabled path can also queue up to `MAX_WRITE_OUTSTANDING` upstream
-    writes in the interconnect, and the LLC core now keeps its own pending
-    write queue behind the upstream latch
-  - LLC still serializes actual write execution through a single active
-    write pipeline; queued writes are promoted one-at-a-time, and same-master
-    promotion waits until the previous write response slot has been consumed
+    writes in the interconnect, and the LLC core now keeps per-master pending
+    write queues behind the upstream latch
+  - LLC write execution now supports one active write context per write master;
+    active contexts share the same lookup engine, victim-writeback resource,
+    and downstream memory write port
+  - same-master promotion still waits until the previous write response slot
+    has been consumed, so ordering remains explicit at the per-master boundary
 - AXI3 support is still present for transition/testing, but LLC functionality
   is intentionally centered on the AXI4 path.
 
@@ -162,17 +164,18 @@ Current behavior and defaults:
 
 - The current closure point for correctness is:
   - AXI4 read path supports multiple outstanding contexts.
-  - AXI4 write path supports "multiple pending at interconnect + pending queue
-    inside LLC", while preserving correct ordering among write hit/miss,
+  - AXI4 write path supports "multiple pending at interconnect + per-master
+    pending queue inside LLC + one active write context per write master",
+    while preserving correct ordering among write hit/miss,
     victim writeback, maintenance, and demand miss interactions.
-  - LLC intentionally stops at "queued writes + single active write pipeline"
-    instead of implementing multiple active write-contexts in parallel.
-- The queued-single-pipeline choice is deliberate:
+- The current "per-master active context + shared internal resources" choice is
+  deliberate:
   - current correctness risk is dominated by write-hit/miss sequencing,
     victim writeback, stale refill, and maintenance interlocks
-  - multiple pending writes are already accepted and drained correctly
-  - a true multi-active internal write pipeline is treated as a later
-    performance phase, not part of the current correctness closure
+  - multiple pending writes are now accepted, queued, and promoted correctly
+    across both write masters
+  - the remaining performance phase, if pursued later, is deeper internal
+    resource parallelism rather than correctness-critical functionality
 - AXI3 is now on a freeze/retirement track:
   - keep existing smoke tests, common-subset protocol equivalence, and basic
     router/MMIO/DDR coverage
