@@ -66,14 +66,14 @@ Contract:
 1. Callers must hold `invalidate_all` / `invalidate_line` requests until the
    corresponding `*_accepted()` pulse is observed.
 2. `invalidate_all` is conservative:
-   - new front-end LLC requests are blocked while it is pending
+   - new upstream LLC requests are blocked while it is pending
    - already captured clean LLC-path work may drain
    - it is accepted only when there is no dirty resident line, dirty victim
      writeback, or write-side hazard pending
 3. `invalidate_line` is targeted maintenance:
    - it is rejected when the same line conflicts with an inflight miss, active
      write context, queued write, write lookup, victim writeback, or same-cycle
-     front-end write accept/capture hazard
+     upstream write accept/capture hazard
 4. After `invalidate_all` is accepted, stale clean refill installs from an
    older epoch are dropped instead of being re-installed into the LLC.
 

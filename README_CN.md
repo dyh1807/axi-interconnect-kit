@@ -7,7 +7,7 @@
 - 一套 AXI4 interconnect，对外提供简化上游端口：
   - `read_ports[4]`：`icache`、`dcache_r`、`uncore_lsu_r`、`extra_r`
   - `write_ports[2]`：`dcache_w`、`uncore_lsu_w`
-- AXI4 router、SimDDR、MMIO bus、UART16550
+- AXI4 router、SimDDR 下游内存模型、MMIO bus、UART16550
 - AXI4 路径上的可选共享统一 LLC
 
 本仓库已经删除 AXI3 支持，现在是 AXI4-only。
@@ -42,6 +42,13 @@
 `AXI_Router_AXI4` 是显式层次：interconnect 负责仲裁和上游响应路由，
 router 负责 AXI 侧地址译码。
 
+本仓库中的术语约定：
+
+- `upstream`：连接到 `read_ports[]` / `write_ports[]` 的请求来源，以及返回给这些
+  master 的响应路径
+- `downstream`：位于 interconnect 之下、面向 DDR 或 MMIO 的接口与设备，包括
+  `AXI_Router_AXI4`、`SimDDR`、MMIO 设备
+
 ## LLC 概要
 
 `AXI_LLC` 位于 AXI4 interconnect 之后，建模共享统一缓存。
@@ -60,7 +67,7 @@ router 负责 AXI 侧地址译码。
 
 - cacheable read 通过父模拟器提供的外部 SRAM 风格 `data/meta/repl` 表进行
   分配与回填。
-- AXI4 interconnect 读前端支持 multiple outstanding：
+- AXI4 interconnect 的读上游侧支持 multiple outstanding：
   - 全局上限 `8`
   - 单个读 master 上限 `4`
 - LLC 内部对 cacheable demand miss 的推进仍然更严格：
@@ -89,7 +96,7 @@ router 负责 AXI 侧地址译码。
 
 当前 AXI4 写路径设计是：
 
-- interconnect 前端最多接收 `MAX_WRITE_OUTSTANDING` 个 pending write。
+- interconnect 上游侧最多接收 `MAX_WRITE_OUTSTANDING` 个 pending write。
 - 非 LLC 路径可直接按 AXI ID 将 B 响应路由回上游。
 - LLC 路径内部具备：
   - 按 master 划分的 pending write queue
@@ -99,7 +106,7 @@ router 负责 AXI 侧地址译码。
   - 共享下游 memory write port
 - 同一个 master 的后继写，仍然要等前一个写响应槽被消费后才继续提升。
 
-因此，`MAX_WRITE_OUTSTANDING` 表示的是 interconnect 前端的排队上界，
+因此，`MAX_WRITE_OUTSTANDING` 表示的是 interconnect 上游侧的排队上界，
 不是“interconnect 状态 + LLC 内部状态”合并后的总写状态上界。
 
 这就是当前阶段写路径 correctness 的目标边界。后续如果还要继续追性能，重点会是
@@ -133,6 +140,7 @@ router 负责 AXI 侧地址译码。
 
 - [docs/interfaces.md](docs/interfaces.md)
 - [docs/interfaces_CN.md](docs/interfaces_CN.md)
+- [docs/llc_design_CN.md](docs/llc_design_CN.md)
 
 ## 主要文件
 

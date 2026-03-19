@@ -182,7 +182,7 @@ uint32_t AXI_Interconnect::count_llc_write_pending() const {
   return count;
 }
 
-bool AXI_Interconnect::has_same_line_frontend_write_hazard(uint32_t line_addr) const {
+bool AXI_Interconnect::has_same_line_upstream_write_hazard(uint32_t line_addr) const {
   if (!llc_enabled()) {
     return false;
   }
@@ -280,7 +280,7 @@ void AXI_Interconnect::prepare_llc_inputs() {
       AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
   const bool line_hazard =
       llc_invalidate_line_valid_ &&
-      has_same_line_frontend_write_hazard(invalidate_line_addr);
+      has_same_line_upstream_write_hazard(invalidate_line_addr);
   llc.io.ext_in.mem.invalidate_line_valid =
       llc_invalidate_line_valid_ && !line_hazard;
   llc.io.ext_in.mem.invalidate_line_addr = llc_invalidate_line_addr_;

@@ -902,8 +902,8 @@ bool test_invalidate_all_waits_for_dirty_victim_writeback() {
   return true;
 }
 
-bool test_invalidate_all_pending_blocks_new_frontend_requests_but_drains_captured_requests() {
-  std::printf("=== AXI4 LLC Integration Test 8c: invalidate_all pending blocks new frontend requests but drains captured requests ===\n");
+bool test_invalidate_all_pending_blocks_new_upstream_requests_but_drains_captured_requests() {
+  std::printf("=== AXI4 LLC Integration Test 8c: invalidate_all pending blocks new upstream requests but drains captured requests ===\n");
 
   Axi4LlcTestEnv env;
   AXI_LLCConfig cfg = make_small_llc_config();
@@ -987,7 +987,7 @@ bool test_invalidate_all_pending_blocks_new_frontend_requests_but_drains_capture
   env.interconnect.set_llc_invalidate_all(false);
 
   if (late_read_ready_while_pending) {
-    std::printf("FAIL: new frontend request should be blocked while invalidate_all is pending\n");
+    std::printf("FAIL: new upstream request should be blocked while invalidate_all is pending\n");
     return false;
   }
   if (!invalidate_accept) {
@@ -1575,8 +1575,8 @@ bool test_seeded_invalidate_all_epoch_stress() {
   return true;
 }
 
-bool test_invalidate_line_rejects_same_cycle_frontend_write_accept_ready_first() {
-  std::printf("=== AXI4 LLC Integration Test 12b: invalidate_line rejects same-cycle frontend write accept ready-first ===\n");
+bool test_invalidate_line_rejects_same_cycle_upstream_write_accept_ready_first() {
+  std::printf("=== AXI4 LLC Integration Test 12b: invalidate_line rejects same-cycle upstream write accept ready-first ===\n");
 
   Axi4LlcTestEnv env;
   init_env(env);
@@ -1605,7 +1605,7 @@ bool test_invalidate_line_rejects_same_cycle_frontend_write_accept_ready_first()
   wp.req.total_size = 63;
   wp.req.id = 0x81;
   wp.req.bypass = false;
-  apply_backend_outputs(env);
+  apply_downstream_outputs(env);
   env.interconnect.comb_outputs();
 
   const bool write_ready = env.interconnect.write_ports[MASTER_DCACHE_W].req.ready;
@@ -1615,7 +1615,7 @@ bool test_invalidate_line_rejects_same_cycle_frontend_write_accept_ready_first()
   const bool write_accepted = env.interconnect.write_req_accepted[MASTER_DCACHE_W];
 
   if (invalidate_accepted) {
-    std::printf("FAIL: invalidate_line must not be accepted together with same-line frontend write accept\n");
+    std::printf("FAIL: invalidate_line must not be accepted together with same-line upstream write accept\n");
     return false;
   }
   if (write_accepted) {
@@ -1631,8 +1631,8 @@ bool test_invalidate_line_rejects_same_cycle_frontend_write_accept_ready_first()
   return true;
 }
 
-bool test_invalidate_line_rejects_same_cycle_frontend_write_capture() {
-  std::printf("=== AXI4 LLC Integration Test 12c: invalidate_line rejects same-cycle frontend write capture ===\n");
+bool test_invalidate_line_rejects_same_cycle_upstream_write_capture() {
+  std::printf("=== AXI4 LLC Integration Test 12c: invalidate_line rejects same-cycle upstream write capture ===\n");
 
   Axi4LlcTestEnv env;
   init_env(env);
@@ -1661,7 +1661,7 @@ bool test_invalidate_line_rejects_same_cycle_frontend_write_capture() {
   wp.req.total_size = 63;
   wp.req.id = 0x82;
   wp.req.bypass = false;
-  apply_backend_outputs(env);
+  apply_downstream_outputs(env);
   env.interconnect.comb_outputs();
   commit_cycle_inputs(env);
   env.interconnect.set_llc_invalidate_line(false, 0);
@@ -1760,7 +1760,7 @@ int main() {
     failed++;
   }
 
-  if (test_invalidate_all_pending_blocks_new_frontend_requests_but_drains_captured_requests()) {
+  if (test_invalidate_all_pending_blocks_new_upstream_requests_but_drains_captured_requests()) {
     passed++;
   } else {
     failed++;
@@ -1802,13 +1802,13 @@ int main() {
     failed++;
   }
 
-  if (test_invalidate_line_rejects_same_cycle_frontend_write_accept_ready_first()) {
+  if (test_invalidate_line_rejects_same_cycle_upstream_write_accept_ready_first()) {
     passed++;
   } else {
     failed++;
   }
 
-  if (test_invalidate_line_rejects_same_cycle_frontend_write_capture()) {
+  if (test_invalidate_line_rejects_same_cycle_upstream_write_capture()) {
     passed++;
   } else {
     failed++;

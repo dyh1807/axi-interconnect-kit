@@ -7,7 +7,7 @@ Standalone AXI4 memory subsystem extracted from the simulator.
 - One AXI4 interconnect with simplified upstream ports:
   - `read_ports[4]`: `icache`, `dcache_r`, `uncore_lsu_r`, `extra_r`
   - `write_ports[2]`: `dcache_w`, `uncore_lsu_w`
-- AXI4 router, SimDDR backend, MMIO bus, UART16550 device
+- AXI4 router, SimDDR downstream memory model, MMIO bus, UART16550 device
 - Optional shared unified LLC on the AXI4 path
 
 AXI3 support has been removed from this repository. The kit is now AXI4-only.
@@ -42,6 +42,13 @@ Read/Write masters
 `AXI_Router_AXI4` is an explicit layer. The interconnect does arbitration and
 upstream response routing; the router does AXI-side address decode.
 
+Terminology used in this repository:
+
+- `upstream`: request sources connected to `read_ports[]` / `write_ports[]`
+  and the response paths that return to those masters
+- `downstream`: the DDR-side or MMIO-side interfaces below the interconnect,
+  including `AXI_Router_AXI4`, `SimDDR`, and MMIO devices
+
 ## LLC Summary
 
 `AXI_LLC` sits behind the AXI4 interconnect and models a shared unified cache.
@@ -60,7 +67,7 @@ Current behavior:
 
 - Cacheable reads allocate and refill through external SRAM-style `data/meta/repl`
   tables supplied by the parent simulator.
-- AXI4 interconnect read front-end supports multiple outstanding contexts:
+- AXI4 interconnect read upstream side supports multiple outstanding contexts:
   - global limit `8`
   - per-read-master limit `4`
 - LLC cacheable demand-miss execution is still more restrictive:
@@ -91,7 +98,7 @@ Current behavior:
 
 The current AXI4 write design is:
 
-- Interconnect-front accepts up to `MAX_WRITE_OUTSTANDING` pending writes.
+- Interconnect upstream side accepts up to `MAX_WRITE_OUTSTANDING` pending writes.
 - Non-LLC path drains pending writes downstream and routes B responses by AXI ID.
 - LLC path keeps:
   - per-master pending write queues
@@ -101,7 +108,7 @@ The current AXI4 write design is:
   - shared downstream memory write port
 - Same-master promotion waits until the previous write response slot is consumed.
 
-`MAX_WRITE_OUTSTANDING` is therefore a front-end queueing bound, not a total
+`MAX_WRITE_OUTSTANDING` is therefore an upstream queueing bound, not a total
 global bound on every LLC-internal write state bit combined with interconnect
 state.
 
@@ -137,6 +144,7 @@ Validated toolchains:
 
 - [docs/interfaces.md](docs/interfaces.md)
 - [docs/interfaces_CN.md](docs/interfaces_CN.md)
+- [docs/llc_design_CN.md](docs/llc_design_CN.md)
 
 ## Main Files
 
@@ -170,6 +178,6 @@ Validated toolchains:
 This repository is currently stabilized around the AXI4-only LLC/interconnect
 correctness scope implemented here, with conservative maintenance semantics.
 Final closure wording is intentionally deferred pending external review of the
-maintenance barrier and front-end race regressions. Parent-simulator
+maintenance barrier and upstream-side race regressions. Parent-simulator
 integration bugs should be debugged outside this submodule unless the root
 cause is clearly inside the kit itself.

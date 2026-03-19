@@ -177,7 +177,7 @@ inline void clear_upstream_inputs(AXI_Interconnect &interconnect) {
   }
 }
 
-inline void apply_backend_outputs(Axi4LlcTestEnv &env) {
+inline void apply_downstream_outputs(Axi4LlcTestEnv &env) {
   env.tables.comb_outputs();
   env.interconnect.set_llc_lookup_in(env.tables.lookup_in);
 
@@ -197,7 +197,7 @@ inline void apply_backend_outputs(Axi4LlcTestEnv &env) {
 
 inline void cycle_outputs(Axi4LlcTestEnv &env) {
   clear_upstream_inputs(env.interconnect);
-  apply_backend_outputs(env);
+  apply_downstream_outputs(env);
   env.interconnect.comb_outputs();
 }
 
