@@ -2,6 +2,7 @@
 
 #include "AXI_Interconnect_IO.h"
 #include "AXI_LLC_Config.h"
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -11,6 +12,42 @@ struct AXI_LLC_Bytes_t {
   std::vector<uint8_t> bytes{};
 
   void clear() { bytes.clear(); }
+  void resize(size_t size) { bytes.assign(size, 0); }
+  size_t size() const { return bytes.size(); }
+  uint8_t *data() { return bytes.data(); }
+  const uint8_t *data() const { return bytes.data(); }
+};
+
+struct AXI_LLCMetaEntry_t {
+  uint32_t tag = 0;
+  uint8_t flags = 0;
+};
+
+constexpr uint8_t AXI_LLC_META_VALID = 1u << 0;
+constexpr uint8_t AXI_LLC_META_DIRTY = 1u << 1;
+constexpr uint8_t AXI_LLC_META_PREFETCH = 1u << 2;
+constexpr uint32_t AXI_LLC_META_ENTRY_BYTES = 8;
+constexpr uint32_t AXI_LLC_REPL_BYTES = 4;
+constexpr uint32_t AXI_LLC_MAX_PREFETCH_QUEUE = 8;
+
+struct AXI_LLCPerfCounters_t {
+  uint64_t read_access = 0;
+  uint64_t read_hit = 0;
+  uint64_t read_miss = 0;
+  uint64_t read_access_by_master[NUM_READ_MASTERS]{};
+  uint64_t read_hit_by_master[NUM_READ_MASTERS]{};
+  uint64_t read_miss_by_master[NUM_READ_MASTERS]{};
+  uint64_t bypass_read = 0;
+  uint64_t write_passthrough = 0;
+  uint64_t refill = 0;
+  uint64_t mshr_alloc = 0;
+  uint64_t mshr_merge = 0;
+  uint64_t prefetch_issue = 0;
+  uint64_t prefetch_hit = 0;
+  uint64_t prefetch_drop_inflight = 0;
+  uint64_t prefetch_drop_mshr_full = 0;
+  uint64_t prefetch_drop_queue_full = 0;
+  uint64_t prefetch_drop_table_hit = 0;
 };
 
 struct AXI_LLC_ReadReqIn_t {
@@ -38,9 +75,9 @@ struct AXI_LLC_ReadRespOut_t {
 struct AXI_LLC_WriteReqIn_t {
   wire1_t valid = false;
   wire32_t addr = 0;
-  WideData256_t wdata{};
-  wire32_t wstrb = 0;
-  wire5_t total_size = 0;
+  WideWriteData_t wdata{};
+  WideWriteStrb_t wstrb{};
+  wire8_t total_size = 0;
   wire4_t id = 0;
   wire1_t bypass = false;
 };
@@ -74,6 +111,10 @@ struct AXI_LLC_UpstreamOut_t {
 };
 
 struct AXI_LLC_MemIn_t {
+  wire1_t invalidate_all = false;
+  wire1_t invalidate_line_valid = false;
+  wire32_t invalidate_line_addr = 0;
+  wire1_t prefetch_allow = true;
   wire1_t read_req_ready = false;
   wire1_t read_resp_valid = false;
   WideReadData_t read_resp_data{};
@@ -85,6 +126,8 @@ struct AXI_LLC_MemIn_t {
 };
 
 struct AXI_LLC_MemOut_t {
+  wire1_t invalidate_all_accepted = false;
+  wire1_t invalidate_line_accepted = false;
   wire1_t read_req_valid = false;
   wire32_t read_req_addr = 0;
   wire8_t read_req_size = 0;
@@ -92,9 +135,9 @@ struct AXI_LLC_MemOut_t {
   wire1_t read_resp_ready = false;
   wire1_t write_req_valid = false;
   wire32_t write_req_addr = 0;
-  WideData256_t write_req_data{};
-  wire32_t write_req_strobe = 0;
-  wire5_t write_req_size = 0;
+  WideWriteData_t write_req_data{};
+  WideWriteStrb_t write_req_strobe{};
+  wire8_t write_req_size = 0;
   wire4_t write_req_id = 0;
   wire1_t write_resp_ready = false;
 };
@@ -142,17 +185,118 @@ enum class AXI_LLCState : uint8_t {
   kRefill = 4,
 };
 
+struct AXI_LLCMissEntry_t {
+  bool valid = false;
+  bool bypass = false;
+  bool is_prefetch = false;
+  bool is_write = false;
+  bool prefetch_train = false;
+  bool mem_req_issued = false;
+  bool refill_valid = false;
+  bool refill_committed = false;
+  uint32_t addr = 0;
+  uint32_t line_addr = 0;
+  uint32_t set = 0;
+  uint32_t tag = 0;
+  uint8_t way = 0;
+  uint8_t total_size = 0;
+  uint8_t master = 0;
+  uint8_t id = 0;
+  uint8_t epoch = 0;
+  bool victim_dirty = false;
+  bool victim_writeback_done = false;
+  uint32_t victim_addr = 0;
+  WideWriteData_t victim_data{};
+  WideReadData_t refill_data{};
+};
+
+struct AXI_LLCPrefetchReq_t {
+  bool valid = false;
+  uint32_t line_addr = 0;
+};
+
+struct AXI_LLCWritePendingReq_t {
+  bool valid = false;
+  bool bypass = false;
+  uint8_t master = 0;
+  uint8_t id = 0;
+  uint8_t total_size = 0;
+  uint32_t addr = 0;
+  WideWriteData_t wdata{};
+  WideWriteStrb_t wstrb{};
+};
+
+struct AXI_LLCWriteCtx_t {
+  bool valid = false;
+  bool bypass = false;
+  bool lookup_pending = false;
+  bool mem_issued = false;
+  bool mem_done = false;
+  bool cache_done = false;
+  bool cache_pending = false;
+  uint8_t id = 0;
+  uint8_t total_size = 0;
+  uint8_t mem_resp_code = 0;
+  uint32_t addr = 0;
+  uint32_t line_addr = 0;
+  uint32_t set = 0;
+  uint8_t way = 0;
+  uint32_t repl_next_way = 0;
+  uint32_t tag = 0;
+  WideWriteData_t data{};
+  WideWriteStrb_t strobe{};
+  WideWriteData_t line{};
+};
+
 struct AXI_LLC_Regs_t {
   bool enable_r = false;
   AXI_LLCState state = AXI_LLCState::kDisabled;
-  bool lookup_pending_r = false;
-  bool miss_pending_r = false;
-  bool refill_pending_r = false;
-  uint32_t active_addr_r = 0;
-  uint8_t active_size_r = 0;
-  uint8_t active_master_r = 0;
-  uint8_t active_id_r = 0;
-  uint32_t mshr_busy_mask_r = 0;
+  AXI_LLCPerfCounters_t perf{};
+
+  bool lookup_valid_r = false;
+  bool lookup_issued_r = false;
+  uint32_t lookup_addr_r = 0;
+  uint8_t lookup_size_r = 0;
+  uint8_t lookup_master_r = 0;
+  uint8_t lookup_id_r = 0;
+  bool lookup_is_prefetch_r = false;
+  bool lookup_is_invalidate_r = false;
+  bool lookup_is_write_r = false;
+  bool lookup_is_bypass_r = false;
+  bool prefetch_stream_valid_r = false;
+  uint32_t prefetch_last_miss_line_r = 0;
+  uint8_t prefetch_quiet_cycles_r = 0;
+  AXI_LLCPrefetchReq_t prefetch_q[AXI_LLC_MAX_PREFETCH_QUEUE] = {};
+
+  uint8_t rr_read_master_r = 0;
+  uint8_t rr_write_master_r = 0;
+  uint8_t invalidate_epoch_r = 0;
+  uint32_t dirty_line_count_r = 0;
+
+  bool read_resp_valid_r[NUM_READ_MASTERS] = {false};
+  WideReadData_t read_resp_data_r[NUM_READ_MASTERS] = {};
+  uint8_t read_resp_id_r[NUM_READ_MASTERS] = {0};
+
+  AXI_LLCWriteCtx_t write_ctx[NUM_WRITE_MASTERS] = {};
+  uint8_t write_q_head_r[NUM_WRITE_MASTERS] = {0};
+  uint8_t write_q_tail_r[NUM_WRITE_MASTERS] = {0};
+  uint8_t write_q_count_r[NUM_WRITE_MASTERS] = {0};
+  AXI_LLCWritePendingReq_t write_q[NUM_WRITE_MASTERS][MAX_WRITE_OUTSTANDING] = {};
+  bool write_resp_valid_r[NUM_WRITE_MASTERS] = {false};
+  uint8_t write_resp_id_r[NUM_WRITE_MASTERS] = {0};
+  uint8_t write_resp_code_r[NUM_WRITE_MASTERS] = {0};
+  uint32_t write_resp_line_addr_r[NUM_WRITE_MASTERS] = {0};
+
+  bool victim_wb_valid_r = false;
+  bool victim_wb_issued_r = false;
+  bool victim_wb_for_write_r = false;
+  uint8_t victim_wb_write_master_r = 0;
+  uint8_t victim_wb_mshr_slot_r = 0;
+  uint32_t victim_wb_addr_r = 0;
+  WideWriteData_t victim_wb_data_r{};
+  WideWriteStrb_t victim_wb_strobe_r{};
+
+  AXI_LLCMissEntry_t mshr[MAX_OUTSTANDING] = {};
 };
 
 using AXI_LLC_RegWrite_t = AXI_LLC_Regs_t;
@@ -176,10 +320,62 @@ public:
   void reset();
   void comb();
   void seq();
+  bool can_accept_read_now(uint8_t master, bool bypass, uint32_t addr) const;
+  const AXI_LLCPerfCounters_t &perf_counters() const { return io.regs.perf; }
+  void debug_print() const;
+
+  static uint32_t line_words(const AXI_LLCConfig &config);
+  static uint32_t line_addr(const AXI_LLCConfig &config, uint32_t addr);
+  static uint32_t set_index(const AXI_LLCConfig &config, uint32_t addr);
+  static uint32_t tag_of(const AXI_LLCConfig &config, uint32_t addr);
+  static AXI_LLCMetaEntry_t decode_meta(const AXI_LLC_Bytes_t &payload,
+                                        uint32_t way);
+  static void encode_meta(const AXI_LLCMetaEntry_t &entry,
+                          AXI_LLC_Bytes_t &payload);
 
   AXI_LLC_IO_t io;
 
 private:
+  int find_free_mshr(const AXI_LLC_Regs_t &regs) const;
+  int find_mshr_by_line_addr(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  bool has_mshr_for_master(const AXI_LLC_Regs_t &regs, uint8_t master) const;
+  uint32_t count_free_mshrs(const AXI_LLC_Regs_t &regs) const;
+  bool has_demand_mshr(const AXI_LLC_Regs_t &regs) const;
+  int pick_mem_issue_slot(const AXI_LLC_Regs_t &regs) const;
+  int find_mshr_by_mem_id(const AXI_LLC_Regs_t &regs, uint8_t mem_id) const;
+  int pick_refill_commit_slot(const AXI_LLC_Regs_t &regs) const;
+  int pick_new_read_master(const AXI_LLC_Regs_t &regs) const;
+  int pick_new_write_master(const AXI_LLC_Regs_t &regs) const;
+  int pick_write_lookup_master(const AXI_LLC_Regs_t &regs) const;
+  int pick_bypass_write_issue_master(const AXI_LLC_Regs_t &regs) const;
+  int find_bypass_write_mem_owner(const AXI_LLC_Regs_t &regs) const;
+  bool write_queue_full(const AXI_LLC_Regs_t &regs, uint8_t master) const;
+  bool write_queue_empty(const AXI_LLC_Regs_t &regs, uint8_t master) const;
+  const AXI_LLCWritePendingReq_t *write_queue_front(
+      const AXI_LLC_Regs_t &regs, uint8_t master) const;
+  int find_prefetch_queue_slot(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  int find_free_prefetch_queue_slot(const AXI_LLC_Regs_t &regs) const;
+  int pick_prefetch_queue_slot(const AXI_LLC_Regs_t &regs) const;
+  bool prefetch_candidate_exists(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  bool has_pending_upstream_write_line(uint32_t line_addr) const;
+  bool can_allocate_prefetch_mshr(const AXI_LLC_Regs_t &regs) const;
+  bool write_line_pending(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  bool can_accept_invalidate_line_now(uint32_t line_addr) const;
+  bool has_dirty_or_write_hazard(const AXI_LLC_Regs_t &regs) const;
+  bool can_accept_invalidate_all_now(const AXI_LLC_Regs_t &regs) const;
+  bool line_has_valid_meta(const AXI_LLC_Bytes_t &meta_payload, uint32_t tag,
+                           int *hit_way, int *first_invalid_way,
+                           AXI_LLCMetaEntry_t *hit_meta) const;
+  void try_schedule_prefetch(const AXI_LLCMissEntry_t &entry);
+  void try_launch_prefetch_lookup();
+
+  void drive_read_responses();
+  void drive_write_path();
+  void drive_lookup_request();
+  bool try_complete_lookup();
+  void drive_mem_read_path();
+  void accept_new_requests();
+  void accept_maintenance_request();
   void comb_disabled();
 
   AXI_LLCConfig config_{};

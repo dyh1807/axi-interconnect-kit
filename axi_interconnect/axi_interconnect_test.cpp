@@ -3,13 +3,17 @@
  * @brief Test harness for AXI_Interconnect layer
  */
 
-#include "AXI_Interconnect.h"
-#include "SimDDR.h"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <queue>
 #include <vector>
+
+#define private public
+#include "AXI_Interconnect.h"
+#undef private
+#include "SimDDR.h"
 
 uint32_t *p_memory = nullptr;
 long long sim_time = 0;
@@ -68,14 +72,16 @@ void clear_upstream_inputs(axi_interconnect::AXI_Interconnect &interconnect) {
     interconnect.read_ports[i].req.bypass = false;
     interconnect.read_ports[i].resp.ready = false;
   }
-  interconnect.write_port.req.valid = false;
-  interconnect.write_port.req.addr = 0;
-  interconnect.write_port.req.wdata.clear();
-  interconnect.write_port.req.wstrb = 0;
-  interconnect.write_port.req.total_size = 0;
-  interconnect.write_port.req.id = 0;
-  interconnect.write_port.req.bypass = false;
-  interconnect.write_port.resp.ready = false;
+  for (int i = 0; i < axi_interconnect::NUM_WRITE_MASTERS; ++i) {
+    interconnect.write_ports[i].req.valid = false;
+    interconnect.write_ports[i].req.addr = 0;
+    interconnect.write_ports[i].req.wdata.clear();
+    interconnect.write_ports[i].req.wstrb.clear();
+    interconnect.write_ports[i].req.total_size = 0;
+    interconnect.write_ports[i].req.id = 0;
+    interconnect.write_ports[i].req.bypass = false;
+    interconnect.write_ports[i].resp.ready = false;
+  }
 }
 
 void cycle_outputs(TestEnv &env) {
@@ -498,11 +504,7 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
     printf("FAIL: expected 1 AW handshake, got %zu\n", env.aw_events.size());
     return false;
   }
-  uint8_t exp_awid =
-      static_cast<uint8_t>((axi_interconnect::MASTER_DCACHE_W << 2) |
-                           (req_id & 0x3));
-  if (env.aw_events[0].addr != base_addr || env.aw_events[0].len != 7 ||
-      env.aw_events[0].id != exp_awid) {
+  if (env.aw_events[0].addr != base_addr || env.aw_events[0].len != 7) {
     printf("FAIL: AW mismatch addr=0x%x len=%u id=0x%x\n", env.aw_events[0].addr,
            env.aw_events[0].len, env.aw_events[0].id);
     return false;
@@ -969,6 +971,266 @@ bool test_same_master_multi_outstanding(TestEnv &env) {
   return true;
 }
 
+bool test_llc_mem_issue_priority() {
+  printf("=== Test 8: LLC downstream AR wins over new upstream req ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+  interconnect.llc.io.ext_out.mem.read_req_valid = true;
+  interconnect.llc.io.ext_out.mem.read_req_addr = 0x4000;
+  interconnect.llc.io.ext_out.mem.read_req_size = 63;
+  interconnect.llc.io.ext_out.mem.read_req_id = 2;
+
+  interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.valid = true;
+  interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.addr = 0x80005380;
+  interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.total_size = 63;
+  interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.id = 1;
+
+  interconnect.comb_inputs();
+  if (!interconnect.axi_io.ar.arvalid ||
+      interconnect.axi_io.ar.araddr != 0x4000) {
+    printf("FAIL: LLC downstream AR was not prioritized addr=0x%08x\n",
+           interconnect.axi_io.ar.araddr);
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_llc_latched_ar_not_ready_upstream() {
+  printf("=== Test 9: Latched LLC AR must not ack upstream ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+  interconnect.ar_latched.valid = true;
+  interconnect.ar_latched.to_llc = true;
+  interconnect.ar_latched.master_id = axi_interconnect::MASTER_ICACHE;
+  interconnect.ar_latched.addr = 0x80005380;
+  interconnect.req_ready_r[axi_interconnect::MASTER_ICACHE] = false;
+
+  interconnect.comb_outputs();
+  if (interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.ready) {
+    printf("FAIL: latched LLC AR leaked ready to upstream\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_llc_upstream_slot_blocks_ready() {
+  printf("=== Test 10: Occupied LLC upstream slot blocks new ready ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+  interconnect.req_ready_r[axi_interconnect::MASTER_ICACHE] = true;
+  interconnect.llc_upstream_req[axi_interconnect::MASTER_ICACHE].valid = true;
+  interconnect.llc_upstream_req[axi_interconnect::MASTER_ICACHE].addr = 0x80001000;
+  interconnect.llc_upstream_req[axi_interconnect::MASTER_ICACHE].total_size = 63;
+  interconnect.llc_upstream_req[axi_interconnect::MASTER_ICACHE].id = 2;
+
+  interconnect.comb_outputs();
+  if (interconnect.read_ports[axi_interconnect::MASTER_ICACHE].req.ready) {
+    printf("FAIL: occupied LLC upstream slot leaked ready\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_llc_write_resp_holds_until_ready() {
+  printf("=== Test 11: LLC write resp holds payload until ready ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  interconnect.llc.io.regs.write_resp_valid_r[axi_interconnect::MASTER_DCACHE_W] = true;
+  interconnect.llc.io.regs.write_resp_id_r[axi_interconnect::MASTER_DCACHE_W] = 5;
+  interconnect.llc.io.regs.write_resp_code_r[axi_interconnect::MASTER_DCACHE_W] =
+      sim_ddr::AXI_RESP_OKAY;
+
+  for (int cyc = 0; cyc < 4; ++cyc) {
+    clear_upstream_inputs(interconnect);
+    interconnect.comb_outputs();
+    auto &resp = interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp;
+    if (!resp.valid || resp.id != 5 || resp.resp != sim_ddr::AXI_RESP_OKAY) {
+      printf("FAIL: LLC write resp changed under backpressure cyc=%d valid=%d id=%u resp=%u\n",
+             cyc, static_cast<int>(resp.valid), resp.id, resp.resp);
+      return false;
+    }
+    interconnect.seq();
+  }
+
+  clear_upstream_inputs(interconnect);
+  interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp.ready = true;
+  interconnect.comb_outputs();
+  if (!interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp.valid) {
+    printf("FAIL: LLC write resp missing before handshake\n");
+    return false;
+  }
+  interconnect.seq();
+
+  clear_upstream_inputs(interconnect);
+  interconnect.comb_outputs();
+  if (interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp.valid) {
+    printf("FAIL: LLC write resp not cleared after handshake\n");
+    return false;
+  }
+  printf("PASS\n");
+  return true;
+}
+
+bool test_multi_write_outstanding(TestEnv &env) {
+  printf("=== Test 12: multiple write outstanding contexts ===\n");
+
+  env.clear_events();
+  env.interconnect.init();
+  env.ddr.init();
+
+  const uint32_t addr0 = 0x1A000;
+  const uint32_t addr1 = 0x1A040;
+  axi_interconnect::WideData256_t data0;
+  axi_interconnect::WideData256_t data1;
+  data0.clear();
+  data1.clear();
+  data0[0] = 0xABCDEF01;
+  data1[0] = 0x12345678;
+
+  bool first_issued = false;
+  int timeout = 200;
+  while (!first_issued && timeout-- > 0) {
+    cycle_outputs(env);
+    bool ready_snapshot =
+        env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.ready;
+
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.valid = true;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.addr = addr0;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.wdata = data0;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.wstrb = 0xF;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.total_size = 3;
+    env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].req.id = 1;
+
+    cycle_inputs(env);
+    if (ready_snapshot) {
+      first_issued = true;
+    }
+  }
+  if (!first_issued) {
+    printf("FAIL: first write was not accepted\n");
+    return false;
+  }
+
+  bool second_issued = false;
+  timeout = 200;
+  while (!second_issued && timeout-- > 0) {
+    cycle_outputs(env);
+    if (env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp.valid) {
+      printf("FAIL: first response became visible before second issue\n");
+      return false;
+    }
+    bool ready_snapshot =
+        env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.ready;
+
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.valid = true;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.addr = addr1;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.wdata = data1;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.wstrb = 0xF;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.total_size = 3;
+    env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req.id = 2;
+
+    cycle_inputs(env);
+    if (ready_snapshot) {
+      second_issued = true;
+    }
+  }
+  if (!second_issued) {
+    printf("FAIL: second write was not accepted before first response\n");
+    return false;
+  }
+
+  bool first_done = false;
+  bool second_done = false;
+  timeout = sim_ddr::SIM_DDR_LATENCY * 40;
+  while ((!first_done || !second_done) && timeout-- > 0) {
+    cycle_outputs(env);
+    auto &resp0 = env.interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp;
+    if (!first_done && resp0.valid) {
+      if (resp0.id != 1 || resp0.resp != sim_ddr::AXI_RESP_OKAY) {
+        printf("FAIL: first write resp mismatch id=%u resp=%u\n",
+               resp0.id, resp0.resp);
+        return false;
+      }
+      resp0.ready = true;
+      first_done = true;
+    }
+    auto &resp1 =
+        env.interconnect.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].resp;
+    if (!second_done && resp1.valid) {
+      if (resp1.id != 2 || resp1.resp != sim_ddr::AXI_RESP_OKAY) {
+        printf("FAIL: second write resp mismatch id=%u resp=%u\n", resp1.id,
+               resp1.resp);
+        return false;
+      }
+      resp1.ready = true;
+      second_done = true;
+    }
+    cycle_inputs(env);
+  }
+  if (!first_done || !second_done) {
+    printf("FAIL: multi-write response timeout first=%d second=%d\n",
+           static_cast<int>(first_done), static_cast<int>(second_done));
+    return false;
+  }
+
+  if (env.aw_events.size() < 2) {
+    printf("FAIL: expected at least two AW handshakes, got %zu\n",
+           env.aw_events.size());
+    return false;
+  }
+
+  if (p_memory[addr0 >> 2] != data0[0] || p_memory[addr1 >> 2] != data1[0]) {
+    printf("FAIL: multi-write memory mismatch got0=0x%08x got1=0x%08x\n",
+           p_memory[addr0 >> 2], p_memory[addr1 >> 2]);
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 int main() {
   printf("====================================\n");
   printf("AXI-Interconnect Test Suite\n");
@@ -1012,6 +1274,31 @@ int main() {
     failed++;
 
   if (test_same_master_multi_outstanding(env))
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_mem_issue_priority())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_latched_ar_not_ready_upstream())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_upstream_slot_blocks_ready())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_write_resp_holds_until_ready())
+    passed++;
+  else
+    failed++;
+
+  if (test_multi_write_outstanding(env))
     passed++;
   else
     failed++;
