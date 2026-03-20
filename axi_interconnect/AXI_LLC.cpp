@@ -10,6 +10,27 @@ namespace axi_interconnect {
 namespace {
 constexpr uint8_t kInvalidReadMaster = NUM_READ_MASTERS;
 
+void perf_count_read_access(AXI_LLCPerfCounters_t &perf, uint8_t master) {
+  perf.read_access++;
+  if (master < NUM_READ_MASTERS) {
+    perf.read_access_by_master[master]++;
+  }
+}
+
+void perf_count_read_hit(AXI_LLCPerfCounters_t &perf, uint8_t master) {
+  perf.read_hit++;
+  if (master < NUM_READ_MASTERS) {
+    perf.read_hit_by_master[master]++;
+  }
+}
+
+void perf_count_read_miss(AXI_LLCPerfCounters_t &perf, uint8_t master) {
+  perf.read_miss++;
+  if (master < NUM_READ_MASTERS) {
+    perf.read_miss_by_master[master]++;
+  }
+}
+
 uint32_t read_u32_le(const uint8_t *ptr) {
   return static_cast<uint32_t>(ptr[0]) |
          (static_cast<uint32_t>(ptr[1]) << 8) |
@@ -1168,7 +1189,7 @@ bool AXI_LLC::try_complete_lookup() {
     io.reg_write.lookup_is_write_r = false;
     io.reg_write.lookup_is_bypass_r = false;
     io.reg_write.state = AXI_LLCState::kIdle;
-    io.reg_write.perf.read_hit++;
+    perf_count_read_hit(io.reg_write.perf, master);
     return true;
   }
 
@@ -1409,7 +1430,7 @@ bool AXI_LLC::try_complete_lookup() {
     }
     io.reg_write.perf.prefetch_issue++;
   } else {
-    io.reg_write.perf.read_miss++;
+    perf_count_read_miss(io.reg_write.perf, entry.master);
   }
   io.reg_write.perf.mshr_alloc++;
   return true;
@@ -1596,7 +1617,7 @@ void AXI_LLC::accept_new_requests() {
   if (req.bypass) {
     io.reg_write.perf.bypass_read++;
   } else {
-    io.reg_write.perf.read_access++;
+    perf_count_read_access(io.reg_write.perf, static_cast<uint8_t>(master));
   }
   for (auto &prefetch_req : io.reg_write.prefetch_q) {
     prefetch_req = {};

@@ -9,7 +9,6 @@
 
 #include "AXI_Interconnect.h"
 #include <algorithm>
-#include <cstdio>
 
 extern long long sim_time;
 
@@ -294,6 +293,42 @@ bool AXI_Interconnect::can_accept_read_master(uint8_t master_id) const {
   return alloc_read_axi_id() != kInvalidAxiReadId;
 }
 
+bool AXI_Interconnect::has_read_id_conflict(uint8_t master_id,
+                                            uint8_t orig_id) const {
+  if (ar_latched.valid && !ar_latched.to_llc &&
+      ar_latched.master_id == master_id && ar_latched.orig_id == orig_id) {
+    return true;
+  }
+  for (const auto &txn : r_pending) {
+    if (txn.master_id == master_id && txn.orig_id == orig_id) {
+      return true;
+    }
+  }
+  if (llc_enabled()) {
+    if (llc_upstream_req[master_id].valid && llc_upstream_req[master_id].id == orig_id) {
+      return true;
+    }
+    if (llc.io.regs.read_resp_valid_r[master_id] &&
+        llc.io.regs.read_resp_id_r[master_id] == orig_id) {
+      return true;
+    }
+    if (llc.io.regs.lookup_valid_r &&
+        llc.io.regs.lookup_master_r == master_id &&
+        llc.io.regs.lookup_id_r == orig_id) {
+      return true;
+    }
+    for (uint32_t slot = 0; slot < llc_config.mshr_num && slot < MAX_OUTSTANDING;
+         ++slot) {
+      const auto &entry = llc.io.regs.mshr[slot];
+      if (entry.valid && !entry.is_prefetch && entry.master == master_id &&
+          entry.id == orig_id) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool AXI_Interconnect::can_issue_llc_read_req() const {
   return !ar_latched.valid && count_total_read_inflight() < MAX_OUTSTANDING &&
          alloc_read_axi_id() != kInvalidAxiReadId;
@@ -499,11 +534,14 @@ void AXI_Interconnect::comb_read_arbiter() {
       axi_io.ar.arsize = 2;
       axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
       axi_io.ar.arid = alloc_read_axi_id();
-      return;
     }
     for (int master = 0; master < NUM_READ_MASTERS; ++master) {
       if (llc_upstream_req[master].valid || !read_ports[master].req.valid ||
           llc_invalidate_all_req_) {
+        continue;
+      }
+      if (has_read_id_conflict(static_cast<uint8_t>(master),
+                               static_cast<uint8_t>(read_ports[master].req.id))) {
         continue;
       }
       if (req_ready_curr[master]) {
@@ -528,6 +566,10 @@ void AXI_Interconnect::comb_read_arbiter() {
     if (!req_ready_curr[i] || !read_ports[i].req.valid) {
       continue;
     }
+    if (has_read_id_conflict(static_cast<uint8_t>(i),
+                             static_cast<uint8_t>(read_ports[i].req.id))) {
+      continue;
+    }
 
     r_current_master = i;
     uint8_t axi_id = alloc_read_axi_id();
@@ -550,6 +592,10 @@ void AXI_Interconnect::comb_read_arbiter() {
 
     if (read_ports[idx].req.valid) {
       if (!can_accept_read_master(static_cast<uint8_t>(idx))) {
+        continue;
+      }
+      if (has_read_id_conflict(static_cast<uint8_t>(idx),
+                               static_cast<uint8_t>(read_ports[idx].req.id))) {
         continue;
       }
 
@@ -956,7 +1002,6 @@ read_handshake_done:
       }
     }
   }
-
   if (llc_enabled() && llc.io.ext_in.mem.read_resp_valid &&
       llc.io.ext_out.mem.read_resp_ready) {
     const uint8_t mem_id = llc.io.ext_in.mem.read_resp_id;

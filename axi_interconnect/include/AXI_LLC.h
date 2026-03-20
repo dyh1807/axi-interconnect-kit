@@ -34,6 +34,9 @@ struct AXI_LLCPerfCounters_t {
   uint64_t read_access = 0;
   uint64_t read_hit = 0;
   uint64_t read_miss = 0;
+  uint64_t read_access_by_master[NUM_READ_MASTERS]{};
+  uint64_t read_hit_by_master[NUM_READ_MASTERS]{};
+  uint64_t read_miss_by_master[NUM_READ_MASTERS]{};
   uint64_t bypass_read = 0;
   uint64_t write_passthrough = 0;
   uint64_t refill = 0;
