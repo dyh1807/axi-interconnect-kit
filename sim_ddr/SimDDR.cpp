@@ -317,6 +317,15 @@ void SimDDR::print_state() {
          w_resp_queue.size());
   printf("[SimDDR] Read: txn_count=%zu rr_index=%zu\n", r_transactions.size(),
          r_rr_index);
+  for (size_t i = 0; i < r_transactions.size(); ++i) {
+    const auto &txn = r_transactions[i];
+    printf("[SimDDR] ReadTxn[%zu]: addr=0x%08x id=%u len=%u size=%u beat=%u lat=%u in_data=%d complete=%d\n",
+           i, txn.addr, static_cast<unsigned>(txn.id),
+           static_cast<unsigned>(txn.len), static_cast<unsigned>(txn.size),
+           static_cast<unsigned>(txn.beat_cnt),
+           static_cast<unsigned>(txn.latency_cnt),
+           static_cast<int>(txn.in_data_phase), static_cast<int>(txn.complete));
+  }
 }
 
 } // namespace sim_ddr

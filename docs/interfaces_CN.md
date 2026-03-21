@@ -3,8 +3,7 @@
 本文档列出：
 
 1. Interconnect 上游接口
-2. AXI3 五通道信号
-3. AXI4 五通道信号
+2. AXI4 五通道信号
 
 ## 1) Interconnect 上游接口
 
@@ -19,6 +18,7 @@
 | `addr` | 32 | 输入 | 字节地址 |
 | `total_size` | 8 | 输入 | 传输字节数减 1（`0=1B`, `255=256B`） |
 | `id` | 4 | 输入 | 上游事务 ID |
+| `bypass` | 1 | 输入 | 绕过 LLC 分配/所有权规则 |
 
 ### 1.2 读响应（`ReadMasterResp_t`）
 
@@ -40,6 +40,7 @@
 | `wstrb` | 64 | 输入 | 字节写掩码（每字节 1bit） |
 | `total_size` | 8 | 输入 | 传输字节数减 1（`0=1B`，默认最大 `63=64B`） |
 | `id` | 4 | 输入 | 上游事务 ID |
+| `bypass` | 1 | 输入 | write-through maintenance / bypass 语义 |
 
 ### 1.4 写响应（`WriteMasterResp_t`）
 
@@ -50,82 +51,45 @@
 | `id` | 4 | 输出 | 返回上游 ID |
 | `resp` | 2 | 输出 | AXI 响应码 |
 
-## 2) AXI3 通道信号
+### 1.5 LLC maintenance 控制面
 
-定义位置：`sim_ddr/include/SimDDR_AXI3_IO.h`。
+AXI4 interconnect 通过 `AXI_Interconnect` 上的方法暴露 LLC maintenance 控制面：
 
-本项目 AXI3 约束：
+- `set_llc_invalidate_all(bool)`
+- `set_llc_invalidate_line(bool, uint32_t line_addr)`
+- `llc_invalidate_all_accepted()`
+- `llc_invalidate_line_accepted()`
 
-- `ID`：22 位（存放于 `wire32_t`）
-- 数据位宽：`256-bit`（`8 x 32-bit`）
+约定如下：
 
-### 2.1 写地址通道（`AW`）
+1. 调用方必须持续保持 `invalidate_all` / `invalidate_line` 请求，直到观测到
+   对应的 `*_accepted()` 脉冲。
+2. `invalidate_all` 采用保守语义：
+   - pending 期间会阻止新的上游 LLC 请求进入
+   - 已经捕获的 clean LLC 路径请求允许继续排空
+   - 只有在不存在 dirty resident line、dirty victim writeback、以及写侧
+     hazard 时才会被接受
+3. `invalidate_line` 是按 line 的精确 maintenance：
+   - 当同一条 line 在上游请求路径、LLC 内部写队列/写响应状态、或下游写路径
+     中仍存在任一写侧 hazard 时，该请求会被拒绝
+   - 具体包括 inflight miss、active write context、queued write、write
+     lookup、victim writeback、active/pending bypass write、以及 same-cycle
+     上游写 accept/capture 冲突
+4. `invalidate_all` 被接受后，旧 epoch 的 stale clean refill install 会被丢弃，
+   不会重新写回 LLC。
 
-| 信号 | 位宽 | 方向（主->从） | 说明 |
-|---|---:|---|---|
-| `awvalid` | 1 | M->S | 地址有效 |
-| `awready` | 1 | S->M | 地址就绪 |
-| `awid` | 22（存32） | M->S | 写事务 ID |
-| `awaddr` | 32 | M->S | 字节地址 |
-| `awlen` | 4 | M->S | 突发长度减 1 |
-| `awsize` | 3 | M->S | `log2(bytes_per_beat)` |
-| `awburst` | 2 | M->S | 突发类型 |
-
-### 2.2 写数据通道（`W`）
-
-| 信号 | 位宽 | 方向 | 说明 |
-|---|---:|---|---|
-| `wvalid` | 1 | M->S | 数据有效 |
-| `wready` | 1 | S->M | 数据就绪 |
-| `wid` | 22（存32） | M->S | AXI3 写 ID |
-| `wdata` | 256 | M->S | 写数据 |
-| `wstrb` | 32 | M->S | 每字节写使能 |
-| `wlast` | 1 | M->S | 最后一个 beat |
-
-### 2.3 写响应通道（`B`）
-
-| 信号 | 位宽 | 方向 | 说明 |
-|---|---:|---|---|
-| `bvalid` | 1 | S->M | 响应有效 |
-| `bready` | 1 | M->S | 响应就绪 |
-| `bid` | 22（存32） | S->M | 响应 ID |
-| `bresp` | 2 | S->M | 响应码 |
-
-### 2.4 读地址通道（`AR`）
-
-| 信号 | 位宽 | 方向 | 说明 |
-|---|---:|---|---|
-| `arvalid` | 1 | M->S | 地址有效 |
-| `arready` | 1 | S->M | 地址就绪 |
-| `arid` | 22（存32） | M->S | 读事务 ID |
-| `araddr` | 32 | M->S | 字节地址 |
-| `arlen` | 4 | M->S | 突发长度减 1 |
-| `arsize` | 3 | M->S | `log2(bytes_per_beat)` |
-| `arburst` | 2 | M->S | 突发类型 |
-
-### 2.5 读数据通道（`R`）
-
-| 信号 | 位宽 | 方向 | 说明 |
-|---|---:|---|---|
-| `rvalid` | 1 | S->M | 数据有效 |
-| `rready` | 1 | M->S | 数据就绪 |
-| `rid` | 22（存32） | S->M | 响应 ID |
-| `rdata` | 256 | S->M | 读数据 |
-| `rresp` | 2 | S->M | 响应码 |
-| `rlast` | 1 | S->M | 最后一个 beat |
-
-## 3) AXI4 通道信号
+## 2) AXI4 五通道信号
 
 定义位置：`sim_ddr/include/SimDDR_IO.h`。
 
 本项目 AXI4 约束：
 
 - `ID`：4 位
-- 数据位宽：`32-bit`
+- 下游 AXI4 通道数据位宽：`32-bit`
 
-### 3.1 写地址通道（`AW`）
+### 2.1 写地址通道（`AW`）
 
-| 信号 | 位宽 | 方向 | 说明 |
+| 信号 | 位宽 | 方向（主->从） | 说明 |
 |---|---:|---|---|
 | `awvalid` | 1 | M->S | 地址有效 |
 | `awready` | 1 | S->M | 地址就绪 |
@@ -135,7 +99,7 @@
 | `awsize` | 3 | M->S | `log2(bytes_per_beat)` |
 | `awburst` | 2 | M->S | 突发类型 |
 
-### 3.2 写数据通道（`W`）
+### 2.2 写数据通道（`W`）
 
 | 信号 | 位宽 | 方向 | 说明 |
 |---|---:|---|---|
@@ -145,7 +109,7 @@
 | `wstrb` | 4 | M->S | 字节写使能 |
 | `wlast` | 1 | M->S | 最后一个 beat |
 
-### 3.3 写响应通道（`B`）
+### 2.3 写响应通道（`B`）
 
 | 信号 | 位宽 | 方向 | 说明 |
 |---|---:|---|---|
@@ -154,7 +118,7 @@
 | `bid` | 4 | S->M | 响应 ID |
 | `bresp` | 2 | S->M | 响应码 |
 
-### 3.4 读地址通道（`AR`）
+### 2.4 读地址通道（`AR`）
 
 | 信号 | 位宽 | 方向 | 说明 |
 |---|---:|---|---|
@@ -166,7 +130,7 @@
 | `arsize` | 3 | M->S | `log2(bytes_per_beat)` |
 | `arburst` | 2 | M->S | 突发类型 |
 
-### 3.5 读数据通道（`R`）
+### 2.5 读数据通道（`R`）
 
 | 信号 | 位宽 | 方向 | 说明 |
 |---|---:|---|---|
