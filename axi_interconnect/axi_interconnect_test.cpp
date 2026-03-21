@@ -280,7 +280,7 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
     }
 
     for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
-      env.interconnect.read_ports[i].resp.ready = true;
+      env.interconnect.read_ports[i].resp.ready = false;
     }
 
     cycle_inputs(env);
@@ -304,29 +304,30 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
     return false;
   }
 
-  // Validate AR fields as a set; AXI ID allocation is an internal policy.
+  // Validate AR fields. AXI read IDs are allocator-generated and not encoded
+  // with master/orig ID, so match requests by address/len.
   bool ar_seen[axi_interconnect::NUM_READ_MASTERS] = {};
   for (const auto &e : env.ar_events) {
     bool found = false;
-    for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; ++i) {
-      const auto &r = reqs[i];
+    uint8_t matched_master = 0;
+    for (const auto &r : reqs) {
       uint8_t exp_len = calc_burst_len(r.total_size);
       if (e.addr == r.addr && e.len == exp_len) {
-        ar_seen[i] = true;
         found = true;
+        matched_master = r.master;
         break;
       }
     }
     if (!found) {
-      printf("FAIL: unexpected AR addr=0x%x len=%u id=%u\n", e.addr, e.len,
-             e.id);
+      printf("FAIL: unexpected AR event addr=0x%x len=%u id=%u\n", e.addr,
+             e.len, e.id);
       return false;
     }
+    ar_seen[matched_master] = true;
   }
-  for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; ++i) {
+  for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
     if (!ar_seen[i]) {
-      printf("FAIL: missing AR for master=%u addr=0x%x\n", reqs[i].master,
-             reqs[i].addr);
+      printf("FAIL: missing AR event for master %d\n", i);
       return false;
     }
   }
@@ -398,7 +399,7 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
   env.interconnect.init();
   env.ddr.init();
 
-  // Case A: 32B full-line write (8 beats)
+  // Case A: full cache-line write (64B = 16 beats on 32-bit AXI4 data bus)
   uint32_t base_addr = 0x8000;
   axi_interconnect::WideData256_t wdata;
   for (int i = 0; i < axi_interconnect::CACHELINE_WORDS; i++) {
@@ -406,8 +407,8 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
     p_memory[(base_addr >> 2) + i] = 0x0;
   }
 
-  uint32_t wstrb = 0xFFFFFFFFu;
-  uint8_t total_size = 31;
+  uint64_t wstrb = 0xFFFFFFFFFFFFFFFFull;
+  uint8_t total_size = 63;
   uint8_t req_id = 2;
 
   bool issued = false;
@@ -504,18 +505,24 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
     printf("FAIL: expected 1 AW handshake, got %zu\n", env.aw_events.size());
     return false;
   }
-  if (env.aw_events[0].addr != base_addr || env.aw_events[0].len != 7) {
+  uint8_t exp_awid =
+      static_cast<uint8_t>((axi_interconnect::MASTER_DCACHE_W << 2) |
+                           (req_id & 0x3));
+  if (env.aw_events[0].addr != base_addr || env.aw_events[0].len != 15 ||
+      env.aw_events[0].id != exp_awid) {
     printf("FAIL: AW mismatch addr=0x%x len=%u id=0x%x\n", env.aw_events[0].addr,
            env.aw_events[0].len, env.aw_events[0].id);
     return false;
   }
-  if (env.w_events.size() != 8) {
-    printf("FAIL: expected 8 W handshakes, got %zu\n", env.w_events.size());
+  if (env.w_events.size() != axi_interconnect::CACHELINE_WORDS) {
+    printf("FAIL: expected %u W handshakes, got %zu\n",
+           static_cast<unsigned>(axi_interconnect::CACHELINE_WORDS),
+           env.w_events.size());
     return false;
   }
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < axi_interconnect::CACHELINE_WORDS; i++) {
     if (env.w_events[i].data != wdata[i] || env.w_events[i].strb != 0xF ||
-        env.w_events[i].last != (i == 7)) {
+        env.w_events[i].last != (i == (axi_interconnect::CACHELINE_WORDS - 1))) {
       printf("FAIL: W[%d] mismatch data=0x%08x strb=0x%x last=%d\n", i,
              env.w_events[i].data, env.w_events[i].strb, env.w_events[i].last);
       return false;

@@ -100,7 +100,7 @@ int main() {
     if (!ar_issued) {
       port.req.valid = true;
       port.req.addr = 0x1000;
-      port.req.total_size = 31;
+      port.req.total_size = 63;
       port.req.id = 1;
     }
 

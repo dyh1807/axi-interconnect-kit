@@ -5,7 +5,7 @@
  *
  * Simplified master interfaces for icache/dcache/uncore-lsu/extra:
  * - Read response can return one full upstream transaction (up to 256B)
- * - Write request payload is bounded but no longer fixed to one 256-bit line
+ * - Write request payload can carry one full cache-line transaction
  * - total_size specifies transfer width in bytes minus 1
  * - ID for out-of-order response routing
  */
@@ -21,9 +21,26 @@ namespace axi_interconnect {
 constexpr uint8_t NUM_READ_MASTERS = 4;  // icache, dcache, uncore-lsu, extra
 constexpr uint8_t NUM_WRITE_MASTERS = 2; // dcache + uncore-lsu
 constexpr uint8_t MAX_OUTSTANDING = 8;
+
+#ifndef AXI_KIT_MAX_WRITE_TRANSACTION_BYTES
+#define AXI_KIT_MAX_WRITE_TRANSACTION_BYTES 64
+#endif
+
+static_assert((AXI_KIT_MAX_WRITE_TRANSACTION_BYTES % sizeof(uint32_t)) == 0,
+              "AXI_KIT_MAX_WRITE_TRANSACTION_BYTES must be word-aligned");
+static_assert(AXI_KIT_MAX_WRITE_TRANSACTION_BYTES > 0,
+              "AXI_KIT_MAX_WRITE_TRANSACTION_BYTES must be non-zero");
+static_assert(AXI_KIT_MAX_WRITE_TRANSACTION_BYTES <= 64,
+              "AXI_KIT_MAX_WRITE_TRANSACTION_BYTES exceeds 64B strobe width");
+
+constexpr uint16_t MAX_WRITE_TRANSACTION_BYTES =
+    AXI_KIT_MAX_WRITE_TRANSACTION_BYTES;
+constexpr uint16_t MAX_WRITE_TRANSACTION_WORDS =
+    MAX_WRITE_TRANSACTION_BYTES / sizeof(uint32_t);
+constexpr uint8_t CACHELINE_WORDS = MAX_WRITE_TRANSACTION_WORDS;
 constexpr uint8_t MAX_READ_OUTSTANDING_PER_MASTER = 4;
 constexpr uint8_t MAX_WRITE_OUTSTANDING = 8;
-constexpr uint8_t AXI_BEAT_WORDS = 8; // upstream/cache payload granularity = 8 x 32-bit
+constexpr uint8_t AXI_BEAT_WORDS = MAX_WRITE_TRANSACTION_WORDS; // upstream/cache payload granularity = 8 x 32-bit
 constexpr uint8_t AXI_BEAT_BYTES = AXI_BEAT_WORDS * sizeof(uint32_t);
 constexpr uint8_t CACHELINE_WORDS = AXI_BEAT_WORDS; // legacy beat-width alias
 constexpr uint16_t MAX_READ_TRANSACTION_BYTES = 256;
@@ -62,7 +79,7 @@ struct WideReadData_t {
 };
 
 // ============================================================================
-// Write Payload Data Type (256-bit = 8 x 32-bit words)
+// Write Payload Data Type (up to 64B by default)
 // ============================================================================
 struct WideData256_t;
 
@@ -132,6 +149,8 @@ struct WideData256_t {
   const uint32_t &operator[](int idx) const { return words[idx]; }
 };
 
+// Backward-compatible alias kept for existing code paths/tests.
+using WideData256_t = WideWriteData_t;
 inline WideWriteData_t::WideWriteData_t(const WideData256_t &other) {
   clear();
   for (int i = 0; i < AXI_BEAT_WORDS; ++i) {
@@ -185,9 +204,9 @@ struct WriteMasterReq_t {
   wire1_t valid;
   wire1_t ready;       // ← Output from interleaver
   wire32_t addr;       // Byte address
-  WideWriteData_t wdata; // Wide write data (bounded by MAX_WRITE_TRANSACTION_BYTES)
-  WideWriteStrb_t wstrb; // Byte strobes
-  wire8_t total_size;    // Transfer bytes minus 1
+  WideWriteData_t wdata; // Wide write data
+  wire64_t wstrb;        // Byte strobe (1 bit per byte, up to 64B)
+  wire8_t total_size;    // 0=1B ... 63=64B (default cap)
   wire4_t id;          // Transaction ID
   wire1_t bypass;      // Skip LLC / cacheable path and force memory/MMIO routing
 };

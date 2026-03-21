@@ -16,6 +16,11 @@ namespace axi_interconnect {
 
 namespace {
 constexpr uint8_t kInvalidAxiReadId = 0xFF;
+
+inline bool write_size_supported(uint8_t total_size) {
+  return (static_cast<uint16_t>(total_size) + 1u) <=
+         MAX_WRITE_TRANSACTION_BYTES;
+}
 constexpr uint8_t kInvalidAxiWriteId = 0xFF;
 }
 
@@ -748,6 +753,21 @@ void AXI_Interconnect::comb_write_request() {
     axi_io.aw.awid = aw_latched.id;
   } else {
     axi_io.aw.awvalid = false;
+
+    // If a write master saw ready in previous cycle and keeps valid,
+    // prioritize issuing its AW now.
+    if (!w_active && !any_w_resp_valid) {
+      for (int k = 0; k < NUM_WRITE_MASTERS; k++) {
+        int idx = (w_arb_rr_idx + k) % NUM_WRITE_MASTERS;
+        if (!w_req_ready_curr[idx] || !write_ports[idx].req.valid) {
+          continue;
+        }
+        if (!write_size_supported(write_ports[idx].req.total_size)) {
+            printf("[axi] write size too large total_size=%u master=%d\n",
+                   static_cast<unsigned>(write_ports[idx].req.total_size), idx);
+          continue;
+        }
+        w_current_master = idx;
     if (!any_w_resp_valid) {
       const int aw_idx = find_next_aw_pending();
       if (aw_idx >= 0) {
@@ -768,6 +788,11 @@ void AXI_Interconnect::comb_write_request() {
         if (!write_ports[idx].req.valid) {
           continue;
         }
+        if (!write_size_supported(write_ports[idx].req.total_size)) {
+            printf("[axi] write size too large total_size=%u master=%d\n",
+                   static_cast<unsigned>(write_ports[idx].req.total_size), idx);
+          continue;
+        }
         if (w_req_ready_curr[idx]) {
           write_ports[idx].req.ready = true;
           write_req_fire_c[idx] = true;
@@ -785,9 +810,9 @@ void AXI_Interconnect::comb_write_request() {
   if (w_active && w_current.aw_done && !w_current.w_done) {
     axi_io.w.wvalid = true;
     axi_io.w.wdata = w_current.wdata[w_current.beats_sent];
-    axi_io.w.wstrb = static_cast<uint8_t>(
-        w_current.wstrb.slice_u32(static_cast<uint32_t>(w_current.beats_sent) * 4) &
-        0xFu);
+    const uint8_t strobe_shift =
+        static_cast<uint8_t>(w_current.beats_sent * 4u);
+    axi_io.w.wstrb = static_cast<uint8_t>((w_current.wstrb >> strobe_shift) & 0xFu);
     axi_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
   }
 }
@@ -862,12 +887,29 @@ void AXI_Interconnect::seq() {
     write_req_accepted[i] = false;
   }
 
+  auto resolve_ar_master = [this](uint8_t &orig_id) -> int {
+    if (r_current_master >= 0 && r_current_master < NUM_READ_MASTERS &&
+        read_ports[r_current_master].req.ready) {
+      orig_id = static_cast<uint8_t>(read_ports[r_current_master].req.id);
+      return r_current_master;
+    }
+    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+      if (read_ports[i].req.valid && read_ports[i].req.ready) {
+        orig_id = static_cast<uint8_t>(read_ports[i].req.id);
+        return i;
+      }
+    }
+    return -1;
+  };
+
   // ========== AR Channel with Latch ==========
 
   // If new AR request and NOT immediately ready, latch it
   if (axi_io.ar.arvalid && !ar_latched.valid && !axi_io.ar.arready) {
-    int master_idx = -1;
     uint8_t orig_id = 0;
+    int master_idx = resolve_ar_master(orig_id);
+    if (master_idx < 0) {
+      return;
     if (ar_from_llc_c) {
       master_idx = 0;
       orig_id = ar_llc_mem_id_c;
@@ -908,8 +950,11 @@ void AXI_Interconnect::seq() {
       ar_latched.to_llc = false;
     } else {
       // Direct handshake (same cycle)
-      int master_idx = -1;
       uint8_t orig_id = 0;
+      int master_idx = resolve_ar_master(orig_id);
+      if (master_idx < 0) {
+        goto read_handshake_done;
+      }
       if (ar_from_llc_c) {
         master_idx = 0;
         orig_id = ar_llc_mem_id_c;
@@ -1063,6 +1108,9 @@ read_handshake_done:
         llc.io.reg_write.write_resp_valid_r[i] = false;
         llc.io.reg_write.write_resp_id_r[i] = 0;
         llc.io.reg_write.write_resp_code_r[i] = 0;
+      }
+      if (!write_size_supported(write_ports[idx].req.total_size)) {
+        continue;
       }
     }
 
