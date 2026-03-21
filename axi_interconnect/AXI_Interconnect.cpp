@@ -15,6 +15,11 @@ namespace axi_interconnect {
 
 namespace {
 constexpr uint8_t kInvalidAxiReadId = 0xFF;
+
+inline bool write_size_supported(uint8_t total_size) {
+  return (static_cast<uint16_t>(total_size) + 1u) <=
+         MAX_WRITE_TRANSACTION_BYTES;
+}
 }
 
 // ============================================================================
@@ -325,6 +330,13 @@ void AXI_Interconnect::comb_write_request() {
         if (!w_req_ready_curr[idx] || !write_ports[idx].req.valid) {
           continue;
         }
+        if (!write_size_supported(write_ports[idx].req.total_size)) {
+          if (DEBUG) {
+            printf("[axi] write size too large total_size=%u master=%d\n",
+                   static_cast<unsigned>(write_ports[idx].req.total_size), idx);
+          }
+          continue;
+        }
         w_current_master = idx;
         axi_io.aw.awvalid = true;
         axi_io.aw.awaddr = write_ports[idx].req.addr;
@@ -344,6 +356,13 @@ void AXI_Interconnect::comb_write_request() {
         if (!write_ports[idx].req.valid) {
           continue;
         }
+        if (!write_size_supported(write_ports[idx].req.total_size)) {
+          if (DEBUG) {
+            printf("[axi] write size too large total_size=%u master=%d\n",
+                   static_cast<unsigned>(write_ports[idx].req.total_size), idx);
+          }
+          continue;
+        }
         if (!w_req_ready_curr[idx]) {
           w_req_ready_r[idx] = true;
           write_ports[idx].req.ready = true;
@@ -357,7 +376,9 @@ void AXI_Interconnect::comb_write_request() {
   if (w_active && w_current.aw_done && !w_current.w_done) {
     axi_io.w.wvalid = true;
     axi_io.w.wdata = w_current.wdata[w_current.beats_sent];
-    axi_io.w.wstrb = (w_current.wstrb >> (w_current.beats_sent * 4)) & 0xF;
+    const uint8_t strobe_shift =
+        static_cast<uint8_t>(w_current.beats_sent * 4u);
+    axi_io.w.wstrb = static_cast<uint8_t>((w_current.wstrb >> strobe_shift) & 0xFu);
     axi_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
   }
 }
@@ -381,19 +402,27 @@ void AXI_Interconnect::comb_write_response() {
 void AXI_Interconnect::seq() {
   constexpr uint32_t kPendingTimeout = 100000;
 
+  auto resolve_ar_master = [this](uint8_t &orig_id) -> int {
+    if (r_current_master >= 0 && r_current_master < NUM_READ_MASTERS &&
+        read_ports[r_current_master].req.ready) {
+      orig_id = static_cast<uint8_t>(read_ports[r_current_master].req.id);
+      return r_current_master;
+    }
+    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+      if (read_ports[i].req.valid && read_ports[i].req.ready) {
+        orig_id = static_cast<uint8_t>(read_ports[i].req.id);
+        return i;
+      }
+    }
+    return -1;
+  };
+
   // ========== AR Channel with Latch ==========
 
   // If new AR request and NOT immediately ready, latch it
   if (axi_io.ar.arvalid && !ar_latched.valid && !axi_io.ar.arready) {
-    int master_idx = -1;
     uint8_t orig_id = 0;
-    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-      if (read_ports[i].req.valid && read_ports[i].req.ready) {
-        master_idx = i;
-        orig_id = read_ports[i].req.id;
-        break;
-      }
-    }
+    int master_idx = resolve_ar_master(orig_id);
     if (master_idx < 0) {
       return;
     }
@@ -420,15 +449,8 @@ void AXI_Interconnect::seq() {
       ar_latched.valid = false; // Clear latch
     } else {
       // Direct handshake (same cycle)
-      int master_idx = -1;
       uint8_t orig_id = 0;
-      for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-        if (read_ports[i].req.valid && read_ports[i].req.ready) {
-          master_idx = i;
-          orig_id = read_ports[i].req.id;
-          break;
-        }
-      }
+      int master_idx = resolve_ar_master(orig_id);
       if (master_idx < 0) {
         return;
       }
@@ -502,6 +524,9 @@ void AXI_Interconnect::seq() {
     for (int k = 0; k < NUM_WRITE_MASTERS; k++) {
       int idx = (w_arb_rr_idx + k) % NUM_WRITE_MASTERS;
       if (!write_ports[idx].req.valid || !write_ports[idx].req.ready) {
+        continue;
+      }
+      if (!write_size_supported(write_ports[idx].req.total_size)) {
         continue;
       }
       w_active = true;

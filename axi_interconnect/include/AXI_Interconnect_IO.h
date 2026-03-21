@@ -5,7 +5,7 @@
  *
  * Simplified master interfaces for icache/dcache/mmu:
  * - Read response can return one full upstream transaction (up to 256B)
- * - Write request payload remains 256-bit (32B), matching current dcache use
+ * - Write request payload can carry one full cache-line transaction
  * - total_size specifies transfer width in bytes minus 1
  * - ID for out-of-order response routing
  */
@@ -21,7 +21,23 @@ namespace axi_interconnect {
 constexpr uint8_t NUM_READ_MASTERS = 4;  // icache, dcache, mmu, extra
 constexpr uint8_t NUM_WRITE_MASTERS = 2; // dcache + extra
 constexpr uint8_t MAX_OUTSTANDING = 8;
-constexpr uint8_t CACHELINE_WORDS = 8; // 256-bit = 8 x 32-bit
+
+#ifndef AXI_KIT_MAX_WRITE_TRANSACTION_BYTES
+#define AXI_KIT_MAX_WRITE_TRANSACTION_BYTES 64
+#endif
+
+static_assert((AXI_KIT_MAX_WRITE_TRANSACTION_BYTES % sizeof(uint32_t)) == 0,
+              "AXI_KIT_MAX_WRITE_TRANSACTION_BYTES must be word-aligned");
+static_assert(AXI_KIT_MAX_WRITE_TRANSACTION_BYTES > 0,
+              "AXI_KIT_MAX_WRITE_TRANSACTION_BYTES must be non-zero");
+static_assert(AXI_KIT_MAX_WRITE_TRANSACTION_BYTES <= 64,
+              "AXI_KIT_MAX_WRITE_TRANSACTION_BYTES exceeds 64B strobe width");
+
+constexpr uint16_t MAX_WRITE_TRANSACTION_BYTES =
+    AXI_KIT_MAX_WRITE_TRANSACTION_BYTES;
+constexpr uint16_t MAX_WRITE_TRANSACTION_WORDS =
+    MAX_WRITE_TRANSACTION_BYTES / sizeof(uint32_t);
+constexpr uint8_t CACHELINE_WORDS = MAX_WRITE_TRANSACTION_WORDS;
 constexpr uint16_t MAX_READ_TRANSACTION_BYTES = 256;
 constexpr uint16_t MAX_READ_TRANSACTION_WORDS =
     MAX_READ_TRANSACTION_BYTES / sizeof(uint32_t);
@@ -51,19 +67,22 @@ struct WideReadData_t {
 };
 
 // ============================================================================
-// Write Payload Data Type (256-bit = 8 x 32-bit words)
+// Write Payload Data Type (up to 64B by default)
 // ============================================================================
-struct WideData256_t {
-  uint32_t words[CACHELINE_WORDS];
+struct WideWriteData_t {
+  uint32_t words[MAX_WRITE_TRANSACTION_WORDS];
 
   void clear() {
-    for (int i = 0; i < CACHELINE_WORDS; i++)
+    for (int i = 0; i < MAX_WRITE_TRANSACTION_WORDS; i++)
       words[i] = 0;
   }
 
   uint32_t &operator[](int idx) { return words[idx]; }
   const uint32_t &operator[](int idx) const { return words[idx]; }
 };
+
+// Backward-compatible alias kept for existing code paths/tests.
+using WideData256_t = WideWriteData_t;
 
 // ============================================================================
 // Read Master Interface (for icache/dcache/mmu)
@@ -101,9 +120,9 @@ struct WriteMasterReq_t {
   wire1_t valid;
   wire1_t ready;       // ← Output from interleaver
   wire32_t addr;       // Byte address
-  WideData256_t wdata; // Wide write data
-  wire32_t wstrb;      // Byte strobe (32 bits for 256-bit data)
-  wire5_t total_size;  // 0=1B, 3=4B, 31=32B
+  WideWriteData_t wdata; // Wide write data
+  wire64_t wstrb;        // Byte strobe (1 bit per byte, up to 64B)
+  wire8_t total_size;    // 0=1B ... 63=64B (default cap)
   wire4_t id;          // Transaction ID
 };
 

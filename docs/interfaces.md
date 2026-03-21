@@ -17,7 +17,7 @@ Defined in `axi_interconnect/include/AXI_Interconnect_IO.h`.
 | `valid` | 1 | input | Request is valid |
 | `ready` | 1 | output | Interconnect accepts request |
 | `addr` | 32 | input | Byte address |
-| `total_size` | 5 | input | Transfer bytes minus 1 (`0=1B`, `31=32B`) |
+| `total_size` | 8 | input | Transfer bytes minus 1 (`0=1B`, `255=256B`) |
 | `id` | 4 | input | Upstream transaction ID |
 
 ### 1.2 Read Master Response (`ReadMasterResp_t`)
@@ -26,7 +26,7 @@ Defined in `axi_interconnect/include/AXI_Interconnect_IO.h`.
 |---|---:|---|---|
 | `valid` | 1 | output | Response valid |
 | `ready` | 1 | input | Master accepts response |
-| `data` | 256 (`8x32`) | output | Wide read response payload |
+| `data` | 2048 (`64x32`) | output | Wide read response payload (up to 256B) |
 | `id` | 4 | output | Upstream ID echoed back |
 
 ### 1.3 Write Master Request (`WriteMasterReq_t`)
@@ -36,9 +36,9 @@ Defined in `axi_interconnect/include/AXI_Interconnect_IO.h`.
 | `valid` | 1 | input | Request valid |
 | `ready` | 1 | output | Interconnect accepts request |
 | `addr` | 32 | input | Byte address |
-| `wdata` | 256 (`8x32`) | input | Wide write payload |
-| `wstrb` | 32 | input | Byte strobes |
-| `total_size` | 5 | input | Transfer bytes minus 1 |
+| `wdata` | default 512 (`16x32`) | input | Wide write payload (`AXI_KIT_MAX_WRITE_TRANSACTION_BYTES`) |
+| `wstrb` | 64 | input | Byte strobes (1 bit per byte) |
+| `total_size` | 8 | input | Transfer bytes minus 1 (`0=1B`, default max `63=64B`) |
 | `id` | 4 | input | Upstream transaction ID |
 
 ### 1.4 Write Master Response (`WriteMasterResp_t`)
