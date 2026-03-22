@@ -39,7 +39,7 @@ using wire64_t = uint64_t;
 
 // Configurable defaults for standalone build (can be overridden via -D).
 #ifndef AXI_KIT_DDR_LATENCY
-#define AXI_KIT_DDR_LATENCY 10
+#define AXI_KIT_DDR_LATENCY 50
 #endif
 
 #ifndef AXI_KIT_DEBUG

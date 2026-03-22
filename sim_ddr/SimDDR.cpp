@@ -224,6 +224,12 @@ void SimDDR::seq() {
     txn.in_data_phase = false;
     txn.complete = false;
     r_transactions.push_back(txn);
+    if (sim_time < 400) {
+      std::printf("[AXI-DBG][DDR-AR-HS] cyc=%lld addr=0x%08x id=%u len=%u size=%u txn_count=%zu\n",
+                  sim_time, txn.addr, static_cast<unsigned>(txn.id),
+                  static_cast<unsigned>(txn.len), static_cast<unsigned>(txn.size),
+                  r_transactions.size());
+    }
   }
 
   // R handshake: Advance data beat on selected transaction
