@@ -37,7 +37,6 @@ constexpr uint16_t MAX_WRITE_TRANSACTION_BYTES =
     AXI_KIT_MAX_WRITE_TRANSACTION_BYTES;
 constexpr uint16_t MAX_WRITE_TRANSACTION_WORDS =
     MAX_WRITE_TRANSACTION_BYTES / sizeof(uint32_t);
-constexpr uint8_t CACHELINE_WORDS = MAX_WRITE_TRANSACTION_WORDS;
 constexpr uint8_t MAX_READ_OUTSTANDING_PER_MASTER = 4;
 constexpr uint8_t MAX_WRITE_OUTSTANDING = 8;
 constexpr uint8_t AXI_BEAT_WORDS = MAX_WRITE_TRANSACTION_WORDS; // upstream/cache payload granularity = 8 x 32-bit
@@ -46,9 +45,6 @@ constexpr uint8_t CACHELINE_WORDS = AXI_BEAT_WORDS; // legacy beat-width alias
 constexpr uint16_t MAX_READ_TRANSACTION_BYTES = 256;
 constexpr uint16_t MAX_READ_TRANSACTION_WORDS =
     MAX_READ_TRANSACTION_BYTES / sizeof(uint32_t);
-constexpr uint16_t MAX_WRITE_TRANSACTION_BYTES = 64;
-constexpr uint16_t MAX_WRITE_TRANSACTION_WORDS =
-    MAX_WRITE_TRANSACTION_BYTES / sizeof(uint32_t);
 
 // Master IDs
 constexpr uint8_t MASTER_ICACHE = 0;
@@ -149,8 +145,6 @@ struct WideData256_t {
   const uint32_t &operator[](int idx) const { return words[idx]; }
 };
 
-// Backward-compatible alias kept for existing code paths/tests.
-using WideData256_t = WideWriteData_t;
 inline WideWriteData_t::WideWriteData_t(const WideData256_t &other) {
   clear();
   for (int i = 0; i < AXI_BEAT_WORDS; ++i) {
@@ -175,6 +169,7 @@ struct ReadMasterReq_t {
   wire1_t valid;
   wire1_t ready;      // ← Output from interleaver
   wire1_t accepted;   // ← One-cycle pulse when request is truly accepted
+  wire4_t accepted_id; // ← ID of the request accepted in this pulse
   wire32_t addr;      // Byte address
   wire8_t total_size; // 0=1B ... 255=256B
   wire4_t id;         // Transaction ID (for out-of-order)
@@ -203,6 +198,7 @@ struct ReadMasterPort_t {
 struct WriteMasterReq_t {
   wire1_t valid;
   wire1_t ready;       // ← Output from interleaver
+  wire1_t accepted;    // ← One-cycle pulse when request is truly accepted
   wire32_t addr;       // Byte address
   WideWriteData_t wdata; // Wide write data
   wire64_t wstrb;        // Byte strobe (1 bit per byte, up to 64B)

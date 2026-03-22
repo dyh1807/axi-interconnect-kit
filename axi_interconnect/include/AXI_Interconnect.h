@@ -58,6 +58,7 @@ struct ReadPendingTxn {
   uint8_t orig_id;
   uint8_t total_beats;
   uint8_t beats_done;
+  uint32_t addr;
   bool to_llc;
   WideReadData_t data;
 };
@@ -148,6 +149,7 @@ public:
   // Downstream IO (to SimDDR)
   sim_ddr::SimDDR_IO_t axi_io;
   bool read_req_accepted[NUM_READ_MASTERS] = {};
+  uint8_t read_req_accepted_id[NUM_READ_MASTERS] = {};
   bool write_req_accepted[NUM_WRITE_MASTERS] = {};
 
 private:
