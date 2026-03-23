@@ -17,6 +17,26 @@ extern long long sim_time;
 
 namespace sim_ddr {
 
+namespace {
+#ifndef CONFIG_AXI_LLC_FOCUS_LINE0
+#define CONFIG_AXI_LLC_FOCUS_LINE0 0u
+#endif
+
+#ifndef CONFIG_AXI_LLC_FOCUS_LINE1
+#define CONFIG_AXI_LLC_FOCUS_LINE1 0u
+#endif
+
+constexpr uint32_t kFocusWriteLineBytes = 64u;
+
+bool focus_write_line(uint32_t addr) {
+  const uint32_t line_addr = addr & ~(kFocusWriteLineBytes - 1u);
+  return (CONFIG_AXI_LLC_FOCUS_LINE0 != 0u &&
+          line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE0)) ||
+         (CONFIG_AXI_LLC_FOCUS_LINE1 != 0u &&
+          line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1));
+}
+} // namespace
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -175,12 +195,27 @@ void SimDDR::seq() {
     w_current.burst = io.aw.awburst;
     w_current.beat_cnt = 0;
     w_current.data_done = false;
+    if (focus_write_line(w_current.addr)) {
+      std::printf(
+          "[DDR-W][AW-HS] cyc=%lld id=%u addr=0x%08x len=%u size=%u\n",
+          sim_time, static_cast<unsigned>(w_current.id), w_current.addr,
+          static_cast<unsigned>(w_current.len), static_cast<unsigned>(w_current.size));
+    }
   }
 
   // W handshake: Process write data
   if (io.w.wvalid && io.w.wready && w_active) {
     uint32_t current_addr =
         w_current.addr + (w_current.beat_cnt << w_current.size);
+    if (focus_write_line(w_current.addr)) {
+      std::printf(
+          "[DDR-W][W-HS] cyc=%lld id=%u beat=%u/%u beat_addr=0x%08x "
+          "data=0x%08x wstrb=0x%x wlast=%d\n",
+          sim_time, static_cast<unsigned>(w_current.id),
+          static_cast<unsigned>(w_current.beat_cnt),
+          static_cast<unsigned>(w_current.len + 1), current_addr, io.w.wdata,
+          static_cast<unsigned>(io.w.wstrb), static_cast<int>(io.w.wlast));
+    }
     do_memory_write(current_addr, io.w.wdata, io.w.wstrb);
     w_current.beat_cnt++;
 
@@ -190,12 +225,24 @@ void SimDDR::seq() {
       resp.id = w_current.id;
       resp.latency_cnt = 0;
       w_resp_queue.push(resp);
+      if (focus_write_line(w_current.addr)) {
+        std::printf("[DDR-W][RESP-ENQ] cyc=%lld id=%u addr=0x%08x beats=%u\n",
+                    sim_time, static_cast<unsigned>(w_current.id), w_current.addr,
+                    static_cast<unsigned>(w_current.beat_cnt));
+      }
       w_active = false;
     }
   }
 
   // B handshake: Complete response
   if (io.b.bvalid && io.b.bready) {
+    if (!w_resp_queue.empty()) {
+      const auto &resp = w_resp_queue.front();
+      if (focus_write_line(w_current.addr)) {
+        std::printf("[DDR-W][B-HS] cyc=%lld id=%u active_addr=0x%08x\n",
+                    sim_time, static_cast<unsigned>(resp.id), w_current.addr);
+      }
+    }
     w_resp_queue.pop();
   }
 
@@ -224,6 +271,12 @@ void SimDDR::seq() {
     txn.in_data_phase = false;
     txn.complete = false;
     r_transactions.push_back(txn);
+    if (sim_time < 400) {
+      std::printf("[AXI-DBG][DDR-AR-HS] cyc=%lld addr=0x%08x id=%u len=%u size=%u txn_count=%zu\n",
+                  sim_time, txn.addr, static_cast<unsigned>(txn.id),
+                  static_cast<unsigned>(txn.len), static_cast<unsigned>(txn.size),
+                  r_transactions.size());
+    }
   }
 
   // R handshake: Advance data beat on selected transaction
@@ -267,6 +320,11 @@ void SimDDR::seq() {
 // ============================================================================
 
 void SimDDR::do_memory_write(uint32_t addr, uint32_t data, uint8_t wstrb) {
+  if (focus_write_line(addr)) {
+    std::printf(
+        "[DDR-W][COMMIT] cyc=%lld addr=0x%08x data=0x%08x wstrb=0x%x\n",
+        sim_time, addr, data, static_cast<unsigned>(wstrb));
+  }
   uint32_t word_addr = addr >> 2;
 
   if (p_memory == nullptr) {

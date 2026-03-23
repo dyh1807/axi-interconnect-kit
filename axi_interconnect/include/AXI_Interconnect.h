@@ -28,6 +28,7 @@ namespace axi_interconnect {
 // Latched AR request - holds values until arready
 struct ARLatch_t {
   bool valid;
+  bool accepted_upstream;
   bool to_llc;
   uint32_t addr;
   uint8_t len;
@@ -58,11 +59,23 @@ struct ReadPendingTxn {
   uint8_t orig_id;
   uint8_t total_beats;
   uint8_t beats_done;
+  uint32_t addr;
   bool to_llc;
   WideReadData_t data;
+  uint32_t stall_cycles;
+  uint8_t last_beats_done;
+  bool timeout_warned;
 };
 
 struct LlcUpstreamReqLatch {
+  bool valid = false;
+  uint32_t addr = 0;
+  uint8_t total_size = 0;
+  uint8_t id = 0;
+  bool bypass = false;
+};
+
+struct ReadReqHoldLatch {
   bool valid = false;
   uint32_t addr = 0;
   uint8_t total_size = 0;
@@ -148,6 +161,7 @@ public:
   // Downstream IO (to SimDDR)
   sim_ddr::SimDDR_IO_t axi_io;
   bool read_req_accepted[NUM_READ_MASTERS] = {};
+  uint8_t read_req_accepted_id[NUM_READ_MASTERS] = {};
   bool write_req_accepted[NUM_WRITE_MASTERS] = {};
 
 private:
@@ -169,8 +183,6 @@ private:
 
   // Registered req.ready for each master (persists until handshake)
   bool req_ready_r[NUM_READ_MASTERS];
-  uint32_t r_pending_age[NUM_READ_MASTERS];
-  bool r_pending_warned[NUM_READ_MASTERS];
   bool req_drop_warned[NUM_READ_MASTERS];
   uint8_t w_arb_rr_idx;
   int w_current_master;
@@ -210,6 +222,7 @@ private:
   bool llc_invalidate_all_req_ = false;
   bool llc_invalidate_line_valid_ = false;
   uint32_t llc_invalidate_line_addr_ = 0;
+  ReadReqHoldLatch read_req_hold[NUM_READ_MASTERS] = {};
   LlcUpstreamReqLatch llc_upstream_req[NUM_READ_MASTERS] = {};
   LlcUpstreamReqLatch llc_upstream_capture_c[NUM_READ_MASTERS] = {};
   bool llc_upstream_accept_c[NUM_READ_MASTERS] = {};
@@ -221,6 +234,8 @@ private:
   uint8_t llc_mem_write_resp_ = 0;
   bool ar_from_llc_c = false;
   uint8_t ar_llc_mem_id_c = 0;
+  int ar_master_c = -1;
+  uint8_t ar_orig_id_c = 0;
 };
 
 } // namespace axi_interconnect
