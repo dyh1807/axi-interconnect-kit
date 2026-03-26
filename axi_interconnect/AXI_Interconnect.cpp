@@ -9,6 +9,7 @@
 
 #include "AXI_Interconnect.h"
 #include <algorithm>
+#include <cstdio>
 
 extern long long sim_time;
 
@@ -1247,6 +1248,15 @@ read_handshake_done:
     for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
       if (llc_upstream_write_req_valid_prev[master] &&
           llc.io.ext_out.upstream.write_req[master].ready) {
+        if (focus_write_line(llc_upstream_write_req[master].addr) ||
+            llc_focus_line(llc_upstream_write_req[master].addr)) {
+          std::printf(
+              "[AXI-LLC][UPSTREAM-WRITE-CONSUME] cyc=%lld master=%d addr=0x%08x "
+              "id=%u bypass=%d\n",
+              sim_time, master, llc_upstream_write_req[master].addr,
+              static_cast<unsigned>(llc_upstream_write_req[master].id),
+              static_cast<int>(llc_upstream_write_req[master].bypass));
+        }
         llc_upstream_write_req[master] = {};
       }
       if (llc_upstream_write_accept_c[master]) {
@@ -1256,12 +1266,32 @@ read_handshake_done:
           llc_upstream_write_q[master].push_back(
               llc_upstream_write_capture_c[master]);
         }
+        if (focus_write_line(llc_upstream_write_capture_c[master].addr) ||
+            llc_focus_line(llc_upstream_write_capture_c[master].addr)) {
+          std::printf(
+              "[AXI-LLC][UPSTREAM-WRITE-CAPTURE] cyc=%lld master=%d addr=0x%08x "
+              "id=%u bypass=%d q_depth=%zu\n",
+              sim_time, master, llc_upstream_write_capture_c[master].addr,
+              static_cast<unsigned>(llc_upstream_write_capture_c[master].id),
+              static_cast<int>(llc_upstream_write_capture_c[master].bypass),
+              llc_upstream_write_q[master].size());
+        }
         write_req_accepted[master] = true;
       }
       if (!llc_upstream_write_req[master].valid &&
           !llc_upstream_write_q[master].empty()) {
         llc_upstream_write_req[master] = llc_upstream_write_q[master].front();
         llc_upstream_write_q[master].pop_front();
+        if (focus_write_line(llc_upstream_write_req[master].addr) ||
+            llc_focus_line(llc_upstream_write_req[master].addr)) {
+          std::printf(
+              "[AXI-LLC][UPSTREAM-WRITE-DEQ] cyc=%lld master=%d addr=0x%08x "
+              "id=%u bypass=%d q_depth=%zu\n",
+              sim_time, master, llc_upstream_write_req[master].addr,
+              static_cast<unsigned>(llc_upstream_write_req[master].id),
+              static_cast<int>(llc_upstream_write_req[master].bypass),
+              llc_upstream_write_q[master].size());
+        }
       }
     }
   }
@@ -1628,18 +1658,24 @@ void AXI_Interconnect::debug_print() {
     }
   }
   if (llc_enabled()) {
-    printf("    llc: state=%u lookup_valid=%d lookup_issued=%d lookup_master=%u lookup_addr=0x%08x\n",
+    printf("    llc: state=%u lookup_valid=%d lookup_issued=%d lookup_master=%u lookup_addr=0x%08x write=%d bypass=%d prefetch=%d invalidate=%d\n",
            static_cast<unsigned>(llc.io.regs.state),
            static_cast<int>(llc.io.regs.lookup_valid_r),
            static_cast<int>(llc.io.regs.lookup_issued_r),
            static_cast<unsigned>(llc.io.regs.lookup_master_r),
-           llc.io.regs.lookup_addr_r);
+           llc.io.regs.lookup_addr_r,
+           static_cast<int>(llc.io.regs.lookup_is_write_r),
+           static_cast<int>(llc.io.regs.lookup_is_bypass_r),
+           static_cast<int>(llc.io.regs.lookup_is_prefetch_r),
+           static_cast<int>(llc.io.regs.lookup_is_invalidate_r));
     for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-      printf("    llc_upstream[%d]: valid=%d addr=0x%08x id=%u bypass=%d resp_valid=%d\n",
+      printf("    llc_upstream[%d]: valid=%d addr=0x%08x id=%u bypass=%d resp_valid=%d resp_ready=%d resp_id=%u\n",
              i, static_cast<int>(llc_upstream_req[i].valid),
              llc_upstream_req[i].addr, static_cast<unsigned>(llc_upstream_req[i].id),
              static_cast<int>(llc_upstream_req[i].bypass),
-             static_cast<int>(llc.io.regs.read_resp_valid_r[i]));
+             static_cast<int>(llc.io.regs.read_resp_valid_r[i]),
+             static_cast<int>(read_ports[i].resp.ready),
+             static_cast<unsigned>(llc.io.regs.read_resp_id_r[i]));
     }
     for (uint32_t i = 0; i < std::min<uint32_t>(llc_config.mshr_num, MAX_OUTSTANDING); ++i) {
       const auto &entry = llc.io.regs.mshr[i];

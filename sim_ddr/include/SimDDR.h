@@ -17,6 +17,7 @@
 
 #include "SimDDR_IO.h"
 #include "axi_interconnect_compat.h"
+#include <cstddef>
 #include <cstdint>
 #include <queue>
 #include <vector>
