@@ -3,6 +3,7 @@
 #include "AXI_Interconnect_IO.h"
 #include "AXI_LLC_Config.h"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -234,6 +235,7 @@ struct AXI_LLCWriteCtx_t {
   bool mem_done = false;
   bool cache_done = false;
   bool cache_pending = false;
+  bool victim_mem_done = false;
   uint8_t id = 0;
   uint8_t total_size = 0;
   uint8_t mem_resp_code = 0;
@@ -338,6 +340,8 @@ public:
 private:
   int find_free_mshr(const AXI_LLC_Regs_t &regs) const;
   int find_mshr_by_line_addr(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  int find_mshr_by_victim_addr(const AXI_LLC_Regs_t &regs,
+                               uint32_t victim_addr) const;
   bool has_mshr_for_master(const AXI_LLC_Regs_t &regs, uint8_t master) const;
   uint32_t count_free_mshrs(const AXI_LLC_Regs_t &regs) const;
   bool has_demand_mshr(const AXI_LLC_Regs_t &regs) const;
@@ -360,6 +364,15 @@ private:
   bool has_pending_upstream_write_line(uint32_t line_addr) const;
   bool can_allocate_prefetch_mshr(const AXI_LLC_Regs_t &regs) const;
   bool write_line_pending(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  bool way_reserved_by_pending_write(const AXI_LLC_Regs_t &regs, uint32_t set,
+                                     uint8_t way,
+                                     uint32_t line_addr_value) const;
+  bool way_reserved_by_pending_refill(const AXI_LLC_Regs_t &regs, uint32_t set,
+                                      uint8_t way,
+                                      uint32_t line_addr_value) const;
+  int pick_unreserved_way(const AXI_LLC_Regs_t &regs, uint32_t set,
+                          int first_invalid_way, uint32_t repl_way_raw,
+                          uint32_t line_addr_value) const;
   bool can_accept_invalidate_line_now(uint32_t line_addr) const;
   bool has_dirty_or_write_hazard(const AXI_LLC_Regs_t &regs) const;
   bool can_accept_invalidate_all_now(const AXI_LLC_Regs_t &regs) const;

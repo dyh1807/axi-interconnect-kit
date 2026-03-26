@@ -8,7 +8,51 @@ extern long long sim_time;
 namespace axi_interconnect {
 
 namespace {
+#ifndef CONFIG_AXI_LLC_FOCUS_LINE0
+#define CONFIG_AXI_LLC_FOCUS_LINE0 0u
+#endif
+
+#ifndef CONFIG_AXI_LLC_FOCUS_LINE1
+#define CONFIG_AXI_LLC_FOCUS_LINE1 0u
+#endif
+
 constexpr uint8_t kInvalidReadMaster = NUM_READ_MASTERS;
+
+bool llc_early_trace(uint8_t master, uint32_t addr) {
+  return master == 0 && sim_time < 256 &&
+         (addr == 0x00000000u || addr == 0x00000040u ||
+          addr == 0x80000000u || addr == 0x80000840u);
+}
+
+bool llc_focus_line(uint32_t line_addr) {
+  return (CONFIG_AXI_LLC_FOCUS_LINE0 != 0u &&
+          line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE0)) ||
+         (CONFIG_AXI_LLC_FOCUS_LINE1 != 0u &&
+          line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1));
+}
+
+bool llc_focus_set(const AXI_LLCConfig &config, uint32_t set) {
+  if (!config.enable || !config.valid()) {
+    return false;
+  }
+  return (CONFIG_AXI_LLC_FOCUS_LINE0 != 0u &&
+          AXI_LLC::set_index(config, static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE0)) == set) ||
+         (CONFIG_AXI_LLC_FOCUS_LINE1 != 0u &&
+          AXI_LLC::set_index(config, static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1)) == set);
+}
+
+void llc_dump_words(const char *tag, uint32_t line_addr, uint8_t slot,
+                    uint8_t master, uint8_t id, const WideReadData_t &data) {
+  if (!llc_focus_line(line_addr)) {
+    return;
+  }
+  std::printf(
+      "[AXI-LLC][%s] cyc=%lld line=0x%08x slot=%u master=%u id=%u data=[%08x "
+      "%08x %08x %08x]\n",
+      tag, sim_time, line_addr, static_cast<unsigned>(slot),
+      static_cast<unsigned>(master), static_cast<unsigned>(id), data.words[0],
+      data.words[1], data.words[2], data.words[3]);
+}
 
 void perf_count_read_access(AXI_LLCPerfCounters_t &perf, uint8_t master) {
   perf.read_access++;
@@ -194,19 +238,45 @@ uint32_t decode_repl_way(const AXI_LLC_Bytes_t &payload) {
   return read_u32_le(payload.data());
 }
 
+bool llc_table_write_busy(const AXI_LLC_TableOut_t &table_out) {
+  return table_out.data.enable || table_out.meta.enable ||
+         table_out.repl.enable;
+}
+
 } // namespace
 
 AXI_LLC::AXI_LLC() { reset(); }
 
 void AXI_LLC::debug_print() const {
+  std::printf(
+      "    llc_lookup: valid=%d issued=%d state=%u master=%u id=%u addr=0x%08x size=%u prefetch=%d invalidate=%d write=%d bypass=%d\n",
+      static_cast<int>(io.regs.lookup_valid_r),
+      static_cast<int>(io.regs.lookup_issued_r),
+      static_cast<unsigned>(io.regs.state),
+      static_cast<unsigned>(io.regs.lookup_master_r),
+      static_cast<unsigned>(io.regs.lookup_id_r), io.regs.lookup_addr_r,
+      static_cast<unsigned>(io.regs.lookup_size_r),
+      static_cast<int>(io.regs.lookup_is_prefetch_r),
+      static_cast<int>(io.regs.lookup_is_invalidate_r),
+      static_cast<int>(io.regs.lookup_is_write_r),
+      static_cast<int>(io.regs.lookup_is_bypass_r));
+  for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+    std::printf(
+        "    llc_read_resp[%d]: valid=%d ready=%d id=%u data0=0x%08x\n", i,
+        static_cast<int>(io.regs.read_resp_valid_r[i]),
+        static_cast<int>(io.ext_in.upstream.read_resp[i].ready),
+        static_cast<unsigned>(io.regs.read_resp_id_r[i]),
+        io.regs.read_resp_data_r[i][0]);
+  }
   for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
     const auto &ctx = io.regs.write_ctx[master];
     std::printf(
-        "    llc_write_ctx[%d]: valid=%d bypass=%d lookup=%d mem_issued=%d mem_done=%d cache_done=%d cache_pending=%d id=%u total_size=%u addr=0x%08x line=0x%08x set=%u way=%u repl_next=%u tag=0x%08x q_count=%u\n",
+        "    llc_write_ctx[%d]: valid=%d bypass=%d lookup=%d mem_issued=%d mem_done=%d cache_done=%d cache_pending=%d victim_mem_done=%d id=%u total_size=%u addr=0x%08x line=0x%08x set=%u way=%u repl_next=%u tag=0x%08x q_count=%u\n",
         master, static_cast<int>(ctx.valid), static_cast<int>(ctx.bypass),
         static_cast<int>(ctx.lookup_pending), static_cast<int>(ctx.mem_issued),
         static_cast<int>(ctx.mem_done), static_cast<int>(ctx.cache_done),
-        static_cast<int>(ctx.cache_pending), static_cast<unsigned>(ctx.id),
+        static_cast<int>(ctx.cache_pending),
+        static_cast<int>(ctx.victim_mem_done), static_cast<unsigned>(ctx.id),
         static_cast<unsigned>(ctx.total_size), ctx.addr, ctx.line_addr, ctx.set,
         static_cast<unsigned>(ctx.way), ctx.repl_next_way, ctx.tag,
         static_cast<unsigned>(io.regs.write_q_count_r[master]));
@@ -229,6 +299,7 @@ void AXI_LLC::debug_print() const {
 
 bool AXI_LLC::can_accept_read_now(uint8_t master, bool bypass,
                                   uint32_t addr) const {
+  (void)bypass;
   if (master >= NUM_READ_MASTERS || config_.mshr_num == 0) {
     return false;
   }
@@ -247,10 +318,15 @@ bool AXI_LLC::can_accept_read_now(uint8_t master, bool bypass,
   if (find_mshr_by_line_addr(io.regs, line_addr(config_, addr)) >= 0) {
     return false;
   }
-  if (bypass) {
-    return find_free_mshr(io.regs) >= 0;
-  }
+  // Correctness-first guard: until the shared LLC read-response ownership model
+  // is fully hardened, only allow one active demand MSHR per upstream master.
+  // This still permits overlap across different masters, but prevents a single
+  // master from holding an older blocked response while a younger miss keeps
+  // the global lookup busy.
   if (has_mshr_for_master(io.regs, master)) {
+    return false;
+  }
+  if (find_free_mshr(io.regs) < 0) {
     return false;
   }
   return true;
@@ -298,6 +374,71 @@ bool AXI_LLC::write_line_pending(const AXI_LLC_Regs_t &regs,
     }
   }
   return false;
+}
+
+bool AXI_LLC::way_reserved_by_pending_write(const AXI_LLC_Regs_t &regs,
+                                            uint32_t set, uint8_t way,
+                                            uint32_t line_addr_value) const {
+  for (uint8_t master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    const auto &ctx = regs.write_ctx[master];
+    if (!ctx.valid || ctx.bypass || !ctx.cache_pending) {
+      continue;
+    }
+    if (ctx.set != set || ctx.way != way) {
+      continue;
+    }
+    if (ctx.line_addr == line_addr_value) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+bool AXI_LLC::way_reserved_by_pending_refill(const AXI_LLC_Regs_t &regs,
+                                             uint32_t set, uint8_t way,
+                                             uint32_t line_addr_value) const {
+  const uint32_t limit = std::min<uint32_t>(config_.mshr_num, MAX_OUTSTANDING);
+  for (uint32_t slot = 0; slot < limit; ++slot) {
+    const auto &entry = regs.mshr[slot];
+    if (!entry.valid || entry.bypass || entry.refill_committed) {
+      continue;
+    }
+    if (entry.set != set || entry.way != way) {
+      continue;
+    }
+    if (entry.line_addr == line_addr_value) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+int AXI_LLC::pick_unreserved_way(const AXI_LLC_Regs_t &regs, uint32_t set,
+                                 int first_invalid_way, uint32_t repl_way_raw,
+                                 uint32_t line_addr_value) const {
+  auto way_reserved = [&](uint8_t way) {
+    return way_reserved_by_pending_write(regs, set, way, line_addr_value) ||
+           way_reserved_by_pending_refill(regs, set, way, line_addr_value);
+  };
+
+  if (first_invalid_way >= 0) {
+    const uint8_t way = static_cast<uint8_t>(first_invalid_way);
+    if (!way_reserved(way)) {
+      return first_invalid_way;
+    }
+  }
+
+  for (uint32_t off = 0; off < config_.ways; ++off) {
+    const uint8_t cand =
+        static_cast<uint8_t>((repl_way_raw + off) % config_.ways);
+    if (!way_reserved(cand)) {
+      return static_cast<int>(cand);
+    }
+  }
+
+  return -1;
 }
 
 bool AXI_LLC::can_accept_invalidate_line_now(uint32_t line_addr_value) const {
@@ -469,6 +610,24 @@ int AXI_LLC::find_mshr_by_line_addr(const AXI_LLC_Regs_t &regs,
   return -1;
 }
 
+int AXI_LLC::find_mshr_by_victim_addr(const AXI_LLC_Regs_t &regs,
+                                      uint32_t victim_addr_value) const {
+  if (victim_addr_value == 0) {
+    return -1;
+  }
+  const uint32_t limit = std::min<uint32_t>(config_.mshr_num, MAX_OUTSTANDING);
+  for (uint32_t i = 0; i < limit; ++i) {
+    const auto &entry = regs.mshr[i];
+    if (!entry.valid || !entry.victim_dirty || entry.victim_writeback_done) {
+      continue;
+    }
+    if (entry.victim_addr == victim_addr_value) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 bool AXI_LLC::has_mshr_for_master(const AXI_LLC_Regs_t &regs, uint8_t master) const {
   const uint32_t limit = std::min<uint32_t>(config_.mshr_num, MAX_OUTSTANDING);
   for (uint32_t i = 0; i < limit; ++i) {
@@ -542,7 +701,10 @@ int AXI_LLC::pick_new_read_master(const AXI_LLC_Regs_t &regs) const {
   for (uint32_t off = 0; off < NUM_READ_MASTERS; ++off) {
     const uint32_t idx = (regs.rr_read_master_r + off) % NUM_READ_MASTERS;
     const auto &req = io.ext_in.upstream.read_req[idx];
-    if (!req.valid || regs.read_resp_valid_r[idx]) {
+    const bool resp_slot_busy_start_of_cycle = io.regs.read_resp_valid_r[idx];
+    const bool resp_slot_busy_end_of_cycle = regs.read_resp_valid_r[idx];
+    if (!req.valid || resp_slot_busy_start_of_cycle ||
+        resp_slot_busy_end_of_cycle) {
       continue;
     }
     if (regs.lookup_valid_r) {
@@ -557,10 +719,10 @@ int AXI_LLC::pick_new_read_master(const AXI_LLC_Regs_t &regs) const {
     if (find_mshr_by_line_addr(regs, line_addr(config_, req.addr)) >= 0) {
       continue;
     }
-    if (!req.bypass && has_mshr_for_master(regs, static_cast<uint8_t>(idx))) {
+    if (has_mshr_for_master(regs, static_cast<uint8_t>(idx))) {
       continue;
     }
-    if (req.bypass && find_free_mshr(regs) < 0) {
+    if (find_free_mshr(regs) < 0) {
       continue;
     }
     return static_cast<int>(idx);
@@ -784,6 +946,63 @@ void AXI_LLC::drive_read_responses() {
 }
 
 void AXI_LLC::drive_write_path() {
+  auto try_commit_write_ctx_after_victim = [&](uint8_t master,
+                                               bool focused_victim) -> bool {
+    if (master >= NUM_WRITE_MASTERS) {
+      return false;
+    }
+    auto &ctx = io.reg_write.write_ctx[master];
+    if (!ctx.valid || ctx.bypass || !ctx.cache_pending || !ctx.victim_mem_done ||
+        ctx.cache_done) {
+      return false;
+    }
+    if (llc_table_write_busy(io.table_out)) {
+      if (focused_victim || llc_focus_line(ctx.line_addr)) {
+        std::printf(
+            "[AXI-LLC][WRITE-VICTIM-TABLE-BUSY] cyc=%lld line=0x%08x master=%u "
+            "id=%u\n",
+            sim_time, ctx.line_addr, static_cast<unsigned>(master),
+            static_cast<unsigned>(ctx.id));
+      }
+      return false;
+    }
+
+    AXI_LLCMetaEntry_t meta{};
+    meta.tag = ctx.tag;
+    meta.flags = static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY);
+
+    io.table_out.data.enable = true;
+    io.table_out.data.write = true;
+    io.table_out.data.index = ctx.set;
+    io.table_out.data.way = ctx.way;
+    io.table_out.data.payload = write_words_to_line_bytes(config_, ctx.line);
+    io.table_out.data.byte_enable.assign(config_.line_bytes, 1);
+
+    io.table_out.meta.enable = true;
+    io.table_out.meta.write = true;
+    io.table_out.meta.index = ctx.set;
+    io.table_out.meta.way = ctx.way;
+    encode_meta(meta, io.table_out.meta.payload);
+    io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
+
+    io.table_out.repl.enable = true;
+    io.table_out.repl.write = true;
+    io.table_out.repl.index = ctx.set;
+    io.table_out.repl.payload = build_repl_payload(ctx.repl_next_way);
+    io.table_out.repl.byte_enable.assign(AXI_LLC_REPL_BYTES, 1);
+
+    ctx.cache_done = true;
+    ctx.cache_pending = false;
+    ctx.victim_mem_done = false;
+    if (focused_victim || llc_focus_line(ctx.line_addr)) {
+      std::printf(
+          "[AXI-LLC][WRITE-VICTIM-COMMIT] cyc=%lld line=0x%08x master=%u id=%u\n",
+          sim_time, ctx.line_addr, static_cast<unsigned>(master),
+          static_cast<unsigned>(ctx.id));
+    }
+    return true;
+  };
+
   for (uint8_t i = 0; i < NUM_WRITE_MASTERS; ++i) {
     io.ext_out.upstream.write_resp[i].valid = io.regs.write_resp_valid_r[i];
     io.ext_out.upstream.write_resp[i].id = io.regs.write_resp_id_r[i];
@@ -796,9 +1015,49 @@ void AXI_LLC::drive_write_path() {
     }
   }
 
+  if (io.regs.victim_wb_valid_r && io.regs.victim_wb_issued_r &&
+      !io.regs.victim_wb_for_write_r) {
+    const uint8_t slot = io.regs.victim_wb_mshr_slot_r;
+    const bool slot_in_range =
+        slot < config_.mshr_num && slot < MAX_OUTSTANDING;
+    const bool slot_valid =
+        slot_in_range && io.regs.mshr[slot].valid;
+    const bool slot_match =
+        slot_valid && io.regs.mshr[slot].victim_dirty &&
+        io.regs.mshr[slot].victim_addr == io.regs.victim_wb_addr_r;
+    if (!slot_match) {
+      uint32_t entry_line = 0;
+      uint32_t entry_victim_addr = 0;
+      int entry_set = -1;
+      int entry_dirty = 0;
+      if (slot_valid) {
+        entry_line = io.regs.mshr[slot].line_addr;
+        entry_victim_addr = io.regs.mshr[slot].victim_addr;
+        entry_set = static_cast<int>(io.regs.mshr[slot].set);
+        entry_dirty = static_cast<int>(io.regs.mshr[slot].victim_dirty);
+      }
+      if ((entry_set >= 0 && llc_focus_set(config_, static_cast<uint32_t>(entry_set))) ||
+          llc_focus_line(io.regs.victim_wb_addr_r)) {
+        std::printf(
+            "[AXI-LLC][VICTIM-OWNER-LOST] cyc=%lld slot=%u wb_addr=0x%08x "
+            "slot_valid=%d entry_line=0x%08x entry_victim_addr=0x%08x "
+            "entry_victim_dirty=%d\n",
+            sim_time, static_cast<unsigned>(slot), io.regs.victim_wb_addr_r,
+            static_cast<int>(slot_valid), entry_line, entry_victim_addr,
+            entry_dirty);
+      }
+    }
+  }
+
   io.ext_out.mem.write_resp_ready = true;
   if (io.ext_in.mem.write_resp_valid) {
     if (io.regs.victim_wb_valid_r && io.regs.victim_wb_issued_r) {
+      const bool focused_victim =
+          llc_focus_line(io.regs.victim_wb_addr_r) ||
+          (io.regs.victim_wb_for_write_r &&
+           io.regs.victim_wb_write_master_r < NUM_WRITE_MASTERS &&
+           llc_focus_line(
+               io.regs.write_ctx[io.regs.victim_wb_write_master_r].line_addr));
       io.reg_write.victim_wb_valid_r = false;
       io.reg_write.victim_wb_issued_r = false;
       io.reg_write.victim_wb_for_write_r = false;
@@ -811,37 +1070,55 @@ void AXI_LLC::drive_write_path() {
       if (io.regs.victim_wb_for_write_r) {
         const uint8_t master = io.regs.victim_wb_write_master_r;
         auto &ctx = io.reg_write.write_ctx[master];
-        AXI_LLCMetaEntry_t meta{};
-        meta.tag = ctx.tag;
-        meta.flags = static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY);
-
-        io.table_out.data.enable = true;
-        io.table_out.data.write = true;
-        io.table_out.data.index = ctx.set;
-        io.table_out.data.way = ctx.way;
-        io.table_out.data.payload = write_words_to_line_bytes(config_, ctx.line);
-        io.table_out.data.byte_enable.assign(config_.line_bytes, 1);
-
-        io.table_out.meta.enable = true;
-        io.table_out.meta.write = true;
-        io.table_out.meta.index = ctx.set;
-        io.table_out.meta.way = ctx.way;
-        encode_meta(meta, io.table_out.meta.payload);
-        io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
-
-        io.table_out.repl.enable = true;
-        io.table_out.repl.write = true;
-        io.table_out.repl.index = ctx.set;
-        io.table_out.repl.payload = build_repl_payload(ctx.repl_next_way);
-        io.table_out.repl.byte_enable.assign(AXI_LLC_REPL_BYTES, 1);
-
-        ctx.cache_done = true;
-        ctx.cache_pending = false;
+        ctx.victim_mem_done = true;
+        (void)try_commit_write_ctx_after_victim(master, focused_victim);
+        if (focused_victim || llc_focus_line(ctx.line_addr)) {
+          std::printf(
+              "[AXI-LLC][WRITE-VICTIM-DONE] cyc=%lld line=0x%08x master=%u id=%u "
+              "victim_addr=0x%08x committed=%d\n",
+              sim_time, ctx.line_addr, static_cast<unsigned>(master),
+              static_cast<unsigned>(ctx.id), io.regs.victim_wb_addr_r,
+              static_cast<int>(ctx.cache_done && !ctx.cache_pending));
+        }
       } else {
         const uint8_t slot = io.regs.victim_wb_mshr_slot_r;
+        int owner_slot = -1;
         if (slot < config_.mshr_num && slot < MAX_OUTSTANDING &&
             io.regs.mshr[slot].valid) {
-          io.reg_write.mshr[slot].victim_writeback_done = true;
+          const auto &entry = io.regs.mshr[slot];
+          if (entry.victim_dirty &&
+              entry.victim_addr == io.regs.victim_wb_addr_r) {
+            owner_slot = static_cast<int>(slot);
+          }
+        }
+        if (owner_slot < 0) {
+          owner_slot =
+              find_mshr_by_victim_addr(io.regs, io.regs.victim_wb_addr_r);
+        }
+        if (owner_slot >= 0) {
+          io.reg_write.mshr[owner_slot].victim_writeback_done = true;
+          if (static_cast<uint8_t>(owner_slot) != slot &&
+              llc_focus_line(io.regs.victim_wb_addr_r)) {
+            std::printf(
+                "[AXI-LLC][VICTIM-RSP-ADDR-RECOVER] cyc=%lld old_slot=%u "
+                "new_slot=%u wb_addr=0x%08x\n",
+                sim_time, static_cast<unsigned>(slot),
+                static_cast<unsigned>(owner_slot), io.regs.victim_wb_addr_r);
+          }
+        } else if (slot < config_.mshr_num && slot < MAX_OUTSTANDING &&
+                   io.regs.mshr[slot].valid) {
+          const auto &entry = io.regs.mshr[slot];
+          if (llc_focus_set(config_, entry.set) ||
+              llc_focus_line(io.regs.victim_wb_addr_r)) {
+            std::printf(
+                "[AXI-LLC][VICTIM-RSP-SLOT-MISMATCH] cyc=%lld slot=%u "
+                "wb_addr=0x%08x entry_line=0x%08x entry_victim_addr=0x%08x "
+                "entry_victim_dirty=%d entry_valid=%d\n",
+                sim_time, static_cast<unsigned>(slot), io.regs.victim_wb_addr_r,
+                entry.line_addr, entry.victim_addr,
+                static_cast<int>(entry.victim_dirty),
+                static_cast<int>(entry.valid));
+          }
         }
       }
     } else {
@@ -851,6 +1128,12 @@ void AXI_LLC::drive_write_path() {
         ctx.mem_done = true;
         ctx.mem_resp_code = io.ext_in.mem.write_resp;
       }
+    }
+  }
+
+  for (uint8_t master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    if (try_commit_write_ctx_after_victim(master, false)) {
+      break;
     }
   }
 
@@ -870,15 +1153,34 @@ void AXI_LLC::drive_write_path() {
     io.reg_write.write_ctx[master] = {};
   }
 
-  if (io.regs.victim_wb_valid_r && !io.regs.victim_wb_issued_r) {
-    io.ext_out.mem.write_req_valid = true;
-    io.ext_out.mem.write_req_addr = io.regs.victim_wb_addr_r;
-    io.ext_out.mem.write_req_data = io.regs.victim_wb_data_r;
-    io.ext_out.mem.write_req_strobe = io.regs.victim_wb_strobe_r;
-    io.ext_out.mem.write_req_size = static_cast<uint8_t>(config_.line_bytes - 1);
-    io.ext_out.mem.write_req_id = 0;
-    if (io.ext_in.mem.write_req_ready) {
-      io.reg_write.victim_wb_issued_r = true;
+  if (io.regs.victim_wb_valid_r) {
+    const int bypass_owner = find_bypass_write_mem_owner(io.regs);
+    if (!io.regs.victim_wb_issued_r) {
+      if (bypass_owner >= 0) {
+        return;
+      }
+      if (llc_focus_line(io.regs.victim_wb_addr_r) ||
+          (io.regs.victim_wb_for_write_r &&
+           io.regs.victim_wb_write_master_r < NUM_WRITE_MASTERS &&
+           llc_focus_line(io.regs.write_ctx[io.regs.victim_wb_write_master_r].line_addr))) {
+        std::printf(
+            "[AXI-LLC][VICTIM-ISSUE] cyc=%lld victim_addr=0x%08x issued=%d for_write=%d "
+            "master=%u slot=%u\n",
+            sim_time, io.regs.victim_wb_addr_r,
+            static_cast<int>(io.regs.victim_wb_issued_r),
+            static_cast<int>(io.regs.victim_wb_for_write_r),
+            static_cast<unsigned>(io.regs.victim_wb_write_master_r),
+            static_cast<unsigned>(io.regs.victim_wb_mshr_slot_r));
+      }
+      io.ext_out.mem.write_req_valid = true;
+      io.ext_out.mem.write_req_addr = io.regs.victim_wb_addr_r;
+      io.ext_out.mem.write_req_data = io.regs.victim_wb_data_r;
+      io.ext_out.mem.write_req_strobe = io.regs.victim_wb_strobe_r;
+      io.ext_out.mem.write_req_size = static_cast<uint8_t>(config_.line_bytes - 1);
+      io.ext_out.mem.write_req_id = 0;
+      if (io.ext_in.mem.write_req_ready) {
+        io.reg_write.victim_wb_issued_r = true;
+      }
     }
     return;
   }
@@ -947,6 +1249,15 @@ void AXI_LLC::drive_write_path() {
     if (entry->bypass) {
       io.reg_write.perf.write_passthrough++;
     }
+    if (llc_focus_line(ctx.line_addr)) {
+      std::printf(
+          "[AXI-LLC][WRITE-CTX-ALLOC] cyc=%lld master=%u line=0x%08x addr=0x%08x "
+          "id=%u bypass=%d total_size=%u q_count_after=%u\n",
+          sim_time, static_cast<unsigned>(master), ctx.line_addr, ctx.addr,
+          static_cast<unsigned>(ctx.id), static_cast<int>(ctx.bypass),
+          static_cast<unsigned>(ctx.total_size),
+          static_cast<unsigned>(io.reg_write.write_q_count_r[master] - 1));
+    }
     io.reg_write.write_q[master][io.reg_write.write_q_head_r[master] %
                                  MAX_WRITE_OUTSTANDING] = {};
     io.reg_write.write_q_head_r[master] =
@@ -960,6 +1271,14 @@ void AXI_LLC::drive_write_path() {
     const int lookup_master = pick_write_lookup_master(io.reg_write);
     if (lookup_master >= 0) {
       const auto &ctx = io.reg_write.write_ctx[lookup_master];
+      if (llc_focus_line(ctx.line_addr)) {
+        std::printf(
+            "[AXI-LLC][WRITE-LOOKUP] cyc=%lld master=%d line=0x%08x addr=0x%08x "
+            "id=%u bypass=%d total_size=%u\n",
+            sim_time, lookup_master, ctx.line_addr, ctx.addr,
+            static_cast<unsigned>(ctx.id), static_cast<int>(ctx.bypass),
+            static_cast<unsigned>(ctx.total_size));
+      }
       io.reg_write.lookup_valid_r = true;
       io.reg_write.lookup_issued_r = false;
       io.reg_write.lookup_addr_r = ctx.addr;
@@ -1016,6 +1335,13 @@ void AXI_LLC::drive_lookup_request() {
   if (!io.regs.lookup_is_prefetch_r &&
       find_mshr_by_line_addr(io.regs,
                              line_addr(config_, io.regs.lookup_addr_r)) >= 0) {
+    if (llc_focus_line(line_addr(config_, io.regs.lookup_addr_r))) {
+      std::printf(
+          "[AXI-LLC][LOOKUP-WAIT-MSHR] cyc=%lld line=0x%08x master=%u id=%u\n",
+          sim_time, line_addr(config_, io.regs.lookup_addr_r),
+          static_cast<unsigned>(io.regs.lookup_master_r),
+          static_cast<unsigned>(io.regs.lookup_id_r));
+    }
     return;
   }
   const uint32_t index = set_index(config_, io.regs.lookup_addr_r);
@@ -1027,6 +1353,13 @@ void AXI_LLC::drive_lookup_request() {
   io.table_out.repl.index = index;
   io.reg_write.lookup_issued_r = true;
   io.reg_write.state = AXI_LLCState::kLookup;
+  if (llc_early_trace(io.regs.lookup_master_r, io.regs.lookup_addr_r)) {
+    std::printf(
+        "[AXI-LLC][EARLY-LOOKUP-ISSUE] cyc=%lld master=%u addr=0x%08x id=%u "
+        "set=%u\n",
+        sim_time, static_cast<unsigned>(io.regs.lookup_master_r),
+        io.regs.lookup_addr_r, static_cast<unsigned>(io.regs.lookup_id_r), index);
+  }
 }
 
 bool AXI_LLC::try_complete_lookup() {
@@ -1044,6 +1377,35 @@ bool AXI_LLC::try_complete_lookup() {
   const uint32_t set = set_index(config_, io.regs.lookup_addr_r);
   const uint32_t tag = tag_of(config_, io.regs.lookup_addr_r);
   const uint32_t req_line_addr = line_addr(config_, io.regs.lookup_addr_r);
+  const bool table_busy = llc_table_write_busy(io.table_out);
+  auto stall_lookup_on_table_busy = [&]() -> bool {
+    if (llc_focus_line(req_line_addr)) {
+      std::printf(
+          "[AXI-LLC][LOOKUP-TABLE-BUSY] cyc=%lld line=0x%08x master=%u id=%u "
+          "state=%u\n",
+          sim_time, req_line_addr, static_cast<unsigned>(io.regs.lookup_master_r),
+          static_cast<unsigned>(io.regs.lookup_id_r),
+          static_cast<unsigned>(io.regs.state));
+    }
+    io.reg_write.lookup_issued_r = false;
+    io.reg_write.state = AXI_LLCState::kLookup;
+    return true;
+  };
+  auto stall_lookup_on_victim_wb_busy = [&]() -> bool {
+    if (llc_focus_line(req_line_addr)) {
+      std::printf(
+          "[AXI-LLC][LOOKUP-VICTIM-BUSY] cyc=%lld line=0x%08x master=%u id=%u "
+          "victim_addr=0x%08x issued=%d for_write=%d victim_master=%u\n",
+          sim_time, req_line_addr, static_cast<unsigned>(io.regs.lookup_master_r),
+          static_cast<unsigned>(io.regs.lookup_id_r), io.regs.victim_wb_addr_r,
+          static_cast<int>(io.regs.victim_wb_issued_r),
+          static_cast<int>(io.regs.victim_wb_for_write_r),
+          static_cast<unsigned>(io.regs.victim_wb_write_master_r));
+    }
+    io.reg_write.lookup_issued_r = false;
+    io.reg_write.state = AXI_LLCState::kLookup;
+    return true;
+  };
   int hit_way = -1;
   int first_invalid_way = -1;
   AXI_LLCMetaEntry_t hit_meta{};
@@ -1052,6 +1414,18 @@ bool AXI_LLC::try_complete_lookup() {
 
   if (hit_way >= 0) {
     if (is_write_lookup) {
+      if (llc_focus_line(req_line_addr)) {
+        std::printf(
+            "[AXI-LLC][WRITE-HIT] cyc=%lld line=0x%08x set=%u way=%d master=%u "
+            "id=%u bypass=%d\n",
+            sim_time, req_line_addr, set, hit_way,
+            static_cast<unsigned>(io.regs.lookup_master_r),
+            static_cast<unsigned>(io.regs.lookup_id_r),
+            static_cast<int>(is_bypass_lookup));
+      }
+      if (table_busy) {
+        return stall_lookup_on_table_busy();
+      }
       auto &ctx = io.reg_write.write_ctx[io.regs.lookup_master_r];
       AXI_LLC_Bytes_t line =
           extract_way_line_bytes(config_, io.lookup_in.data, hit_way);
@@ -1097,6 +1471,9 @@ bool AXI_LLC::try_complete_lookup() {
       return true;
     }
     if (is_invalidate_lookup) {
+      if (table_busy) {
+        return stall_lookup_on_table_busy();
+      }
       AXI_LLCMetaEntry_t meta = hit_meta;
       meta.flags = 0;
       io.table_out.meta.enable = true;
@@ -1140,10 +1517,28 @@ bool AXI_LLC::try_complete_lookup() {
                     config_.line_bytes);
       }
       const uint8_t master = io.regs.lookup_master_r;
+      if (io.reg_write.read_resp_valid_r[master]) {
+        if (llc_focus_line(req_line_addr)) {
+          std::printf(
+              "[AXI-LLC][LOOKUP-HIT-RESP-BLOCK] cyc=%lld line=0x%08x master=%u "
+              "id=%u bypass=1\n",
+              sim_time, req_line_addr, static_cast<unsigned>(master),
+              static_cast<unsigned>(io.regs.lookup_id_r));
+        }
+        io.reg_write.lookup_issued_r = false;
+        io.reg_write.state = AXI_LLCState::kLookup;
+        return true;
+      }
       io.reg_write.read_resp_valid_r[master] = true;
       io.reg_write.read_resp_id_r[master] = io.regs.lookup_id_r;
       io.reg_write.read_resp_data_r[master] =
           extract_line_response(config_, io.regs.lookup_addr_r, line);
+      if (llc_focus_line(req_line_addr)) {
+        std::printf(
+            "[AXI-LLC][LOOKUP-HIT] cyc=%lld line=0x%08x master=%u id=%u bypass=1\n",
+            sim_time, req_line_addr, static_cast<unsigned>(master),
+            static_cast<unsigned>(io.regs.lookup_id_r));
+      }
       io.reg_write.lookup_valid_r = false;
       io.reg_write.lookup_issued_r = false;
       io.reg_write.lookup_is_prefetch_r = false;
@@ -1151,7 +1546,17 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.lookup_is_write_r = false;
       io.reg_write.lookup_is_bypass_r = false;
       io.reg_write.state = AXI_LLCState::kIdle;
+      if (llc_early_trace(master, io.regs.lookup_addr_r)) {
+        std::printf(
+            "[AXI-LLC][EARLY-LOOKUP-HIT] cyc=%lld master=%u addr=0x%08x id=%u "
+            "bypass=1\n",
+            sim_time, static_cast<unsigned>(master), io.regs.lookup_addr_r,
+            static_cast<unsigned>(io.regs.lookup_id_r));
+      }
       return true;
+    }
+    if (table_busy) {
+      return stall_lookup_on_table_busy();
     }
     AXI_LLC_Bytes_t line;
     line.resize(config_.line_bytes);
@@ -1161,10 +1566,28 @@ bool AXI_LLC::try_complete_lookup() {
                   config_.line_bytes);
     }
     const uint8_t master = io.regs.lookup_master_r;
+    if (io.reg_write.read_resp_valid_r[master]) {
+      if (llc_focus_line(req_line_addr)) {
+        std::printf(
+            "[AXI-LLC][LOOKUP-HIT-RESP-BLOCK] cyc=%lld line=0x%08x master=%u "
+            "id=%u bypass=0\n",
+            sim_time, req_line_addr, static_cast<unsigned>(master),
+            static_cast<unsigned>(io.regs.lookup_id_r));
+      }
+      io.reg_write.lookup_issued_r = false;
+      io.reg_write.state = AXI_LLCState::kLookup;
+      return true;
+    }
     io.reg_write.read_resp_valid_r[master] = true;
     io.reg_write.read_resp_id_r[master] = io.regs.lookup_id_r;
     io.reg_write.read_resp_data_r[master] =
         extract_line_response(config_, io.regs.lookup_addr_r, line);
+    if (llc_focus_line(req_line_addr)) {
+      std::printf(
+          "[AXI-LLC][LOOKUP-HIT] cyc=%lld line=0x%08x master=%u id=%u bypass=0\n",
+          sim_time, req_line_addr, static_cast<unsigned>(master),
+          static_cast<unsigned>(io.regs.lookup_id_r));
+    }
     io.table_out.repl.enable = true;
     io.table_out.repl.write = true;
     io.table_out.repl.index = set;
@@ -1190,6 +1613,13 @@ bool AXI_LLC::try_complete_lookup() {
     io.reg_write.lookup_is_bypass_r = false;
     io.reg_write.state = AXI_LLCState::kIdle;
     perf_count_read_hit(io.reg_write.perf, master);
+    if (llc_early_trace(master, io.regs.lookup_addr_r)) {
+      std::printf(
+          "[AXI-LLC][EARLY-LOOKUP-HIT] cyc=%lld master=%u addr=0x%08x id=%u "
+          "bypass=0\n",
+          sim_time, static_cast<unsigned>(master), io.regs.lookup_addr_r,
+          static_cast<unsigned>(io.regs.lookup_id_r));
+    }
     return true;
   }
 
@@ -1209,8 +1639,23 @@ bool AXI_LLC::try_complete_lookup() {
     const bool full_line_write =
         is_full_line_write(config_, io.regs.lookup_addr_r, ctx.strobe, ctx.total_size);
     const uint32_t repl_way_raw = decode_repl_way(io.lookup_in.repl);
-    const uint8_t victim_way = static_cast<uint8_t>(
-        first_invalid_way >= 0 ? first_invalid_way : (repl_way_raw % config_.ways));
+    const int victim_way_idx = pick_unreserved_way(io.regs, set,
+                                                   first_invalid_way,
+                                                   repl_way_raw, req_line_addr);
+    if (victim_way_idx < 0) {
+      if (llc_focus_line(req_line_addr) || llc_focus_set(config_, set)) {
+        std::printf(
+            "[AXI-LLC][WRITE-LOOKUP-WAY-RESERVED] cyc=%lld line=0x%08x set=%u "
+            "master=%u id=%u\n",
+            sim_time, req_line_addr, set,
+            static_cast<unsigned>(io.regs.lookup_master_r),
+            static_cast<unsigned>(io.regs.lookup_id_r));
+      }
+      io.reg_write.lookup_issued_r = false;
+      io.reg_write.state = AXI_LLCState::kMiss;
+      return true;
+    }
+    const uint8_t victim_way = static_cast<uint8_t>(victim_way_idx);
     const auto victim_meta =
         decode_meta(io.lookup_in.meta, static_cast<uint32_t>(victim_way));
     const bool victim_valid = (victim_meta.flags & AXI_LLC_META_VALID) != 0;
@@ -1219,6 +1664,15 @@ bool AXI_LLC::try_complete_lookup() {
     const uint32_t repl_next_way =
         static_cast<uint32_t>((victim_way + 1) % config_.ways);
     if (!full_line_write) {
+      if (llc_focus_line(req_line_addr)) {
+        std::printf(
+            "[AXI-LLC][WRITE-MISS-MERGE] cyc=%lld line=0x%08x set=%u victim_way=%u "
+            "victim_valid=%d victim_dirty=%d master=%u id=%u\n",
+            sim_time, req_line_addr, set, static_cast<unsigned>(victim_way),
+            static_cast<int>(victim_valid), static_cast<int>(victim_dirty),
+            static_cast<unsigned>(io.regs.lookup_master_r),
+            static_cast<unsigned>(io.regs.lookup_id_r));
+      }
       const int merge_slot = find_mshr_by_line_addr(io.regs, req_line_addr);
       if (merge_slot >= 0) {
         io.reg_write.lookup_issued_r = false;
@@ -1279,7 +1733,19 @@ bool AXI_LLC::try_complete_lookup() {
     AXI_LLCMetaEntry_t meta{};
     meta.tag = tag;
     meta.flags = static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY);
+    if (llc_focus_line(req_line_addr)) {
+      std::printf(
+          "[AXI-LLC][WRITE-MISS-FULL] cyc=%lld line=0x%08x set=%u victim_way=%u "
+          "victim_valid=%d victim_dirty=%d master=%u id=%u\n",
+          sim_time, req_line_addr, set, static_cast<unsigned>(victim_way),
+          static_cast<int>(victim_valid), static_cast<int>(victim_dirty),
+          static_cast<unsigned>(io.regs.lookup_master_r),
+          static_cast<unsigned>(io.regs.lookup_id_r));
+    }
     if (victim_dirty) {
+      if (io.reg_write.victim_wb_valid_r) {
+        return stall_lookup_on_victim_wb_busy();
+      }
       const auto victim_line =
           extract_way_line_bytes(config_, io.lookup_in.data, victim_way);
       io.reg_write.victim_wb_valid_r = true;
@@ -1297,7 +1763,19 @@ bool AXI_LLC::try_complete_lookup() {
       ctx.repl_next_way = repl_next_way;
       ctx.tag = tag;
       ctx.line = line_bytes_to_write_words(line);
+      if (llc_focus_line(req_line_addr)) {
+        std::printf(
+            "[AXI-LLC][WRITE-VICTIM-ALLOC] cyc=%lld line=0x%08x master=%u id=%u "
+            "victim_addr=0x%08x set=%u way=%u repl_next=%u\n",
+            sim_time, req_line_addr, static_cast<unsigned>(io.regs.lookup_master_r),
+            static_cast<unsigned>(io.regs.lookup_id_r),
+            io.reg_write.victim_wb_addr_r, set, static_cast<unsigned>(victim_way),
+            repl_next_way);
+      }
     } else {
+      if (table_busy) {
+        return stall_lookup_on_table_busy();
+      }
       io.table_out.data.enable = true;
       io.table_out.data.write = true;
       io.table_out.data.index = set;
@@ -1356,6 +1834,14 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.perf.prefetch_drop_inflight++;
       return true;
     }
+    if (llc_focus_line(req_line_addr)) {
+      std::printf(
+          "[AXI-LLC][LOOKUP-MERGE-HOLD] cyc=%lld line=0x%08x merge_slot=%d "
+          "master=%u id=%u\n",
+          sim_time, req_line_addr, merge_slot,
+          static_cast<unsigned>(io.regs.lookup_master_r),
+          static_cast<unsigned>(io.regs.lookup_id_r));
+    }
     io.reg_write.lookup_issued_r = false;
     io.reg_write.state = AXI_LLCState::kMiss;
     io.reg_write.perf.mshr_merge++;
@@ -1378,14 +1864,35 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.perf.prefetch_drop_mshr_full++;
       return true;
     }
+    if (llc_focus_line(req_line_addr)) {
+      std::printf(
+          "[AXI-LLC][LOOKUP-MSHR-FULL] cyc=%lld line=0x%08x master=%u id=%u\n",
+          sim_time, req_line_addr, static_cast<unsigned>(io.regs.lookup_master_r),
+          static_cast<unsigned>(io.regs.lookup_id_r));
+    }
     io.reg_write.lookup_issued_r = false;
     io.reg_write.state = AXI_LLCState::kMiss;
     return true;
   }
 
   const uint32_t repl_way_raw = decode_repl_way(io.lookup_in.repl);
-  const uint8_t victim_way = static_cast<uint8_t>(
-      first_invalid_way >= 0 ? first_invalid_way : (repl_way_raw % config_.ways));
+  const int victim_way_idx = pick_unreserved_way(io.regs, set,
+                                                 first_invalid_way,
+                                                 repl_way_raw, req_line_addr);
+  if (victim_way_idx < 0) {
+    if (llc_focus_line(req_line_addr) || llc_focus_set(config_, set)) {
+      std::printf(
+          "[AXI-LLC][READ-LOOKUP-WAY-RESERVED] cyc=%lld line=0x%08x set=%u "
+          "master=%u id=%u\n",
+          sim_time, req_line_addr, set,
+          static_cast<unsigned>(io.regs.lookup_master_r),
+          static_cast<unsigned>(io.regs.lookup_id_r));
+    }
+    io.reg_write.lookup_issued_r = false;
+    io.reg_write.state = AXI_LLCState::kMiss;
+    return true;
+  }
+  const uint8_t victim_way = static_cast<uint8_t>(victim_way_idx);
   auto &entry = io.reg_write.mshr[free_slot];
   entry = {};
   entry.valid = true;
@@ -1417,6 +1924,28 @@ bool AXI_LLC::try_complete_lookup() {
     entry.victim_data.clear();
   }
 
+  if (llc_focus_set(config_, set)) {
+    std::printf(
+        "[AXI-LLC][READ-MSHR-ALLOC] cyc=%lld slot=%d line=0x%08x set=%u "
+        "way=%u repl_way=%u first_invalid=%d victim_valid=%d victim_dirty=%d "
+        "victim_tag=0x%08x victim_addr=0x%08x master=%u id=%u bypass=%d\n",
+        sim_time, free_slot, entry.line_addr, set, static_cast<unsigned>(entry.way),
+        repl_way_raw, first_invalid_way, static_cast<int>(victim_valid),
+        static_cast<int>(entry.victim_dirty), victim_meta.tag, entry.victim_addr,
+        static_cast<unsigned>(entry.master), static_cast<unsigned>(entry.id),
+        static_cast<int>(entry.bypass));
+  }
+
+  if (!is_prefetch_lookup && llc_focus_line(entry.line_addr)) {
+    std::printf(
+        "[AXI-LLC][MSHR-ALLOC] cyc=%lld slot=%d line=0x%08x addr=0x%08x "
+        "master=%u id=%u bypass=%d set=%u way=%u tag=0x%08x\n",
+        sim_time, free_slot, entry.line_addr, entry.addr,
+        static_cast<unsigned>(entry.master), static_cast<unsigned>(entry.id),
+        static_cast<int>(entry.bypass), entry.set, static_cast<unsigned>(entry.way),
+        entry.tag);
+  }
+
   io.reg_write.lookup_valid_r = false;
   io.reg_write.lookup_issued_r = false;
   io.reg_write.lookup_is_prefetch_r = false;
@@ -1424,6 +1953,14 @@ bool AXI_LLC::try_complete_lookup() {
   io.reg_write.lookup_is_write_r = false;
   io.reg_write.lookup_is_bypass_r = false;
   io.reg_write.state = AXI_LLCState::kMiss;
+  if (llc_early_trace(entry.master, entry.addr)) {
+    std::printf(
+        "[AXI-LLC][EARLY-MSHR-ALLOC] cyc=%lld slot=%d master=%u addr=0x%08x "
+        "line=0x%08x id=%u bypass=%d\n",
+        sim_time, free_slot, static_cast<unsigned>(entry.master), entry.addr,
+        entry.line_addr, static_cast<unsigned>(entry.id),
+        static_cast<int>(entry.bypass));
+  }
   if (is_prefetch_lookup) {
     if (lookup_slot_id < AXI_LLC_MAX_PREFETCH_QUEUE) {
       io.reg_write.prefetch_q[lookup_slot_id] = {};
@@ -1442,6 +1979,10 @@ void AXI_LLC::drive_mem_read_path() {
   if (io.ext_in.mem.read_resp_valid) {
     const int slot = find_mshr_by_mem_id(io.regs, io.ext_in.mem.read_resp_id);
     if (slot >= 0) {
+      const auto &entry_prev = io.regs.mshr[slot];
+      llc_dump_words("MEM-RSP", entry_prev.line_addr,
+                     static_cast<uint8_t>(slot), entry_prev.master, entry_prev.id,
+                     io.ext_in.mem.read_resp_data);
       auto &entry = io.reg_write.mshr[slot];
       entry.refill_valid = true;
       entry.refill_data = io.ext_in.mem.read_resp_data;
@@ -1450,12 +1991,29 @@ void AXI_LLC::drive_mem_read_path() {
       if (!entry.bypass) {
         io.reg_write.perf.refill++;
       }
+    } else {
+      std::printf(
+          "[AXI-LLC][MEM-RSP-ORPHAN] cyc=%lld mem_id=%u lookup_valid=%d "
+          "state=%u\n",
+          sim_time, static_cast<unsigned>(io.ext_in.mem.read_resp_id),
+          static_cast<int>(io.regs.lookup_valid_r),
+          static_cast<unsigned>(io.regs.state));
     }
   }
 
   const int slot = pick_mem_issue_slot(io.regs);
   if (slot >= 0) {
     const auto &entry = io.regs.mshr[slot];
+    if (llc_focus_line(entry.line_addr)) {
+      std::printf(
+          "[AXI-LLC][MEM-ISSUE] cyc=%lld slot=%d line=0x%08x addr=0x%08x "
+          "master=%u id=%u bypass=%d size=%u\n",
+          sim_time, slot, entry.line_addr, entry.addr,
+          static_cast<unsigned>(entry.master), static_cast<unsigned>(entry.id),
+          static_cast<int>(entry.bypass),
+          static_cast<unsigned>(entry.bypass ? entry.total_size
+                                             : static_cast<uint8_t>(config_.line_bytes - 1)));
+    }
     io.ext_out.mem.read_req_valid = true;
     io.ext_out.mem.read_req_addr = entry.line_addr;
     io.ext_out.mem.read_req_size = entry.bypass
@@ -1463,6 +2021,13 @@ void AXI_LLC::drive_mem_read_path() {
                                        : static_cast<uint8_t>(config_.line_bytes - 1);
     io.ext_out.mem.read_req_id = static_cast<uint8_t>(slot);
     if (io.ext_in.mem.read_req_ready) {
+      if (llc_focus_line(entry.line_addr)) {
+        std::printf(
+            "[AXI-LLC][MEM-ISSUE-HS] cyc=%lld slot=%d line=0x%08x master=%u "
+            "id=%u\n",
+            sim_time, slot, entry.line_addr, static_cast<unsigned>(entry.master),
+            static_cast<unsigned>(entry.id));
+      }
       io.reg_write.mshr[slot].mem_req_issued = true;
     }
   }
@@ -1474,15 +2039,62 @@ void AXI_LLC::drive_mem_read_path() {
 
   const auto &entry = io.regs.mshr[commit_slot];
   const bool stale_refill_epoch = entry.epoch != io.regs.invalidate_epoch_r;
+  const bool active_read_victim_for_commit_slot =
+      io.regs.victim_wb_valid_r && io.regs.victim_wb_issued_r &&
+      !io.regs.victim_wb_for_write_r &&
+      io.regs.victim_wb_mshr_slot_r == static_cast<uint8_t>(commit_slot);
+  auto log_active_victim_slot_clear = [&](const char *reason) {
+    if (!(io.regs.victim_wb_valid_r && io.regs.victim_wb_issued_r &&
+          !io.regs.victim_wb_for_write_r)) {
+      return;
+    }
+    const uint8_t victim_slot = io.regs.victim_wb_mshr_slot_r;
+    if (victim_slot != static_cast<uint8_t>(commit_slot)) {
+      return;
+    }
+    std::printf(
+        "[AXI-LLC][VICTIM-SLOT-CLEAR] cyc=%lld reason=%s slot=%d line=0x%08x "
+        "victim_addr=0x%08x victim_dirty=%d victim_wb_done=%d "
+        "global_wb_addr=0x%08x global_issued=%d\n",
+        sim_time, reason, commit_slot, entry.line_addr, entry.victim_addr,
+        static_cast<int>(entry.victim_dirty),
+        static_cast<int>(entry.victim_writeback_done), io.regs.victim_wb_addr_r,
+        static_cast<int>(io.regs.victim_wb_issued_r));
+  };
+
+  if (llc_focus_set(config_, entry.set)) {
+    std::printf(
+        "[AXI-LLC][READ-REFILL-COMMIT-CHECK] cyc=%lld slot=%d line=0x%08x "
+        "set=%u way=%u victim_dirty=%d victim_wb_done=%d victim_addr=0x%08x "
+        "refill_valid=%d refill_committed=%d is_write=%d bypass=%d master=%u id=%u\n",
+        sim_time, commit_slot, entry.line_addr, entry.set,
+        static_cast<unsigned>(entry.way), static_cast<int>(entry.victim_dirty),
+        static_cast<int>(entry.victim_writeback_done), entry.victim_addr,
+        static_cast<int>(entry.refill_valid), static_cast<int>(entry.refill_committed),
+        static_cast<int>(entry.is_write), static_cast<int>(entry.bypass),
+        static_cast<unsigned>(entry.master), static_cast<unsigned>(entry.id));
+  }
+
   if (entry.refill_valid && stale_refill_epoch && !entry.is_write) {
+    if (active_read_victim_for_commit_slot) {
+      if (llc_focus_line(entry.line_addr) || llc_focus_line(io.regs.victim_wb_addr_r)) {
+        std::printf(
+            "[AXI-LLC][VICTIM-SLOT-HOLD] cyc=%lld reason=stale_epoch slot=%d "
+            "line=0x%08x wb_addr=0x%08x victim_wb_done=%d\n",
+            sim_time, commit_slot, entry.line_addr, io.regs.victim_wb_addr_r,
+            static_cast<int>(entry.victim_writeback_done));
+      }
+      return;
+    }
     if (entry.is_prefetch) {
+      log_active_victim_slot_clear("stale_epoch_prefetch");
       io.reg_write.mshr[commit_slot] = {};
       io.reg_write.state = io.regs.lookup_valid_r ? AXI_LLCState::kLookup
                                                   : AXI_LLCState::kIdle;
       return;
     }
 
-    if (io.regs.read_resp_valid_r[entry.master]) {
+    if (io.reg_write.read_resp_valid_r[entry.master]) {
       return;
     }
 
@@ -1491,9 +2103,13 @@ void AXI_LLC::drive_mem_read_path() {
       const auto line_bytes = wide_to_line_bytes(config_, entry.refill_data);
       resp_data = extract_line_response(config_, entry.addr, line_bytes);
     }
+    llc_dump_words("STALE-EPOCH-RSP", entry.line_addr,
+                   static_cast<uint8_t>(commit_slot), entry.master, entry.id,
+                   resp_data);
     io.reg_write.read_resp_valid_r[entry.master] = true;
     io.reg_write.read_resp_id_r[entry.master] = entry.id;
     io.reg_write.read_resp_data_r[entry.master] = resp_data;
+    log_active_victim_slot_clear("stale_epoch_resp");
     io.reg_write.mshr[commit_slot] = {};
     io.reg_write.state = io.regs.lookup_valid_r ? AXI_LLCState::kLookup
                                                 : AXI_LLCState::kIdle;
@@ -1501,8 +2117,10 @@ void AXI_LLC::drive_mem_read_path() {
   }
 
   if (!entry.refill_committed && !entry.bypass) {
-    if (entry.victim_dirty && !entry.victim_writeback_done) {
-      if (!io.regs.victim_wb_valid_r) {
+    const bool victim_writeback_done_nxt =
+        io.reg_write.mshr[commit_slot].victim_writeback_done;
+    if (entry.victim_dirty && !victim_writeback_done_nxt) {
+      if (!io.reg_write.victim_wb_valid_r) {
         io.reg_write.victim_wb_valid_r = true;
         io.reg_write.victim_wb_issued_r = false;
         io.reg_write.victim_wb_for_write_r = false;
@@ -1511,6 +2129,18 @@ void AXI_LLC::drive_mem_read_path() {
         io.reg_write.victim_wb_data_r = entry.victim_data;
         io.reg_write.victim_wb_strobe_r = full_line_strobe(config_);
       }
+      return;
+    }
+    if (llc_table_write_busy(io.table_out)) {
+      if (llc_focus_line(entry.line_addr)) {
+        std::printf(
+            "[AXI-LLC][REFILL-TABLE-BUSY] cyc=%lld line=0x%08x slot=%d "
+            "master=%u id=%u write=%d\n",
+            sim_time, entry.line_addr, commit_slot,
+            static_cast<unsigned>(entry.master),
+            static_cast<unsigned>(entry.id), static_cast<int>(entry.is_write));
+      }
+      io.reg_write.state = AXI_LLCState::kRefill;
       return;
     }
     auto line_bytes = wide_to_line_bytes(config_, entry.refill_data);
@@ -1551,6 +2181,7 @@ void AXI_LLC::drive_mem_read_path() {
       io.reg_write.write_ctx[entry.master].cache_pending = false;
       io.reg_write.dirty_line_count_r = update_dirty_line_count(
           io.regs.dirty_line_count_r, entry.victim_dirty, true);
+      log_active_victim_slot_clear("write_refill_commit");
       io.reg_write.mshr[commit_slot] = {};
       io.reg_write.state = io.regs.lookup_valid_r ? AXI_LLCState::kLookup
                                                   : AXI_LLCState::kIdle;
@@ -1563,13 +2194,34 @@ void AXI_LLC::drive_mem_read_path() {
   }
 
   if (entry.is_prefetch) {
+    if (active_read_victim_for_commit_slot) {
+      if (llc_focus_line(entry.line_addr) || llc_focus_line(io.regs.victim_wb_addr_r)) {
+        std::printf(
+            "[AXI-LLC][VICTIM-SLOT-HOLD] cyc=%lld reason=prefetch_resp slot=%d "
+            "line=0x%08x wb_addr=0x%08x victim_wb_done=%d\n",
+            sim_time, commit_slot, entry.line_addr, io.regs.victim_wb_addr_r,
+            static_cast<int>(entry.victim_writeback_done));
+      }
+      return;
+    }
+    log_active_victim_slot_clear("prefetch_resp");
     io.reg_write.mshr[commit_slot] = {};
     io.reg_write.state = io.regs.lookup_valid_r ? AXI_LLCState::kLookup
                                                 : AXI_LLCState::kIdle;
     return;
   }
 
-  if (io.regs.read_resp_valid_r[entry.master]) {
+  if (io.reg_write.read_resp_valid_r[entry.master]) {
+    return;
+  }
+  if (active_read_victim_for_commit_slot) {
+    if (llc_focus_line(entry.line_addr) || llc_focus_line(io.regs.victim_wb_addr_r)) {
+      std::printf(
+          "[AXI-LLC][VICTIM-SLOT-HOLD] cyc=%lld reason=refill_resp slot=%d "
+          "line=0x%08x wb_addr=0x%08x victim_wb_done=%d\n",
+          sim_time, commit_slot, entry.line_addr, io.regs.victim_wb_addr_r,
+          static_cast<int>(entry.victim_writeback_done));
+    }
     return;
   }
 
@@ -1578,10 +2230,14 @@ void AXI_LLC::drive_mem_read_path() {
     const auto line_bytes = wide_to_line_bytes(config_, entry.refill_data);
     resp_data = extract_line_response(config_, entry.addr, line_bytes);
   }
+  llc_dump_words("REFILL-COMMIT", entry.line_addr,
+                 static_cast<uint8_t>(commit_slot), entry.master, entry.id,
+                 resp_data);
   io.reg_write.read_resp_valid_r[entry.master] = true;
   io.reg_write.read_resp_id_r[entry.master] = entry.id;
   io.reg_write.read_resp_data_r[entry.master] = resp_data;
   try_schedule_prefetch(entry);
+  log_active_victim_slot_clear("refill_resp");
   io.reg_write.mshr[commit_slot] = {};
   io.reg_write.state = io.regs.lookup_valid_r ? AXI_LLCState::kLookup
                                               : AXI_LLCState::kIdle;
@@ -1598,6 +2254,13 @@ void AXI_LLC::accept_new_requests() {
   if (!req.valid) {
     return;
   }
+  // Do not recycle the per-master response slot in the same cycle that an old
+  // response is being drained. The shared-LLC path can otherwise accept a new
+  // icache miss before the previous response has fully retired, which leaves
+  // the new request without a durable lookup/MSHR owner.
+  if (io.regs.read_resp_valid_r[master]) {
+    return;
+  }
 
   const uint32_t req_line_addr = line_addr(config_, req.addr);
   if (has_pending_upstream_write_line(req_line_addr)) {
@@ -1612,6 +2275,13 @@ void AXI_LLC::accept_new_requests() {
   }
 
   io.ext_out.upstream.read_req[master].ready = true;
+  if (llc_focus_line(line_addr(config_, req.addr))) {
+    std::printf(
+        "[AXI-LLC][UPSTREAM-ACCEPT] cyc=%lld master=%d addr=0x%08x line=0x%08x "
+        "id=%u bypass=%d\n",
+        sim_time, master, req.addr, line_addr(config_, req.addr),
+        static_cast<unsigned>(req.id), static_cast<int>(req.bypass));
+  }
   io.reg_write.rr_read_master_r =
       static_cast<uint8_t>((master + 1) % NUM_READ_MASTERS);
   if (req.bypass) {
@@ -1633,6 +2303,14 @@ void AXI_LLC::accept_new_requests() {
   io.reg_write.lookup_is_write_r = false;
   io.reg_write.lookup_is_bypass_r = req.bypass;
   io.reg_write.state = AXI_LLCState::kLookup;
+  if (llc_early_trace(static_cast<uint8_t>(master), req.addr)) {
+    std::printf(
+        "[AXI-LLC][EARLY-ACCEPT] cyc=%lld master=%d addr=0x%08x id=%u "
+        "lookup_valid->1 resp_busy_cur=%d resp_busy_nxt=%d\n",
+        sim_time, master, req.addr, static_cast<unsigned>(req.id),
+        static_cast<int>(io.regs.read_resp_valid_r[master]),
+        static_cast<int>(io.reg_write.read_resp_valid_r[master]));
+  }
 }
 
 void AXI_LLC::comb_disabled() {
@@ -1708,6 +2386,44 @@ void AXI_LLC::comb() {
       io.reg_write.lookup_issued_r = false;
       io.reg_write.state = AXI_LLCState::kLookup;
     }
+  }
+
+  auto focus_set_match = [&](uint32_t set_idx) -> bool {
+    return set_idx == set_index(config_, CONFIG_AXI_LLC_FOCUS_LINE0) ||
+           set_idx == set_index(config_, CONFIG_AXI_LLC_FOCUS_LINE1);
+  };
+  if (io.table_out.data.enable && io.table_out.data.write &&
+      focus_set_match(io.table_out.data.index)) {
+    const auto words = line_bytes_to_write_words(io.table_out.data.payload);
+    std::printf(
+        "[AXI-LLC][TABLE-DATA-WR] cyc=%lld state=%u index=%u way=%u "
+        "lookup_valid=%d lookup_write=%d lookup_addr=0x%08x data=[%08x %08x %08x %08x %08x %08x %08x %08x]\n",
+        sim_time, static_cast<unsigned>(io.reg_write.state),
+        io.table_out.data.index, io.table_out.data.way,
+        static_cast<int>(io.reg_write.lookup_valid_r),
+        static_cast<int>(io.reg_write.lookup_is_write_r),
+        io.reg_write.lookup_addr_r, words[0], words[1], words[2], words[3],
+        words[4], words[5], words[6], words[7]);
+  }
+  if (io.table_out.meta.enable && io.table_out.meta.write &&
+      focus_set_match(io.table_out.meta.index)) {
+    const auto meta = decode_meta(io.table_out.meta.payload, io.table_out.meta.way);
+    std::printf(
+        "[AXI-LLC][TABLE-META-WR] cyc=%lld state=%u index=%u way=%u "
+        "tag=0x%08x flags=0x%x lookup_valid=%d lookup_write=%d lookup_addr=0x%08x\n",
+        sim_time, static_cast<unsigned>(io.reg_write.state),
+        io.table_out.meta.index, io.table_out.meta.way, meta.tag,
+        static_cast<unsigned>(meta.flags),
+        static_cast<int>(io.reg_write.lookup_valid_r),
+        static_cast<int>(io.reg_write.lookup_is_write_r),
+        io.reg_write.lookup_addr_r);
+  }
+  if (io.table_out.repl.enable && io.table_out.repl.write &&
+      focus_set_match(io.table_out.repl.index)) {
+    std::printf(
+        "[AXI-LLC][TABLE-REPL-WR] cyc=%lld state=%u index=%u next_way=%u\n",
+        sim_time, static_cast<unsigned>(io.reg_write.state),
+        io.table_out.repl.index, decode_repl_way(io.table_out.repl.payload));
   }
 }
 

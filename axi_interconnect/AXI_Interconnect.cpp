@@ -9,6 +9,7 @@
 
 #include "AXI_Interconnect.h"
 #include <algorithm>
+#include <cstdio>
 
 extern long long sim_time;
 
@@ -16,6 +17,92 @@ namespace axi_interconnect {
 
 namespace {
 constexpr uint8_t kInvalidAxiReadId = 0xFF;
+
+#ifndef CONFIG_AXI_LLC_FOCUS_LINE0
+#define CONFIG_AXI_LLC_FOCUS_LINE0 0u
+#endif
+
+#ifndef CONFIG_AXI_LLC_FOCUS_LINE1
+#define CONFIG_AXI_LLC_FOCUS_LINE1 0u
+#endif
+
+#ifndef SIM_DEBUG_PRINT
+#define SIM_DEBUG_PRINT 0
+#endif
+
+#ifndef SIM_DEBUG_PRINT_CYCLE_BEGIN
+#define SIM_DEBUG_PRINT_CYCLE_BEGIN 0LL
+#endif
+
+#ifndef SIM_DEBUG_PRINT_CYCLE_END
+#define SIM_DEBUG_PRINT_CYCLE_END 0LL
+#endif
+
+bool interconnect_debug_active(long long cycle) {
+  return SIM_DEBUG_PRINT &&
+         cycle >= static_cast<long long>(SIM_DEBUG_PRINT_CYCLE_BEGIN) &&
+         cycle <= static_cast<long long>(SIM_DEBUG_PRINT_CYCLE_END);
+}
+
+bool llc_focus_line(uint32_t line_addr) {
+  return (CONFIG_AXI_LLC_FOCUS_LINE0 != 0u &&
+          line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE0)) ||
+         (CONFIG_AXI_LLC_FOCUS_LINE1 != 0u &&
+         line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1));
+}
+
+bool focus_read_line(uint32_t line_addr) { return llc_focus_line(line_addr); }
+
+bool focus_write_line(uint32_t addr) {
+  const uint32_t line_addr =
+      addr & ~static_cast<uint32_t>(MAX_WRITE_TRANSACTION_BYTES - 1u);
+  return llc_focus_line(line_addr);
+}
+
+bool focus_read_txn(const ReadPendingTxn &txn) {
+  return focus_read_line(txn.addr);
+}
+
+bool trace_icache_read_txn(const ReadPendingTxn &txn, long long cycle) {
+  return txn.master_id == MASTER_ICACHE && interconnect_debug_active(cycle);
+}
+
+bool trace_icache_llc_master(int master, long long cycle) {
+  return master == MASTER_ICACHE && interconnect_debug_active(cycle);
+}
+
+void dump_focus_read_txn(const char *tag, long long cyc,
+                         const ReadPendingTxn &txn) {
+  if (!focus_read_txn(txn) && !trace_icache_read_txn(txn, cyc)) {
+    return;
+  }
+  std::printf(
+      "[AXI-R][%s] cyc=%lld addr=0x%08x master=%u orig_id=%u axi_id=%u "
+      "beats=%u/%u to_llc=%d data=[",
+      tag, cyc, txn.addr, static_cast<unsigned>(txn.master_id),
+      static_cast<unsigned>(txn.orig_id), static_cast<unsigned>(txn.axi_id),
+      static_cast<unsigned>(txn.beats_done), static_cast<unsigned>(txn.total_beats),
+      static_cast<int>(txn.to_llc));
+  for (uint32_t word = 0; word < txn.total_beats; ++word) {
+    std::printf("%s%08x", (word == 0) ? "" : " ",
+                static_cast<unsigned>(txn.data[word]));
+  }
+  std::printf("]\n");
+}
+
+void dump_focus_read_words(const char *tag, long long cyc, const ReadPendingTxn &txn) {
+  if (!txn.to_llc ||
+      (!llc_focus_line(txn.addr) && !trace_icache_read_txn(txn, cyc))) {
+    return;
+  }
+  std::printf(
+      "[AXI-LLC][%s] cyc=%lld addr=0x%08x slot=%u axi_id=%u beats=%u/%u "
+      "data=[%08x %08x %08x %08x]\n",
+      tag, cyc, txn.addr, static_cast<unsigned>(txn.orig_id),
+      static_cast<unsigned>(txn.axi_id), static_cast<unsigned>(txn.beats_done),
+      static_cast<unsigned>(txn.total_beats), txn.data.words[0], txn.data.words[1],
+      txn.data.words[2], txn.data.words[3]);
+}
 
 inline bool write_size_supported(uint8_t total_size) {
   return (static_cast<uint16_t>(total_size) + 1u) <=
@@ -34,6 +121,7 @@ void AXI_Interconnect::init() {
   r_current_master = -1;
   r_pending.clear();
   for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+    read_req_hold[i] = {};
     llc_upstream_req[i] = {};
     llc_upstream_capture_c[i] = {};
     llc_upstream_accept_c[i] = false;
@@ -49,6 +137,7 @@ void AXI_Interconnect::init() {
 
   // Clear AR latch
   ar_latched.valid = false;
+  ar_latched.accepted_upstream = false;
   ar_latched.to_llc = false;
   ar_latched.addr = 0;
   ar_latched.len = 0;
@@ -75,8 +164,6 @@ void AXI_Interconnect::init() {
   // Clear registered req.ready signals
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     req_ready_r[i] = false;
-    r_pending_age[i] = 0;
-    r_pending_warned[i] = false;
     req_drop_warned[i] = false;
   }
 
@@ -286,6 +373,16 @@ void AXI_Interconnect::refresh_non_llc_w_active() {
   w_current = w_pending[static_cast<size_t>(idx)];
   w_active = true;
   w_current_master = w_current.master_id;
+  if (focus_write_line(w_current.addr)) {
+    std::printf(
+        "[AXI-W][SELECT] cyc=%lld axi_id=%u master=%u addr=0x%08x beats=%u "
+        "beats_sent=%u aw_done=%d w_done=%d\n",
+        sim_time, static_cast<unsigned>(w_current.axi_id),
+        static_cast<unsigned>(w_current.master_id), w_current.addr,
+        static_cast<unsigned>(w_current.total_beats),
+        static_cast<unsigned>(w_current.beats_sent),
+        static_cast<int>(w_current.aw_done), static_cast<int>(w_current.w_done));
+  }
 }
 
 bool AXI_Interconnect::can_accept_read_master(uint8_t master_id) const {
@@ -406,6 +503,7 @@ void AXI_Interconnect::prepare_llc_inputs() {
     if (!txn.to_llc || txn.beats_done != txn.total_beats) {
       continue;
     }
+    dump_focus_read_words("MEM-RSP-FWD", sim_time, txn);
     llc.io.ext_in.mem.read_resp_valid = true;
     llc.io.ext_in.mem.read_resp_data = txn.data;
     llc.io.ext_in.mem.read_resp_id = txn.orig_id;
@@ -447,6 +545,7 @@ void AXI_Interconnect::comb_outputs() {
 
   // Registered write req.ready (two-phase timing)
   for (int i = 0; i < NUM_WRITE_MASTERS; i++) {
+    write_ports[i].req.accepted = write_req_accepted[i];
     if (llc_enabled()) {
       const bool llc_slot_busy = llc_upstream_write_req[i].valid;
       const bool blocked_by_line_invalidate =
@@ -489,6 +588,8 @@ void AXI_Interconnect::comb_inputs() {
 void AXI_Interconnect::comb_read_arbiter() {
   ar_from_llc_c = false;
   ar_llc_mem_id_c = 0;
+  ar_master_c = -1;
+  ar_orig_id_c = 0;
   for (int i = 0; i < NUM_READ_MASTERS; ++i) {
     llc_upstream_accept_c[i] = false;
     llc_upstream_capture_c[i] = {};
@@ -505,6 +606,9 @@ void AXI_Interconnect::comb_read_arbiter() {
         DEBUG) {
       printf("[axi] ready without valid (drop) master=%d\n", i);
       req_drop_warned[i] = true;
+    }
+    if (req_ready_curr[i] && !read_ports[i].req.valid) {
+      read_req_hold[i] = {};
     }
   }
 
@@ -523,7 +627,8 @@ void AXI_Interconnect::comb_read_arbiter() {
     axi_io.ar.arid = ar_latched.id;
     // Keep req.ready=true for the master whose request is latched so the
     // upstream handshake remains visible until the downstream AR handshake wins.
-    if (!ar_latched.to_llc && ar_latched.master_id < NUM_READ_MASTERS) {
+    if (!ar_latched.to_llc && !ar_latched.accepted_upstream &&
+        ar_latched.master_id < NUM_READ_MASTERS) {
       read_ports[ar_latched.master_id].req.ready = true;
       req_ready_r[ar_latched.master_id] = true;
     }
@@ -535,6 +640,13 @@ void AXI_Interconnect::comb_read_arbiter() {
 
   if (llc_enabled()) {
     if (llc.io.ext_out.mem.read_req_valid && can_issue_llc_read_req()) {
+      if (llc_focus_line(llc.io.ext_out.mem.read_req_addr)) {
+        std::printf(
+            "[AXI-LLC][AR-ISSUE] cyc=%lld addr=0x%08x slot=%u size=%u\n",
+            sim_time, llc.io.ext_out.mem.read_req_addr,
+            static_cast<unsigned>(llc.io.ext_out.mem.read_req_id),
+            static_cast<unsigned>(llc.io.ext_out.mem.read_req_size));
+      }
       ar_from_llc_c = true;
       ar_llc_mem_id_c = llc.io.ext_out.mem.read_req_id;
       axi_io.ar.arvalid = true;
@@ -575,19 +687,51 @@ void AXI_Interconnect::comb_read_arbiter() {
     if (!req_ready_curr[i] || !read_ports[i].req.valid) {
       continue;
     }
-    if (has_read_id_conflict(static_cast<uint8_t>(i),
-                             static_cast<uint8_t>(read_ports[i].req.id))) {
+    ReadReqHoldLatch cap =
+        read_req_hold[i].valid
+            ? read_req_hold[i]
+            : ReadReqHoldLatch{true,
+                               static_cast<uint32_t>(read_ports[i].req.addr),
+                               static_cast<uint8_t>(read_ports[i].req.total_size),
+                               static_cast<uint8_t>(read_ports[i].req.id),
+                               static_cast<bool>(read_ports[i].req.bypass)};
+    const bool hold_matches_current =
+        read_req_hold[i].valid &&
+        cap.addr == static_cast<uint32_t>(read_ports[i].req.addr) &&
+        cap.total_size ==
+            static_cast<uint8_t>(read_ports[i].req.total_size) &&
+        cap.id == static_cast<uint8_t>(read_ports[i].req.id) &&
+        cap.bypass == static_cast<bool>(read_ports[i].req.bypass);
+    if (read_req_hold[i].valid && !hold_matches_current) {
+      const uint32_t old_addr = cap.addr;
+      cap = ReadReqHoldLatch{true,
+                             static_cast<uint32_t>(read_ports[i].req.addr),
+                             static_cast<uint8_t>(read_ports[i].req.total_size),
+                             static_cast<uint8_t>(read_ports[i].req.id),
+                             static_cast<bool>(read_ports[i].req.bypass)};
+      read_req_hold[i] = cap;
+      if (i == MASTER_ICACHE && interconnect_debug_active(sim_time)) {
+        std::printf(
+            "[AXI-R][HOLD-REFRESH] cyc=%lld master=%d old_addr=0x%08x "
+            "new_addr=0x%08x id=%u\n",
+            sim_time, i, old_addr, cap.addr,
+            static_cast<unsigned>(cap.id));
+      }
+    }
+    if (has_read_id_conflict(static_cast<uint8_t>(i), cap.id)) {
       continue;
     }
 
     r_current_master = i;
+    ar_master_c = i;
+    ar_orig_id_c = cap.id;
     uint8_t axi_id = alloc_read_axi_id();
     if (axi_id == kInvalidAxiReadId) {
       continue;
     }
     axi_io.ar.arvalid = true;
-    axi_io.ar.araddr = read_ports[i].req.addr;
-    axi_io.ar.arlen = calc_burst_len(read_ports[i].req.total_size);
+    axi_io.ar.araddr = cap.addr;
+    axi_io.ar.arlen = calc_burst_len(cap.total_size);
     axi_io.ar.arsize = 2;
     axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
     axi_io.ar.arid = axi_id;
@@ -618,6 +762,12 @@ void AXI_Interconnect::comb_read_arbiter() {
       if (!req_ready_curr[idx]) {
         req_ready_r[idx] = true;
         read_ports[idx].req.ready = true;
+        read_req_hold[idx].valid = true;
+        read_req_hold[idx].addr = read_ports[idx].req.addr;
+        read_req_hold[idx].total_size =
+            static_cast<uint8_t>(read_ports[idx].req.total_size);
+        read_req_hold[idx].id = static_cast<uint8_t>(read_ports[idx].req.id);
+        read_req_hold[idx].bypass = read_ports[idx].req.bypass;
         break;
       }
 
@@ -653,6 +803,10 @@ void AXI_Interconnect::comb_read_response() {
         read_ports[master].resp.valid = true;
         read_ports[master].resp.data = txn.data;
         read_ports[master].resp.id = txn.orig_id;
+        if (!txn.to_llc &&
+            (focus_read_txn(txn) || trace_icache_read_txn(txn, sim_time))) {
+          dump_focus_read_txn("RESP-DRIVE", sim_time, txn);
+        }
         master_has_resp[master] = true;
         // No break - continue to find responses for other masters
       }
@@ -834,6 +988,10 @@ void AXI_Interconnect::comb_write_response() {
 void AXI_Interconnect::seq() {
   constexpr uint32_t kPendingTimeout = 100000;
   bool llc_upstream_req_valid_prev[NUM_READ_MASTERS];
+  decltype(llc_upstream_req) llc_upstream_req_prev{};
+  for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+    llc_upstream_req_prev[i] = llc_upstream_req[i];
+  }
   for (int i = 0; i < NUM_READ_MASTERS; ++i) {
     llc_upstream_req_valid_prev[i] = llc_upstream_req[i].valid;
   }
@@ -851,24 +1009,48 @@ void AXI_Interconnect::seq() {
             llc.io.ext_out.upstream.read_req[master].ready)) {
         continue;
       }
+      const auto &consumed_req = llc_upstream_req_prev[master];
       bool retained = llc.io.regs.lookup_valid_r &&
                       llc.io.regs.lookup_master_r ==
-                          static_cast<uint8_t>(master);
+                          static_cast<uint8_t>(master) &&
+                      llc.io.regs.lookup_id_r ==
+                          consumed_req.id;
       for (uint32_t slot = 0; !retained && slot < llc_config.mshr_num &&
                                   slot < MAX_OUTSTANDING;
            ++slot) {
         const auto &entry = llc.io.regs.mshr[slot];
         retained = entry.valid && !entry.is_prefetch &&
-                   entry.master == static_cast<uint8_t>(master);
+                   entry.master == static_cast<uint8_t>(master) &&
+                   entry.id == consumed_req.id;
       }
-      retained = retained || llc.io.regs.read_resp_valid_r[master];
+      retained = retained || (llc.io.regs.read_resp_valid_r[master] &&
+                              llc.io.regs.read_resp_id_r[master] ==
+                                  consumed_req.id);
       if (!retained) {
         std::printf(
             "[axi][llc] consumed request without retained llc state "
-            "master=%d sim_time=%lld addr=0x%08x id=%u bypass=%d\n",
-            master, sim_time, llc_upstream_req[master].addr,
-            static_cast<unsigned>(llc_upstream_req[master].id),
-            static_cast<int>(llc_upstream_req[master].bypass));
+            "master=%d sim_time=%lld addr=0x%08x id=%u bypass=%d "
+            "lookup{valid=%d master=%u id=%u addr=0x%08x} "
+            "resp{valid=%d id=%u} "
+            "mshr0{valid=%d master=%u id=%u line=0x%08x} "
+            "mshr1{valid=%d master=%u id=%u line=0x%08x}\n",
+            master, sim_time, consumed_req.addr,
+            static_cast<unsigned>(consumed_req.id),
+            static_cast<int>(consumed_req.bypass),
+            static_cast<int>(llc.io.regs.lookup_valid_r),
+            static_cast<unsigned>(llc.io.regs.lookup_master_r),
+            static_cast<unsigned>(llc.io.regs.lookup_id_r),
+            llc.io.regs.lookup_addr_r,
+            static_cast<int>(llc.io.regs.read_resp_valid_r[master]),
+            static_cast<unsigned>(llc.io.regs.read_resp_id_r[master]),
+            static_cast<int>(llc.io.regs.mshr[0].valid),
+            static_cast<unsigned>(llc.io.regs.mshr[0].master),
+            static_cast<unsigned>(llc.io.regs.mshr[0].id),
+            llc.io.regs.mshr[0].line_addr,
+            static_cast<int>(llc.io.regs.mshr[1].valid),
+            static_cast<unsigned>(llc.io.regs.mshr[1].master),
+            static_cast<unsigned>(llc.io.regs.mshr[1].id),
+            llc.io.regs.mshr[1].line_addr);
         std::exit(1);
       }
     }
@@ -882,6 +1064,10 @@ void AXI_Interconnect::seq() {
   }
 
   auto resolve_ar_master = [this](uint8_t &orig_id) -> int {
+    if (ar_master_c >= 0 && ar_master_c < NUM_READ_MASTERS) {
+      orig_id = ar_orig_id_c;
+      return ar_master_c;
+    }
     if (r_current_master >= 0 && r_current_master < NUM_READ_MASTERS &&
         read_ports[r_current_master].req.valid &&
         read_ports[r_current_master].req.ready) {
@@ -902,14 +1088,15 @@ void AXI_Interconnect::seq() {
   // If new AR request and NOT immediately ready, latch it
   if (axi_io.ar.arvalid && !ar_latched.valid && !axi_io.ar.arready) {
     uint8_t orig_id = 0;
-    int master_idx = resolve_ar_master(orig_id);
-    if (master_idx < 0) {
-        return;
-      }
+    int master_idx = -1;
     if (ar_from_llc_c) {
       master_idx = 0;
       orig_id = ar_llc_mem_id_c;
     } else {
+      master_idx = resolve_ar_master(orig_id);
+      if (master_idx < 0) {
+        return;
+      }
       for (int i = 0; i < NUM_READ_MASTERS; ++i) {
         if (read_ports[i].req.valid && read_ports[i].req.ready) {
           master_idx = i;
@@ -921,6 +1108,7 @@ void AXI_Interconnect::seq() {
     if (master_idx >= 0) {
       // Latch the request
       ar_latched.valid = true;
+      ar_latched.accepted_upstream = false;
       ar_latched.addr = axi_io.ar.araddr;
       ar_latched.len = axi_io.ar.arlen;
       ar_latched.size = axi_io.ar.arsize;
@@ -929,6 +1117,12 @@ void AXI_Interconnect::seq() {
       ar_latched.master_id = static_cast<uint8_t>(master_idx);
       ar_latched.orig_id = orig_id;
       ar_latched.to_llc = ar_from_llc_c;
+      if (!ar_from_llc_c) {
+        ar_latched.accepted_upstream = true;
+        read_req_accepted[master_idx] = true;
+        read_req_accepted_id[master_idx] = orig_id;
+        read_req_hold[master_idx] = {};
+      }
     }
   }
 
@@ -943,19 +1137,27 @@ void AXI_Interconnect::seq() {
       txn.total_beats = ar_latched.len + 1;
       txn.addr = ar_latched.addr;
       txn.to_llc = ar_latched.to_llc;
+      const bool upstream_accepted = ar_latched.accepted_upstream;
       ar_latched.valid = false; // Clear latch
+      ar_latched.accepted_upstream = false;
       ar_latched.to_llc = false;
+      if (!txn.to_llc && !upstream_accepted &&
+          txn.master_id < NUM_READ_MASTERS) {
+        read_req_accepted[txn.master_id] = true;
+        read_req_accepted_id[txn.master_id] = txn.orig_id;
+      }
     } else {
       // Direct handshake (same cycle)
       uint8_t orig_id = 0;
-      int master_idx = resolve_ar_master(orig_id);
-      if (master_idx < 0) {
-        goto read_handshake_done;
-      }
+      int master_idx = -1;
       if (ar_from_llc_c) {
         master_idx = 0;
         orig_id = ar_llc_mem_id_c;
       } else {
+        master_idx = resolve_ar_master(orig_id);
+        if (master_idx < 0) {
+          goto read_handshake_done;
+        }
         for (int i = 0; i < NUM_READ_MASTERS; ++i) {
           if (read_ports[i].req.valid && read_ports[i].req.ready) {
             master_idx = i;
@@ -973,17 +1175,34 @@ void AXI_Interconnect::seq() {
       txn.total_beats = axi_io.ar.arlen + 1;
       txn.addr = axi_io.ar.araddr;
       txn.to_llc = ar_from_llc_c;
+      if (!ar_from_llc_c) {
+        read_req_hold[master_idx] = {};
+      }
     }
     txn.beats_done = 0;
     txn.data.clear();
+    txn.stall_cycles = 0;
+    txn.last_beats_done = 0;
+    txn.timeout_warned = false;
     r_pending.push_back(txn);
-    if (sim_time < 400) {
+    if ((sim_time < 400 ||
+         focus_read_txn(txn) ||
+         trace_icache_read_txn(txn, sim_time)) &&
+        !txn.to_llc) {
+      dump_focus_read_txn("AR-HS", sim_time, txn);
+    } else if (sim_time < 400) {
       std::printf("[AXI-DBG][IC-AR-HS] cyc=%lld master=%u to_llc=%d addr=0x%08x arid=%u orig_id=%u beats=%u\n",
                   sim_time, static_cast<unsigned>(txn.master_id),
                   static_cast<int>(txn.to_llc), txn.addr,
                   static_cast<unsigned>(txn.axi_id),
                   static_cast<unsigned>(txn.orig_id),
                   static_cast<unsigned>(txn.total_beats));
+    }
+    if (txn.to_llc && llc_focus_line(txn.addr)) {
+      std::printf(
+          "[AXI-LLC][AR-HS] cyc=%lld addr=0x%08x slot=%u axi_id=%u beats=%u\n",
+          sim_time, txn.addr, static_cast<unsigned>(txn.orig_id),
+          static_cast<unsigned>(txn.axi_id), static_cast<unsigned>(txn.total_beats));
     }
     r_arb_rr_idx = (txn.master_id + 1) % NUM_READ_MASTERS;
     if (!txn.to_llc && txn.master_id < NUM_READ_MASTERS) {
@@ -999,18 +1218,45 @@ read_handshake_done:
     for (int master = 0; master < NUM_READ_MASTERS; ++master) {
       if (llc_upstream_req_valid_prev[master] &&
           llc.io.ext_out.upstream.read_req[master].ready) {
-        const uint8_t accepted_id = llc_upstream_req[master].id;
+        if (llc_focus_line(llc_upstream_req[master].addr) ||
+            trace_icache_llc_master(master, sim_time)) {
+          std::printf(
+              "[AXI-LLC][UPSTREAM-CONSUME] cyc=%lld master=%d addr=0x%08x "
+              "id=%u bypass=%d\n",
+              sim_time, master, llc_upstream_req[master].addr,
+              static_cast<unsigned>(llc_upstream_req[master].id),
+              static_cast<int>(llc_upstream_req[master].bypass));
+        }
         llc_upstream_req[master] = {};
-        read_req_accepted[master] = true;
-        read_req_accepted_id[master] = accepted_id;
       }
       if (!llc_upstream_req_valid_prev[master] && llc_upstream_accept_c[master]) {
         llc_upstream_req[master] = llc_upstream_capture_c[master];
+        if (llc_focus_line(llc_upstream_capture_c[master].addr) ||
+            trace_icache_llc_master(master, sim_time)) {
+          std::printf(
+              "[AXI-LLC][UPSTREAM-CAPTURE] cyc=%lld master=%d addr=0x%08x "
+              "id=%u bypass=%d\n",
+              sim_time, master, llc_upstream_capture_c[master].addr,
+              static_cast<unsigned>(llc_upstream_capture_c[master].id),
+              static_cast<int>(llc_upstream_capture_c[master].bypass));
+        }
+        read_req_accepted[master] = true;
+        read_req_accepted_id[master] =
+            static_cast<uint8_t>(llc_upstream_capture_c[master].id);
       }
     }
     for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
       if (llc_upstream_write_req_valid_prev[master] &&
           llc.io.ext_out.upstream.write_req[master].ready) {
+        if (focus_write_line(llc_upstream_write_req[master].addr) ||
+            llc_focus_line(llc_upstream_write_req[master].addr)) {
+          std::printf(
+              "[AXI-LLC][UPSTREAM-WRITE-CONSUME] cyc=%lld master=%d addr=0x%08x "
+              "id=%u bypass=%d\n",
+              sim_time, master, llc_upstream_write_req[master].addr,
+              static_cast<unsigned>(llc_upstream_write_req[master].id),
+              static_cast<int>(llc_upstream_write_req[master].bypass));
+        }
         llc_upstream_write_req[master] = {};
       }
       if (llc_upstream_write_accept_c[master]) {
@@ -1020,12 +1266,32 @@ read_handshake_done:
           llc_upstream_write_q[master].push_back(
               llc_upstream_write_capture_c[master]);
         }
+        if (focus_write_line(llc_upstream_write_capture_c[master].addr) ||
+            llc_focus_line(llc_upstream_write_capture_c[master].addr)) {
+          std::printf(
+              "[AXI-LLC][UPSTREAM-WRITE-CAPTURE] cyc=%lld master=%d addr=0x%08x "
+              "id=%u bypass=%d q_depth=%zu\n",
+              sim_time, master, llc_upstream_write_capture_c[master].addr,
+              static_cast<unsigned>(llc_upstream_write_capture_c[master].id),
+              static_cast<int>(llc_upstream_write_capture_c[master].bypass),
+              llc_upstream_write_q[master].size());
+        }
         write_req_accepted[master] = true;
       }
       if (!llc_upstream_write_req[master].valid &&
           !llc_upstream_write_q[master].empty()) {
         llc_upstream_write_req[master] = llc_upstream_write_q[master].front();
         llc_upstream_write_q[master].pop_front();
+        if (focus_write_line(llc_upstream_write_req[master].addr) ||
+            llc_focus_line(llc_upstream_write_req[master].addr)) {
+          std::printf(
+              "[AXI-LLC][UPSTREAM-WRITE-DEQ] cyc=%lld master=%d addr=0x%08x "
+              "id=%u bypass=%d q_depth=%zu\n",
+              sim_time, master, llc_upstream_write_req[master].addr,
+              static_cast<unsigned>(llc_upstream_write_req[master].id),
+              static_cast<int>(llc_upstream_write_req[master].bypass),
+              llc_upstream_write_q[master].size());
+        }
       }
     }
   }
@@ -1037,6 +1303,24 @@ read_handshake_done:
           txn.beats_done < txn.total_beats) {
         txn.data[txn.beats_done] = axi_io.r.rdata;
         txn.beats_done++;
+        if (focus_read_txn(txn) || trace_icache_read_txn(txn, sim_time)) {
+          std::printf(
+              "[AXI-R][R-BEAT] cyc=%lld addr=0x%08x master=%u orig_id=%u axi_id=%u "
+              "rid=%u beat=%u/%u data=0x%08x rlast=%u\n",
+              sim_time, txn.addr, static_cast<unsigned>(txn.master_id),
+              static_cast<unsigned>(txn.orig_id), static_cast<unsigned>(txn.axi_id),
+              static_cast<unsigned>(axi_io.r.rid & 0xF),
+              static_cast<unsigned>(txn.beats_done),
+              static_cast<unsigned>(txn.total_beats),
+              static_cast<unsigned>(axi_io.r.rdata),
+              static_cast<unsigned>(axi_io.r.rlast));
+          if (txn.beats_done == txn.total_beats) {
+            dump_focus_read_txn("R-COMPLETE", sim_time, txn);
+          }
+        }
+        if (txn.to_llc && llc_focus_line(txn.addr)) {
+          dump_focus_read_words("R-BEAT", sim_time, txn);
+        }
         break;
       }
     }
@@ -1052,6 +1336,9 @@ read_handshake_done:
                                       t.beats_done == t.total_beats;
                              });
       if (it != r_pending.end()) {
+        if (focus_read_txn(*it) || trace_icache_read_txn(*it, sim_time)) {
+          dump_focus_read_txn("RESP-RETIRE", sim_time, *it);
+        }
         r_pending.erase(it);
       }
     }
@@ -1070,42 +1357,66 @@ read_handshake_done:
                                           t.orig_id == mem_id;
                            });
     if (exact_it != r_pending.end()) {
+      if (llc_focus_line(exact_it->addr) ||
+          trace_icache_read_txn(*exact_it, sim_time)) {
+        std::printf(
+            "[AXI-LLC][MEM-RSP-RETIRE] cyc=%lld addr=0x%08x slot=%u axi_id=%u\n",
+            sim_time, exact_it->addr, static_cast<unsigned>(exact_it->orig_id),
+            static_cast<unsigned>(exact_it->axi_id));
+      }
       r_pending.erase(exact_it);
     } else if (it != r_pending.end()) {
+      if (llc_focus_line(it->addr) || trace_icache_read_txn(*it, sim_time)) {
+        std::printf(
+            "[AXI-LLC][MEM-RSP-RETIRE-FALLBACK] cyc=%lld addr=0x%08x "
+            "slot=%u expected_slot=%u axi_id=%u\n",
+            sim_time, it->addr, static_cast<unsigned>(it->orig_id),
+            static_cast<unsigned>(mem_id), static_cast<unsigned>(it->axi_id));
+      }
       r_pending.erase(it);
     }
   }
 
-  // Monitor long-lived pending reads per master.
-  for (int i = 0; i < NUM_READ_MASTERS; i++) {
-    bool has_pending = false;
-    int beats_done = 0;
-    int total_beats = 0;
-    for (const auto &txn : r_pending) {
-      if (txn.master_id == i) {
-        has_pending = true;
-        beats_done = txn.beats_done;
-        total_beats = txn.total_beats;
-        break;
-      }
+  // Monitor reads that have stopped making forward progress on the memory side.
+  // Completed responses may legitimately wait for the upstream client, so only
+  // track incomplete transactions and reset the timer whenever a new beat lands.
+  for (auto &txn : r_pending) {
+    if (txn.beats_done >= txn.total_beats) {
+      txn.stall_cycles = 0;
+      txn.last_beats_done = txn.beats_done;
+      txn.timeout_warned = false;
+      continue;
     }
-    if (has_pending) {
-      r_pending_age[i]++;
-      if (r_pending_age[i] > kPendingTimeout && !r_pending_warned[i]) {
-        printf("[axi] pending read timeout master=%d beats=%d/%d\n", i,
-               beats_done, total_beats);
-        r_pending_warned[i] = true;
-      }
-    } else {
-      r_pending_age[i] = 0;
-      r_pending_warned[i] = false;
+    if (txn.beats_done != txn.last_beats_done) {
+      txn.stall_cycles = 0;
+      txn.last_beats_done = txn.beats_done;
+      txn.timeout_warned = false;
+      continue;
+    }
+    txn.stall_cycles++;
+    if (txn.stall_cycles > kPendingTimeout && !txn.timeout_warned && DEBUG) {
+      printf("[axi] pending read stalled master=%u beats=%u/%u axi_id=%u addr=0x%08x\n",
+             static_cast<unsigned>(txn.master_id),
+             static_cast<unsigned>(txn.beats_done),
+             static_cast<unsigned>(txn.total_beats),
+             static_cast<unsigned>(txn.axi_id), txn.addr);
+      txn.timeout_warned = true;
     }
   }
 
   // ========== Write Channel ==========
 
   if (llc_enabled()) {
+    // The LLC already retires upstream response slots in comb() using the
+    // master's ready signal. For icache reads, interconnect-side duplicate
+    // clearing races with same-cycle slot reuse on lookup hits and can erase a
+    // freshly generated response before llc.seq() commits it. Keep the legacy
+    // interconnect-side retirement for the other masters until they are proven
+    // safe under the narrower LLC response ownership model.
     for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+      if (i == MASTER_ICACHE) {
+        continue;
+      }
       if (llc.io.regs.read_resp_valid_r[i] && read_ports[i].resp.ready) {
         llc.io.reg_write.read_resp_valid_r[i] = false;
         llc.io.reg_write.read_resp_id_r[i] = 0;
@@ -1203,6 +1514,25 @@ read_handshake_done:
     txn.aw_done = false;
     txn.w_done = false;
     w_pending.push_back(txn);
+    if (focus_write_line(txn.addr)) {
+      std::printf(
+          "[AXI-W][ENQ] cyc=%lld master=%d axi_id=%u orig_id=%u addr=0x%08x "
+          "total_size=%u beats=%u wstrb=0x%016llx\n",
+          sim_time, idx, static_cast<unsigned>(txn.axi_id),
+          static_cast<unsigned>(txn.orig_id), txn.addr,
+          static_cast<unsigned>(write_ports[idx].req.total_size),
+          static_cast<unsigned>(txn.total_beats),
+          static_cast<unsigned long long>(txn.wstrb));
+      std::printf(
+          "[AXI-W][ENQ_DATA] [%08x %08x %08x %08x %08x %08x %08x %08x "
+          "%08x %08x %08x %08x %08x %08x %08x %08x]\n",
+          txn.wdata.words[0], txn.wdata.words[1], txn.wdata.words[2],
+          txn.wdata.words[3], txn.wdata.words[4], txn.wdata.words[5],
+          txn.wdata.words[6], txn.wdata.words[7], txn.wdata.words[8],
+          txn.wdata.words[9], txn.wdata.words[10], txn.wdata.words[11],
+          txn.wdata.words[12], txn.wdata.words[13], txn.wdata.words[14],
+          txn.wdata.words[15]);
+    }
     write_req_accepted[idx] = true;
     w_arb_rr_idx = (idx + 1) % NUM_WRITE_MASTERS;
     break;
@@ -1214,6 +1544,14 @@ read_handshake_done:
     const int pending_idx = find_write_pending_by_axi_id(axi_id);
     if (pending_idx >= 0) {
       w_pending[static_cast<size_t>(pending_idx)].aw_done = true;
+      const auto &txn = w_pending[static_cast<size_t>(pending_idx)];
+      if (focus_write_line(txn.addr)) {
+        std::printf(
+            "[AXI-W][AW-HS] cyc=%lld axi_id=%u addr=0x%08x len=%u beats=%u\n",
+            sim_time, static_cast<unsigned>(axi_id), txn.addr,
+            static_cast<unsigned>(axi_io.aw.awlen),
+            static_cast<unsigned>(txn.total_beats));
+      }
     }
     aw_latched.valid = false; // Clear latch
   }
@@ -1223,12 +1561,30 @@ read_handshake_done:
     const int pending_idx = find_write_pending_by_axi_id(w_current.axi_id);
     if (pending_idx >= 0) {
       auto &txn = w_pending[static_cast<size_t>(pending_idx)];
+      if (focus_write_line(txn.addr)) {
+        const uint32_t beat_addr = txn.addr + txn.beats_sent * 4u;
+        std::printf(
+            "[AXI-W][W-HS] cyc=%lld axi_id=%u beat=%u/%u beat_addr=0x%08x "
+            "data=0x%08x wstrb=0x%x wlast=%d\n",
+            sim_time, static_cast<unsigned>(txn.axi_id),
+            static_cast<unsigned>(txn.beats_sent),
+            static_cast<unsigned>(txn.total_beats), beat_addr, axi_io.w.wdata,
+            static_cast<unsigned>(axi_io.w.wstrb),
+            static_cast<int>(axi_io.w.wlast));
+      }
       txn.beats_sent++;
       w_current.beats_sent = txn.beats_sent;
     }
     if (axi_io.w.wlast) {
       if (const int idx = find_write_pending_by_axi_id(w_current.axi_id); idx >= 0) {
         w_pending[static_cast<size_t>(idx)].w_done = true;
+        const auto &txn = w_pending[static_cast<size_t>(idx)];
+        if (focus_write_line(txn.addr)) {
+          std::printf(
+              "[AXI-W][W-DONE] cyc=%lld axi_id=%u addr=0x%08x beats_sent=%u\n",
+              sim_time, static_cast<unsigned>(txn.axi_id), txn.addr,
+              static_cast<unsigned>(txn.beats_sent));
+        }
       }
       w_current.w_done = true;
       w_active = false;
@@ -1242,6 +1598,14 @@ read_handshake_done:
     const int pending_idx = find_write_pending_by_axi_id(axi_io.b.bid);
     if (pending_idx >= 0) {
       const auto txn = w_pending[static_cast<size_t>(pending_idx)];
+      if (focus_write_line(txn.addr)) {
+        std::printf(
+            "[AXI-W][B-HS] cyc=%lld axi_id=%u master=%u addr=0x%08x "
+            "beats_sent=%u w_done=%d\n",
+            sim_time, static_cast<unsigned>(txn.axi_id),
+            static_cast<unsigned>(txn.master_id), txn.addr,
+            static_cast<unsigned>(txn.beats_sent), static_cast<int>(txn.w_done));
+      }
       if (txn.master_id < NUM_WRITE_MASTERS) {
         w_resp_valid[txn.master_id] = true;
         w_resp_id[txn.master_id] = txn.orig_id;
@@ -1294,18 +1658,24 @@ void AXI_Interconnect::debug_print() {
     }
   }
   if (llc_enabled()) {
-    printf("    llc: state=%u lookup_valid=%d lookup_issued=%d lookup_master=%u lookup_addr=0x%08x\n",
+    printf("    llc: state=%u lookup_valid=%d lookup_issued=%d lookup_master=%u lookup_addr=0x%08x write=%d bypass=%d prefetch=%d invalidate=%d\n",
            static_cast<unsigned>(llc.io.regs.state),
            static_cast<int>(llc.io.regs.lookup_valid_r),
            static_cast<int>(llc.io.regs.lookup_issued_r),
            static_cast<unsigned>(llc.io.regs.lookup_master_r),
-           llc.io.regs.lookup_addr_r);
+           llc.io.regs.lookup_addr_r,
+           static_cast<int>(llc.io.regs.lookup_is_write_r),
+           static_cast<int>(llc.io.regs.lookup_is_bypass_r),
+           static_cast<int>(llc.io.regs.lookup_is_prefetch_r),
+           static_cast<int>(llc.io.regs.lookup_is_invalidate_r));
     for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-      printf("    llc_upstream[%d]: valid=%d addr=0x%08x id=%u bypass=%d resp_valid=%d\n",
+      printf("    llc_upstream[%d]: valid=%d addr=0x%08x id=%u bypass=%d resp_valid=%d resp_ready=%d resp_id=%u\n",
              i, static_cast<int>(llc_upstream_req[i].valid),
              llc_upstream_req[i].addr, static_cast<unsigned>(llc_upstream_req[i].id),
              static_cast<int>(llc_upstream_req[i].bypass),
-             static_cast<int>(llc.io.regs.read_resp_valid_r[i]));
+             static_cast<int>(llc.io.regs.read_resp_valid_r[i]),
+             static_cast<int>(read_ports[i].resp.ready),
+             static_cast<unsigned>(llc.io.regs.read_resp_id_r[i]));
     }
     for (uint32_t i = 0; i < std::min<uint32_t>(llc_config.mshr_num, MAX_OUTSTANDING); ++i) {
       const auto &entry = llc.io.regs.mshr[i];

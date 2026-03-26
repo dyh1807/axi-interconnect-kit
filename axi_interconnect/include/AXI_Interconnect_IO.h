@@ -131,6 +131,14 @@ struct WideWriteStrb_t {
     }
     return *this;
   }
+
+  WideWriteStrb_t &operator=(uint64_t mask) {
+    clear();
+    for (uint32_t i = 0; i < 64 && i < MAX_WRITE_TRANSACTION_BYTES; ++i) {
+      bytes[i] = static_cast<uint8_t>((mask >> i) & 0x1u);
+    }
+    return *this;
+  }
 };
 
 struct WideData256_t {
