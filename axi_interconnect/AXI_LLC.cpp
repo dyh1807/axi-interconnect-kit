@@ -2389,8 +2389,7 @@ void AXI_LLC::comb() {
   }
 
   auto focus_set_match = [&](uint32_t set_idx) -> bool {
-    return set_idx == set_index(config_, CONFIG_AXI_LLC_FOCUS_LINE0) ||
-           set_idx == set_index(config_, CONFIG_AXI_LLC_FOCUS_LINE1);
+    return llc_focus_set(config_, set_idx);
   };
   if (io.table_out.data.enable && io.table_out.data.write &&
       focus_set_match(io.table_out.data.index)) {
