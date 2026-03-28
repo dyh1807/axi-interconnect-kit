@@ -7,6 +7,7 @@ namespace axi_interconnect {
 struct AXI_LLCConfig {
   bool enable = false;
   uint64_t size_bytes = 8ull << 20;
+  // Mainline simulator profiles keep the line shape and policy fixed.
   uint32_t line_bytes = 64;
   uint32_t ways = 16;
   uint32_t mshr_num = 4;

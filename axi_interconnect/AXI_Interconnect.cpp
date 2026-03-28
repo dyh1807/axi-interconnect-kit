@@ -26,6 +26,10 @@ constexpr uint8_t kInvalidAxiReadId = 0xFF;
 #define CONFIG_AXI_LLC_FOCUS_LINE1 0u
 #endif
 
+#ifndef CONFIG_AXI_LLC_DEBUG_LOG
+#define CONFIG_AXI_LLC_DEBUG_LOG 0
+#endif
+
 #ifndef SIM_DEBUG_PRINT
 #define SIM_DEBUG_PRINT 0
 #endif
@@ -45,6 +49,9 @@ bool interconnect_debug_active(long long cycle) {
 }
 
 bool llc_focus_line(uint32_t line_addr) {
+  if (CONFIG_AXI_LLC_DEBUG_LOG == 0) {
+    return false;
+  }
   return (CONFIG_AXI_LLC_FOCUS_LINE0 != 0u &&
           line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE0)) ||
          (CONFIG_AXI_LLC_FOCUS_LINE1 != 0u &&

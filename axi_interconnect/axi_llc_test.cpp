@@ -337,7 +337,7 @@ bool test_write_passthrough() {
   llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size = 3;
   llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 1;
   llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[0] = 0xDEADBEEF;
-  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb = 0xF;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb = 0xFu;
   llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].bypass = true;
   llc.comb();
   if (!llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready ||
@@ -421,7 +421,7 @@ bool test_bypass_write_hit_updates_table() {
   llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].id = 15;
   llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].bypass = true;
   llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].wdata[0] = write_value;
-  llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].wstrb = 0xF;
+  llc.io.ext_in.upstream.write_req[MASTER_UNCORE_LSU_W].wstrb = 0xFu;
   llc.comb();
   if (!llc.io.ext_out.upstream.write_req[MASTER_UNCORE_LSU_W].ready ||
       llc.io.ext_out.mem.write_req_valid) {
@@ -2369,6 +2369,98 @@ bool test_cacheable_write_hit_then_read_latest() {
   return true;
 }
 
+bool test_write_hit_updates_pending_read_victim_snapshot() {
+  printf("=== LLC Test 19b: write hit refreshes pending read victim snapshot ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim_addr = 0x840;
+  const uint32_t refill_addr = 0x940;
+  const uint32_t victim_tag = AXI_LLC::tag_of(config, victim_addr);
+  const uint32_t refill_tag = AXI_LLC::tag_of(config, refill_addr);
+  const uint32_t victim_set = AXI_LLC::set_index(config, victim_addr);
+
+  auto &pending = llc.io.regs.mshr[0];
+  pending.valid = true;
+  pending.bypass = false;
+  pending.is_write = false;
+  pending.refill_valid = false;
+  pending.refill_committed = false;
+  pending.addr = refill_addr;
+  pending.line_addr = AXI_LLC::line_addr(config, refill_addr);
+  pending.set = victim_set;
+  pending.tag = refill_tag;
+  pending.way = 0;
+  pending.victim_dirty = true;
+  pending.victim_writeback_done = false;
+  pending.victim_addr = AXI_LLC::line_addr(config, victim_addr);
+  pending.victim_data.clear();
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    pending.victim_data[i] = 0x1100 + i;
+  }
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = victim_addr;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size =
+      static_cast<uint8_t>(config.line_bytes - 1);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 0x31;
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[i] = 0x6600 + i;
+  }
+  for (uint32_t b = 0; b < config.line_bytes; ++b) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb.set(b, true);
+  }
+  llc.comb();
+  if (!llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready) {
+    printf("FAIL: pending-read victim refresh write-hit not accepted\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: pending-read victim refresh lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data = make_data_set(config, 0, 0x2200);
+  llc.io.lookup_in.meta = make_meta_set_with_flags(
+      config, 0, victim_tag,
+      static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  llc.io.lookup_in.repl = make_repl(1);
+  llc.comb();
+
+  const auto &updated = llc.io.reg_write.mshr[0];
+  if (!updated.victim_dirty || updated.victim_writeback_done ||
+      updated.victim_addr != AXI_LLC::line_addr(config, victim_addr)) {
+    printf("FAIL: victim snapshot metadata not refreshed dirty=%d done=%d addr=0x%x\n",
+           static_cast<int>(updated.victim_dirty),
+           static_cast<int>(updated.victim_writeback_done), updated.victim_addr);
+    return false;
+  }
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    const uint32_t expected = 0x6600 + i;
+    if (updated.victim_data[i] != expected) {
+      printf("FAIL: victim snapshot stale at word %u got=0x%x exp=0x%x\n", i,
+             updated.victim_data[i], expected);
+      return false;
+    }
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_pending_upstream_write_blocks_same_line_read() {
   printf("=== LLC Test 20: pending upstream write blocks same-line read ===\n");
   AXI_LLC llc;
@@ -2428,6 +2520,472 @@ bool test_pending_upstream_write_blocks_same_line_read() {
   llc.comb();
   if (!llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready) {
     printf("FAIL: other-line case did not accept queued write\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_same_set_write_miss_then_read_miss_preserve_both_lines() {
+  printf("=== LLC Test 20b: same-set write/read misses preserve separate ways ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim0_addr = 0x840;
+  const uint32_t victim1_addr = 0x940;
+  const uint32_t write_addr = 0xA40;
+  const uint32_t read_addr = 0xB40;
+  const uint32_t set = AXI_LLC::set_index(config, write_addr);
+  const uint32_t victim0_tag = AXI_LLC::tag_of(config, victim0_addr);
+  const uint32_t victim1_tag = AXI_LLC::tag_of(config, victim1_addr);
+
+  auto make_resident_data = [&](uint32_t base0, uint32_t base1) {
+    AXI_LLC_Bytes_t data;
+    data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
+    write_line_words(data, config, 0, base0);
+    write_line_words(data, config, 1, base1);
+    return data;
+  };
+  auto make_resident_meta = [&](uint32_t tag0, uint8_t flags0, uint32_t tag1,
+                                uint8_t flags1) {
+    AXI_LLC_Bytes_t meta;
+    meta.resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
+    AXI_LLCMetaEntry_t e0{};
+    e0.tag = tag0;
+    e0.flags = flags0;
+    AXI_LLCMetaEntry_t e1{};
+    e1.tag = tag1;
+    e1.flags = flags1;
+    AXI_LLC_Bytes_t enc0;
+    AXI_LLC_Bytes_t enc1;
+    AXI_LLC::encode_meta(e0, enc0);
+    AXI_LLC::encode_meta(e1, enc1);
+    std::memcpy(meta.data() + 0 * AXI_LLC_META_ENTRY_BYTES, enc0.data(),
+                AXI_LLC_META_ENTRY_BYTES);
+    std::memcpy(meta.data() + 1 * AXI_LLC_META_ENTRY_BYTES, enc1.data(),
+                AXI_LLC_META_ENTRY_BYTES);
+    return meta;
+  };
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = write_addr;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size =
+      static_cast<uint8_t>(config.line_bytes - 1);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 0x61;
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[i] = 0xA000 + i;
+  }
+  for (uint32_t b = 0; b < config.line_bytes; ++b) {
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb.set(b, true);
+  }
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: write-miss lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data = make_resident_data(0x1100, 0x2200);
+  llc.io.lookup_in.meta = make_resident_meta(
+      victim0_tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY),
+      victim1_tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  llc.io.lookup_in.repl = make_repl(0);
+  cycle(llc);
+
+  if (!llc.io.regs.victim_wb_valid_r || !llc.io.regs.victim_wb_for_write_r ||
+      !llc.io.regs.write_ctx[MASTER_DCACHE_W].cache_pending ||
+      llc.io.regs.write_ctx[MASTER_DCACHE_W].way != 0 ||
+      llc.io.regs.write_ctx[MASTER_DCACHE_W].set != set) {
+    printf(
+        "FAIL: write miss did not hold reserved victim way valid=%d for_write=%d "
+        "cache_pending=%d way=%u set=%u\n",
+        static_cast<int>(llc.io.regs.victim_wb_valid_r),
+        static_cast<int>(llc.io.regs.victim_wb_for_write_r),
+        static_cast<int>(llc.io.regs.write_ctx[MASTER_DCACHE_W].cache_pending),
+        static_cast<unsigned>(llc.io.regs.write_ctx[MASTER_DCACHE_W].way),
+        llc.io.regs.write_ctx[MASTER_DCACHE_W].set);
+    return false;
+  }
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.write_req_ready = true;
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].addr = read_addr;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].total_size = 15;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].id = 0x62;
+  llc.comb();
+  if (!llc.io.ext_out.upstream.read_req[MASTER_ICACHE].ready) {
+    printf("FAIL: same-set read miss not accepted while write miss pending\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: read-miss lookup not issued beside pending write victim\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data = make_resident_data(0x1100, 0x2200);
+  llc.io.lookup_in.meta = make_resident_meta(
+      victim0_tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY),
+      victim1_tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  llc.io.lookup_in.repl = make_repl(0);
+  cycle(llc);
+
+  int read_slot = -1;
+  for (uint32_t slot = 0; slot < config.mshr_num; ++slot) {
+    if (llc.io.regs.mshr[slot].valid) {
+      read_slot = static_cast<int>(slot);
+      break;
+    }
+  }
+  if (read_slot < 0 || llc.io.regs.mshr[read_slot].way != 1 ||
+      llc.io.regs.mshr[read_slot].set != set) {
+    printf("FAIL: read miss did not avoid write-reserved way slot=%d way=%u set=%u\n",
+           read_slot,
+           read_slot < 0 ? 0u : static_cast<unsigned>(llc.io.regs.mshr[read_slot].way),
+           read_slot < 0 ? 0u : llc.io.regs.mshr[read_slot].set);
+    return false;
+  }
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.write_resp_valid = true;
+  cycle(llc);
+  if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
+      llc.io.table_out.data.way != 0 || llc.io.table_out.data.index != set ||
+      read_line_word(llc.io.table_out.data.payload, 0) != 0xA000) {
+    printf("FAIL: write miss did not commit refill line into reserved way\n");
+    return false;
+  }
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.read_req_ready = true;
+  cycle(llc);
+  if (!llc.io.regs.mshr[read_slot].mem_req_issued) {
+    printf("FAIL: same-set read miss did not issue memory request\n");
+    return false;
+  }
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.read_resp_valid = true;
+  llc.io.ext_in.mem.read_resp_id = static_cast<uint8_t>(read_slot);
+  llc.io.ext_in.mem.read_resp_data = make_line_data(0xB000);
+  cycle(llc);
+
+  clear_inputs(llc);
+  cycle(llc);
+  if (!llc.io.regs.victim_wb_valid_r || llc.io.regs.victim_wb_for_write_r ||
+      llc.io.regs.victim_wb_mshr_slot_r != static_cast<uint8_t>(read_slot) ||
+      llc.io.regs.victim_wb_addr_r != AXI_LLC::line_addr(config, victim1_addr)) {
+    printf(
+        "FAIL: read miss did not schedule victim writeback slot=%u for_write=%d addr=0x%x\n",
+        static_cast<unsigned>(llc.io.regs.victim_wb_mshr_slot_r),
+        static_cast<int>(llc.io.regs.victim_wb_for_write_r),
+        llc.io.regs.victim_wb_addr_r);
+    return false;
+  }
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.write_req_ready = true;
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.write_resp_valid = true;
+  cycle(llc);
+
+  clear_inputs(llc);
+  cycle(llc);
+  if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
+      llc.io.table_out.data.way != 1 || llc.io.table_out.data.index != set ||
+      read_line_word(llc.io.table_out.data.payload, 0) != 0xB000) {
+    printf("FAIL: read miss refill did not preserve second way after victim wb\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_pending_read_victim_blocks_victim_line_read() {
+  printf("=== LLC Test 20c: pending read victim blocks victim-line read ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim0_addr = 0x840;
+  const uint32_t victim1_addr = 0x940;
+  const uint32_t refill_addr = 0xA40;
+  const uint32_t victim0_tag = AXI_LLC::tag_of(config, victim0_addr);
+  const uint32_t victim1_tag = AXI_LLC::tag_of(config, victim1_addr);
+  const uint32_t victim_line = AXI_LLC::line_addr(config, victim1_addr);
+
+  auto make_resident_data = [&](uint32_t base0, uint32_t base1) {
+    AXI_LLC_Bytes_t data;
+    data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
+    write_line_words(data, config, 0, base0);
+    write_line_words(data, config, 1, base1);
+    return data;
+  };
+  auto make_resident_meta = [&](uint32_t tag0, uint8_t flags0, uint32_t tag1,
+                                uint8_t flags1) {
+    AXI_LLC_Bytes_t meta;
+    meta.resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
+    AXI_LLCMetaEntry_t e0{};
+    e0.tag = tag0;
+    e0.flags = flags0;
+    AXI_LLCMetaEntry_t e1{};
+    e1.tag = tag1;
+    e1.flags = flags1;
+    AXI_LLC_Bytes_t enc0;
+    AXI_LLC_Bytes_t enc1;
+    AXI_LLC::encode_meta(e0, enc0);
+    AXI_LLC::encode_meta(e1, enc1);
+    std::memcpy(meta.data() + 0 * AXI_LLC_META_ENTRY_BYTES, enc0.data(),
+                AXI_LLC_META_ENTRY_BYTES);
+    std::memcpy(meta.data() + 1 * AXI_LLC_META_ENTRY_BYTES, enc1.data(),
+                AXI_LLC_META_ENTRY_BYTES);
+    return meta;
+  };
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].addr = refill_addr;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].total_size = 15;
+  llc.io.ext_in.upstream.read_req[MASTER_ICACHE].id = 0x63;
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||
+      !llc.io.table_out.repl.enable) {
+    printf("FAIL: refill lookup not issued\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.lookup_in.data_valid = true;
+  llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.repl_valid = true;
+  llc.io.lookup_in.data = make_resident_data(0x1100, 0x2200);
+  llc.io.lookup_in.meta = make_resident_meta(
+      victim0_tag, static_cast<uint8_t>(AXI_LLC_META_VALID),
+      victim1_tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  llc.io.lookup_in.repl = make_repl(1);
+  cycle(llc);
+
+  if (!llc.io.regs.mshr[0].valid || !llc.io.regs.mshr[0].victim_dirty ||
+      llc.io.regs.mshr[0].victim_addr != victim_line) {
+    printf("FAIL: dirty victim read miss not allocated as expected\n");
+    return false;
+  }
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.read_req_ready = true;
+  cycle(llc);
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.read_resp_valid = true;
+  llc.io.ext_in.mem.read_resp_id = 0;
+  llc.io.ext_in.mem.read_resp_data = make_line_data(0xB000);
+  cycle(llc);
+
+  clear_inputs(llc);
+  cycle(llc);
+
+  if (!llc.io.regs.victim_wb_valid_r || llc.io.regs.victim_wb_addr_r != victim_line ||
+      llc.io.regs.victim_wb_for_write_r) {
+    printf("FAIL: victim writeback not armed for pending read victim addr=0x%x for_write=%d\n",
+           llc.io.regs.victim_wb_addr_r,
+           static_cast<int>(llc.io.regs.victim_wb_for_write_r));
+    return false;
+  }
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_req[MASTER_UNCORE_LSU_R].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_UNCORE_LSU_R].addr = victim1_addr + 8;
+  llc.io.ext_in.upstream.read_req[MASTER_UNCORE_LSU_R].total_size = 7;
+  llc.io.ext_in.upstream.read_req[MASTER_UNCORE_LSU_R].id = 0x64;
+  llc.comb();
+  if (llc.io.ext_out.upstream.read_req[MASTER_UNCORE_LSU_R].ready) {
+    printf("FAIL: victim-line read incorrectly accepted while victim pending\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_pending_read_victim_blocks_victim_line_write() {
+  printf("=== LLC Test 20d: pending read victim blocks victim-line write ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim_line = AXI_LLC::line_addr(config, 0x940);
+
+  llc.io.regs.mshr[0].valid = true;
+  llc.io.regs.mshr[0].bypass = false;
+  llc.io.regs.mshr[0].is_write = false;
+  llc.io.regs.mshr[0].victim_dirty = true;
+  llc.io.regs.mshr[0].victim_writeback_done = false;
+  llc.io.regs.mshr[0].victim_addr = victim_line;
+  llc.io.regs.victim_wb_valid_r = true;
+  llc.io.regs.victim_wb_issued_r = false;
+  llc.io.regs.victim_wb_for_write_r = false;
+  llc.io.regs.victim_wb_mshr_slot_r = 0;
+  llc.io.regs.victim_wb_addr_r = victim_line;
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = victim_line + 8;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size = 7;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 0x65;
+  llc.comb();
+  if (llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready) {
+    printf("FAIL: victim-line write incorrectly accepted while victim pending\n");
+    return false;
+  }
+
+  llc.io.regs.write_q[MASTER_DCACHE_W][0] = {};
+  llc.io.regs.write_q[MASTER_DCACHE_W][0].valid = true;
+  llc.io.regs.write_q[MASTER_DCACHE_W][0].master = MASTER_DCACHE_W;
+  llc.io.regs.write_q[MASTER_DCACHE_W][0].addr = victim_line + 12;
+  llc.io.regs.write_q[MASTER_DCACHE_W][0].id = 0x66;
+  llc.io.regs.write_q[MASTER_DCACHE_W][0].total_size = 3;
+  llc.io.regs.write_q_head_r[MASTER_DCACHE_W] = 0;
+  llc.io.regs.write_q_tail_r[MASTER_DCACHE_W] = 1;
+  llc.io.regs.write_q_count_r[MASTER_DCACHE_W] = 1;
+
+  clear_inputs(llc);
+  llc.comb();
+  if (llc.io.reg_write.write_ctx[MASTER_DCACHE_W].valid) {
+    printf("FAIL: queued victim-line write incorrectly promoted to write_ctx\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_unarmed_refill_ready_victim_blocks_victim_line_access() {
+  printf("=== LLC Test 20e: refill-ready read victim blocks victim-line access ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim_line = AXI_LLC::line_addr(config, 0x940);
+
+  llc.io.regs.mshr[0].valid = true;
+  llc.io.regs.mshr[0].bypass = false;
+  llc.io.regs.mshr[0].is_write = false;
+  llc.io.regs.mshr[0].refill_valid = true;
+  llc.io.regs.mshr[0].refill_committed = false;
+  llc.io.regs.mshr[0].victim_dirty = true;
+  llc.io.regs.mshr[0].victim_writeback_done = false;
+  llc.io.regs.mshr[0].victim_addr = victim_line;
+  llc.io.regs.victim_wb_valid_r = false;
+  llc.io.regs.victim_wb_for_write_r = false;
+  llc.io.regs.victim_wb_addr_r = 0;
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.read_req[MASTER_UNCORE_LSU_R].valid = true;
+  llc.io.ext_in.upstream.read_req[MASTER_UNCORE_LSU_R].addr = victim_line + 8;
+  llc.io.ext_in.upstream.read_req[MASTER_UNCORE_LSU_R].total_size = 7;
+  llc.io.ext_in.upstream.read_req[MASTER_UNCORE_LSU_R].id = 0x67;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = victim_line + 12;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size = 3;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 0x68;
+  llc.comb();
+  if (llc.io.ext_out.upstream.read_req[MASTER_UNCORE_LSU_R].ready) {
+    printf("FAIL: victim-line read incorrectly accepted after refill before victim wb armed\n");
+    return false;
+  }
+  if (llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready) {
+    printf("FAIL: victim-line write incorrectly accepted after refill before victim wb armed\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_refill_ready_victim_waits_for_pending_victim_write() {
+  printf("=== LLC Test 20f: refill-ready victim waits for pending victim-line write ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim_line = AXI_LLC::line_addr(config, 0x940);
+  const uint32_t fill_line = AXI_LLC::line_addr(config, 0x840);
+
+  auto &pending = llc.io.regs.mshr[0];
+  pending.valid = true;
+  pending.bypass = false;
+  pending.is_write = false;
+  pending.refill_valid = true;
+  pending.refill_committed = false;
+  pending.addr = fill_line;
+  pending.line_addr = fill_line;
+  pending.set = AXI_LLC::set_index(config, fill_line);
+  pending.way = 0;
+  pending.victim_dirty = true;
+  pending.victim_writeback_done = false;
+  pending.victim_addr = victim_line;
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    pending.victim_data[i] = 0x7700 + i;
+  }
+
+  auto &ctx = llc.io.regs.write_ctx[MASTER_DCACHE_W];
+  ctx.valid = true;
+  ctx.bypass = false;
+  ctx.lookup_pending = false;
+  ctx.cache_done = false;
+  ctx.cache_pending = false;
+  ctx.line_addr = victim_line;
+  ctx.addr = victim_line;
+
+  clear_inputs(llc);
+  llc.comb();
+  if (llc.io.reg_write.victim_wb_valid_r) {
+    printf("FAIL: victim writeback armed while same victim line still has pending write\n");
+    return false;
+  }
+
+  llc.io.regs.write_ctx[MASTER_DCACHE_W].cache_done = true;
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.reg_write.victim_wb_valid_r ||
+      llc.io.reg_write.victim_wb_addr_r != victim_line) {
+    printf("FAIL: victim writeback did not arm after pending victim write cleared\n");
     return false;
   }
 
@@ -2888,12 +3446,42 @@ int main() {
   else
     failed++;
 
+  if (test_write_hit_updates_pending_read_victim_snapshot())
+    passed++;
+  else
+    failed++;
+
   if (test_bypass_write_hit_updates_table())
     passed++;
   else
     failed++;
 
   if (test_pending_upstream_write_blocks_same_line_read())
+    passed++;
+  else
+    failed++;
+
+  if (test_same_set_write_miss_then_read_miss_preserve_both_lines())
+    passed++;
+  else
+    failed++;
+
+  if (test_pending_read_victim_blocks_victim_line_read())
+    passed++;
+  else
+    failed++;
+
+  if (test_pending_read_victim_blocks_victim_line_write())
+    passed++;
+  else
+    failed++;
+
+  if (test_unarmed_refill_ready_victim_blocks_victim_line_access())
+    passed++;
+  else
+    failed++;
+
+  if (test_refill_ready_victim_waits_for_pending_victim_write())
     passed++;
   else
     failed++;

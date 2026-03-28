@@ -236,11 +236,13 @@ struct AXI_LLCWriteCtx_t {
   bool cache_done = false;
   bool cache_pending = false;
   bool victim_mem_done = false;
+  bool victim_dirty = false;
   uint8_t id = 0;
   uint8_t total_size = 0;
   uint8_t mem_resp_code = 0;
   uint32_t addr = 0;
   uint32_t line_addr = 0;
+  uint32_t victim_addr = 0;
   uint32_t set = 0;
   uint8_t way = 0;
   uint32_t repl_next_way = 0;
@@ -364,6 +366,7 @@ private:
   bool has_pending_upstream_write_line(uint32_t line_addr) const;
   bool can_allocate_prefetch_mshr(const AXI_LLC_Regs_t &regs) const;
   bool write_line_pending(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  bool victim_line_pending(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
   bool way_reserved_by_pending_write(const AXI_LLC_Regs_t &regs, uint32_t set,
                                      uint8_t way,
                                      uint32_t line_addr_value) const;

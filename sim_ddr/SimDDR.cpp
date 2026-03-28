@@ -26,9 +26,16 @@ namespace {
 #define CONFIG_AXI_LLC_FOCUS_LINE1 0u
 #endif
 
+#ifndef CONFIG_AXI_LLC_DEBUG_LOG
+#define CONFIG_AXI_LLC_DEBUG_LOG 0
+#endif
+
 constexpr uint32_t kFocusWriteLineBytes = 64u;
 
 bool focus_write_line(uint32_t addr) {
+  if (CONFIG_AXI_LLC_DEBUG_LOG == 0) {
+    return false;
+  }
   const uint32_t line_addr = addr & ~(kFocusWriteLineBytes - 1u);
   return (CONFIG_AXI_LLC_FOCUS_LINE0 != 0u &&
           line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE0)) ||
