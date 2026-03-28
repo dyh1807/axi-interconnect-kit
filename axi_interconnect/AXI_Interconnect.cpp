@@ -1197,13 +1197,6 @@ void AXI_Interconnect::seq() {
          trace_icache_read_txn(txn, sim_time)) &&
         !txn.to_llc) {
       dump_focus_read_txn("AR-HS", sim_time, txn);
-    } else if (sim_time < 400) {
-      std::printf("[AXI-DBG][IC-AR-HS] cyc=%lld master=%u to_llc=%d addr=0x%08x arid=%u orig_id=%u beats=%u\n",
-                  sim_time, static_cast<unsigned>(txn.master_id),
-                  static_cast<int>(txn.to_llc), txn.addr,
-                  static_cast<unsigned>(txn.axi_id),
-                  static_cast<unsigned>(txn.orig_id),
-                  static_cast<unsigned>(txn.total_beats));
     }
     if (txn.to_llc && llc_focus_line(txn.addr)) {
       std::printf(
