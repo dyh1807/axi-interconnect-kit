@@ -17,6 +17,12 @@ namespace axi_interconnect {
 
 namespace {
 constexpr uint8_t kInvalidAxiReadId = 0xFF;
+constexpr uint8_t kAxiIdMask =
+    static_cast<uint8_t>((1u << sim_ddr::AXI_ID_WIDTH) - 1u);
+constexpr uint8_t kDownstreamBeatBytes = sim_ddr::AXI_DATA_BYTES;
+constexpr uint8_t kDownstreamBeatWords =
+    kDownstreamBeatBytes / static_cast<uint8_t>(sizeof(uint32_t));
+constexpr uint8_t kDownstreamAxiSize = sim_ddr::AXI_SIZE_CODE;
 
 #ifndef CONFIG_AXI_LLC_FOCUS_LINE0
 #define CONFIG_AXI_LLC_FOCUS_LINE0 0u
@@ -78,6 +84,48 @@ bool trace_icache_llc_master(int master, long long cycle) {
   return master == MASTER_ICACHE && interconnect_debug_active(cycle);
 }
 
+uint32_t txn_word_count(const ReadPendingTxn &txn) {
+  return std::min<uint32_t>(MAX_READ_TRANSACTION_WORDS,
+                            static_cast<uint32_t>(txn.total_beats) *
+                                kDownstreamBeatWords);
+}
+
+sim_ddr::axi_data_t pack_downstream_write_beat(const WideWriteData_t &wdata,
+                                               uint8_t beat_idx) {
+  sim_ddr::axi_data_t value = 0;
+  const uint32_t base = static_cast<uint32_t>(beat_idx) * kDownstreamBeatWords;
+  for (uint8_t word = 0; word < kDownstreamBeatWords; ++word) {
+    const uint32_t idx = base + word;
+    if (idx >= MAX_WRITE_TRANSACTION_WORDS) {
+      break;
+    }
+    value |= static_cast<sim_ddr::axi_data_t>(
+        static_cast<unsigned __int128>(wdata.words[idx]) << (word * 32u));
+  }
+  return value;
+}
+
+sim_ddr::axi_strb_t pack_downstream_write_strobe(uint64_t wstrb,
+                                                 uint8_t beat_idx) {
+  const uint32_t shift =
+      static_cast<uint32_t>(beat_idx) * kDownstreamBeatBytes;
+  const uint64_t mask = (1ull << kDownstreamBeatBytes) - 1ull;
+  return static_cast<sim_ddr::axi_strb_t>((wstrb >> shift) & mask);
+}
+
+void unpack_downstream_read_beat(ReadPendingTxn &txn, sim_ddr::axi_data_t beat) {
+  const uint32_t base =
+      static_cast<uint32_t>(txn.beats_done) * kDownstreamBeatWords;
+  for (uint8_t word = 0; word < kDownstreamBeatWords; ++word) {
+    const uint32_t idx = base + word;
+    if (idx >= MAX_READ_TRANSACTION_WORDS) {
+      break;
+    }
+    txn.data[idx] = static_cast<uint32_t>(
+        (static_cast<unsigned __int128>(beat) >> (word * 32u)) & 0xFFFFFFFFu);
+  }
+}
+
 void dump_focus_read_txn(const char *tag, long long cyc,
                          const ReadPendingTxn &txn) {
   if (!focus_read_txn(txn) && !trace_icache_read_txn(txn, cyc)) {
@@ -90,7 +138,7 @@ void dump_focus_read_txn(const char *tag, long long cyc,
       static_cast<unsigned>(txn.orig_id), static_cast<unsigned>(txn.axi_id),
       static_cast<unsigned>(txn.beats_done), static_cast<unsigned>(txn.total_beats),
       static_cast<int>(txn.to_llc));
-  for (uint32_t word = 0; word < txn.total_beats; ++word) {
+  for (uint32_t word = 0; word < txn_word_count(txn); ++word) {
     std::printf("%s%08x", (word == 0) ? "" : " ",
                 static_cast<unsigned>(txn.data[word]));
   }
@@ -141,6 +189,7 @@ void AXI_Interconnect::init() {
   }
   llc_mem_write_resp_valid_ = false;
   llc_mem_write_resp_ = 0;
+  llc_mem_ignored_b_count_ = 0;
 
   // Clear AR latch
   ar_latched.valid = false;
@@ -148,7 +197,7 @@ void AXI_Interconnect::init() {
   ar_latched.to_llc = false;
   ar_latched.addr = 0;
   ar_latched.len = 0;
-  ar_latched.size = 2;
+  ar_latched.size = kDownstreamAxiSize;
   ar_latched.burst = sim_ddr::AXI_BURST_INCR;
   ar_latched.id = 0;
   ar_latched.master_id = 0;
@@ -164,7 +213,7 @@ void AXI_Interconnect::init() {
   aw_latched.valid = false;
   aw_latched.addr = 0;
   aw_latched.len = 0;
-  aw_latched.size = 2;
+  aw_latched.size = kDownstreamAxiSize;
   aw_latched.burst = sim_ddr::AXI_BURST_INCR;
   aw_latched.id = 0;
 
@@ -202,7 +251,7 @@ void AXI_Interconnect::init() {
   axi_io.ar.arid = 0;
   axi_io.ar.araddr = 0;
   axi_io.ar.arlen = 0;
-  axi_io.ar.arsize = 2;
+  axi_io.ar.arsize = kDownstreamAxiSize;
   axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
   axi_io.r.rready = true;
 
@@ -210,11 +259,12 @@ void AXI_Interconnect::init() {
   axi_io.aw.awid = 0;
   axi_io.aw.awaddr = 0;
   axi_io.aw.awlen = 0;
-  axi_io.aw.awsize = 2;
+  axi_io.aw.awsize = kDownstreamAxiSize;
   axi_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
   axi_io.w.wvalid = false;
   axi_io.w.wdata = 0;
-  axi_io.w.wstrb = 0xF;
+  axi_io.w.wstrb =
+      static_cast<sim_ddr::axi_strb_t>((1ull << kDownstreamBeatBytes) - 1ull);
   axi_io.w.wlast = false;
   axi_io.b.bready = true;
 }
@@ -659,7 +709,7 @@ void AXI_Interconnect::comb_read_arbiter() {
       axi_io.ar.arvalid = true;
       axi_io.ar.araddr = llc.io.ext_out.mem.read_req_addr;
       axi_io.ar.arlen = calc_burst_len(llc.io.ext_out.mem.read_req_size);
-      axi_io.ar.arsize = 2;
+      axi_io.ar.arsize = kDownstreamAxiSize;
       axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
       axi_io.ar.arid = alloc_read_axi_id();
     }
@@ -672,7 +722,8 @@ void AXI_Interconnect::comb_read_arbiter() {
                                static_cast<uint8_t>(read_ports[master].req.id))) {
         continue;
       }
-      if (req_ready_curr[master]) {
+      const bool allow_same_cycle_accept = (master == MASTER_DCACHE_R);
+      if (req_ready_curr[master] || allow_same_cycle_accept) {
         read_ports[master].req.ready = true;
         llc_upstream_accept_c[master] = true;
         llc_upstream_capture_c[master].valid = true;
@@ -739,7 +790,7 @@ void AXI_Interconnect::comb_read_arbiter() {
     axi_io.ar.arvalid = true;
     axi_io.ar.araddr = cap.addr;
     axi_io.ar.arlen = calc_burst_len(cap.total_size);
-    axi_io.ar.arsize = 2;
+    axi_io.ar.arsize = kDownstreamAxiSize;
     axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
     axi_io.ar.arid = axi_id;
     read_ports[i].req.ready = true;
@@ -765,8 +816,9 @@ void AXI_Interconnect::comb_read_arbiter() {
         continue;
       }
 
-      // Raise ready first, then issue AR on following cycle when ready is seen.
-      if (!req_ready_curr[idx]) {
+      const bool allow_same_cycle_accept = (idx == MASTER_DCACHE_R);
+      const bool require_ready_first = !allow_same_cycle_accept;
+      if (require_ready_first && !req_ready_curr[idx]) {
         req_ready_r[idx] = true;
         read_ports[idx].req.ready = true;
         read_req_hold[idx].valid = true;
@@ -778,15 +830,17 @@ void AXI_Interconnect::comb_read_arbiter() {
         break;
       }
 
-      // Output AR (will be latched in seq if not immediately ready)
+      // Data-side masters can use same-cycle accept to keep the AR issue rate
+      // from being artificially halved. ICache still relies on ready-first
+      // semantics internally, so preserve the existing two-cycle contract
+      // there until the front-end request state machine is updated.
       axi_io.ar.arvalid = true;
       axi_io.ar.araddr = read_ports[idx].req.addr;
       axi_io.ar.arlen = calc_burst_len(read_ports[idx].req.total_size);
-      axi_io.ar.arsize = 2;
+      axi_io.ar.arsize = kDownstreamAxiSize;
       axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
       axi_io.ar.arid = axi_id;
-
-      read_ports[idx].req.ready = true; // Also set for immediate use
+      read_ports[idx].req.ready = true;
       break;
     }
   }
@@ -856,7 +910,7 @@ void AXI_Interconnect::comb_write_request() {
         axi_io.aw.awvalid = true;
         axi_io.aw.awaddr = llc.io.ext_out.mem.write_req_addr;
         axi_io.aw.awlen = calc_burst_len(llc.io.ext_out.mem.write_req_size);
-        axi_io.aw.awsize = 2;
+        axi_io.aw.awsize = kDownstreamAxiSize;
         axi_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
         axi_io.aw.awid = llc.io.ext_out.mem.write_req_id & 0x7;
       }
@@ -898,11 +952,10 @@ void AXI_Interconnect::comb_write_request() {
 
     if (w_active && w_current.aw_done && !w_current.w_done) {
       axi_io.w.wvalid = true;
-      axi_io.w.wdata = w_current.wdata[w_current.beats_sent];
-      const uint8_t strobe_shift =
-          static_cast<uint8_t>(w_current.beats_sent * 4u);
+      axi_io.w.wdata =
+          pack_downstream_write_beat(w_current.wdata, w_current.beats_sent);
       axi_io.w.wstrb =
-          static_cast<uint8_t>((w_current.wstrb >> strobe_shift) & 0xFu);
+          pack_downstream_write_strobe(w_current.wstrb, w_current.beats_sent);
       axi_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
     }
     return;
@@ -928,7 +981,7 @@ void AXI_Interconnect::comb_write_request() {
         axi_io.aw.awvalid = true;
         axi_io.aw.awaddr = txn.addr;
         axi_io.aw.awlen = txn.total_beats - 1;
-        axi_io.aw.awsize = 2;
+        axi_io.aw.awsize = kDownstreamAxiSize;
         axi_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
         axi_io.aw.awid = txn.axi_id;
       }
@@ -962,17 +1015,18 @@ void AXI_Interconnect::comb_write_request() {
   // W channel: send data after AW done
   if (w_active && w_current.aw_done && !w_current.w_done) {
     axi_io.w.wvalid = true;
-    axi_io.w.wdata = w_current.wdata[w_current.beats_sent];
-    const uint8_t strobe_shift =
-        static_cast<uint8_t>(w_current.beats_sent * 4u);
-    axi_io.w.wstrb = static_cast<uint8_t>((w_current.wstrb >> strobe_shift) & 0xFu);
+    axi_io.w.wdata =
+        pack_downstream_write_beat(w_current.wdata, w_current.beats_sent);
+    axi_io.w.wstrb =
+        pack_downstream_write_strobe(w_current.wstrb, w_current.beats_sent);
     axi_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
   }
 }
 
 void AXI_Interconnect::comb_write_response() {
   if (llc_enabled()) {
-    axi_io.b.bready = !llc_mem_write_resp_valid_;
+    axi_io.b.bready =
+        (llc_mem_ignored_b_count_ > 0) || !llc_mem_write_resp_valid_;
     return;
   }
 
@@ -1011,6 +1065,18 @@ void AXI_Interconnect::seq() {
     if (!llc_enabled()) {
       return;
     }
+    auto read_resp_queue_has_id = [&](int master, uint8_t id) {
+      const uint8_t count = llc.io.regs.read_resp_q_count_r[master];
+      const uint8_t head = llc.io.regs.read_resp_q_head_r[master];
+      for (uint8_t off = 0; off < count; ++off) {
+        const uint8_t slot =
+            static_cast<uint8_t>((head + off) % AXI_LLC_READ_RESP_QUEUE_DEPTH);
+        if (llc.io.regs.read_resp_q_id_r[master][slot] == id) {
+          return true;
+        }
+      }
+      return false;
+    };
     for (int master = 0; master < NUM_READ_MASTERS; ++master) {
       if (!(llc_upstream_req_valid_prev[master] &&
             llc.io.ext_out.upstream.read_req[master].ready)) {
@@ -1033,12 +1099,13 @@ void AXI_Interconnect::seq() {
       retained = retained || (llc.io.regs.read_resp_valid_r[master] &&
                               llc.io.regs.read_resp_id_r[master] ==
                                   consumed_req.id);
+      retained = retained || read_resp_queue_has_id(master, consumed_req.id);
       if (!retained) {
         std::printf(
             "[axi][llc] consumed request without retained llc state "
             "master=%d sim_time=%lld addr=0x%08x id=%u bypass=%d "
             "lookup{valid=%d master=%u id=%u addr=0x%08x} "
-            "resp{valid=%d id=%u} "
+            "resp{valid=%d id=%u q_count=%u q_head=%u q_tail=%u} "
             "mshr0{valid=%d master=%u id=%u line=0x%08x} "
             "mshr1{valid=%d master=%u id=%u line=0x%08x}\n",
             master, sim_time, consumed_req.addr,
@@ -1050,6 +1117,9 @@ void AXI_Interconnect::seq() {
             llc.io.regs.lookup_addr_r,
             static_cast<int>(llc.io.regs.read_resp_valid_r[master]),
             static_cast<unsigned>(llc.io.regs.read_resp_id_r[master]),
+            static_cast<unsigned>(llc.io.regs.read_resp_q_count_r[master]),
+            static_cast<unsigned>(llc.io.regs.read_resp_q_head_r[master]),
+            static_cast<unsigned>(llc.io.regs.read_resp_q_tail_r[master]),
             static_cast<int>(llc.io.regs.mshr[0].valid),
             static_cast<unsigned>(llc.io.regs.mshr[0].master),
             static_cast<unsigned>(llc.io.regs.mshr[0].id),
@@ -1125,10 +1195,12 @@ void AXI_Interconnect::seq() {
       ar_latched.orig_id = orig_id;
       ar_latched.to_llc = ar_from_llc_c;
       if (!ar_from_llc_c) {
-        ar_latched.accepted_upstream = true;
-        read_req_accepted[master_idx] = true;
-        read_req_accepted_id[master_idx] = orig_id;
-        read_req_hold[master_idx] = {};
+        // A latched AR only means the interconnect has locally buffered the
+        // request under downstream backpressure. Upstream acceptance must wait
+        // until the real downstream AR handshake commits and an r_pending txn
+        // is created, otherwise MSHR/icache can believe the miss is issued
+        // while the request is still absent from the fabric.
+        ar_latched.accepted_upstream = false;
       }
     }
   }
@@ -1152,6 +1224,7 @@ void AXI_Interconnect::seq() {
           txn.master_id < NUM_READ_MASTERS) {
         read_req_accepted[txn.master_id] = true;
         read_req_accepted_id[txn.master_id] = txn.orig_id;
+        read_req_hold[txn.master_id] = {};
       }
     } else {
       // Direct handshake (same cycle)
@@ -1208,6 +1281,7 @@ void AXI_Interconnect::seq() {
     if (!txn.to_llc && txn.master_id < NUM_READ_MASTERS) {
       read_req_accepted[txn.master_id] = true;
       read_req_accepted_id[txn.master_id] = txn.orig_id;
+      read_req_hold[txn.master_id] = {};
     }
 
     // req_ready_r is recomputed in comb_read_arbiter.
@@ -1299,20 +1373,20 @@ read_handshake_done:
   // R handshake
   if (axi_io.r.rvalid && axi_io.r.rready) {
     for (auto &txn : r_pending) {
-      if (txn.axi_id == static_cast<uint8_t>(axi_io.r.rid & 0xF) &&
+      if (txn.axi_id == static_cast<uint8_t>(axi_io.r.rid & kAxiIdMask) &&
           txn.beats_done < txn.total_beats) {
-        txn.data[txn.beats_done] = axi_io.r.rdata;
+        unpack_downstream_read_beat(txn, axi_io.r.rdata);
         txn.beats_done++;
         if (focus_read_txn(txn) || trace_icache_read_txn(txn, sim_time)) {
           std::printf(
               "[AXI-R][R-BEAT] cyc=%lld addr=0x%08x master=%u orig_id=%u axi_id=%u "
-              "rid=%u beat=%u/%u data=0x%08x rlast=%u\n",
+              "rid=%u beat=%u/%u data=0x%016llx rlast=%u\n",
               sim_time, txn.addr, static_cast<unsigned>(txn.master_id),
               static_cast<unsigned>(txn.orig_id), static_cast<unsigned>(txn.axi_id),
-              static_cast<unsigned>(axi_io.r.rid & 0xF),
+              static_cast<unsigned>(axi_io.r.rid & kAxiIdMask),
               static_cast<unsigned>(txn.beats_done),
               static_cast<unsigned>(txn.total_beats),
-              static_cast<unsigned>(axi_io.r.rdata),
+              static_cast<unsigned long long>(axi_io.r.rdata),
               static_cast<unsigned>(axi_io.r.rlast));
           if (txn.beats_done == txn.total_beats) {
             dump_focus_read_txn("R-COMPLETE", sim_time, txn);
@@ -1329,11 +1403,14 @@ read_handshake_done:
   // Response handshake
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     if (read_ports[i].resp.valid && read_ports[i].resp.ready) {
+      const uint8_t driven_orig_id =
+          static_cast<uint8_t>(read_ports[i].resp.id & 0xFFu);
       auto it = std::find_if(r_pending.begin(), r_pending.end(),
-                             [i](const ReadPendingTxn &t) {
+                             [i, driven_orig_id](const ReadPendingTxn &t) {
                                return t.master_id == i &&
                                       !t.to_llc &&
-                                      t.beats_done == t.total_beats;
+                                      t.beats_done == t.total_beats &&
+                                      t.orig_id == driven_orig_id;
                              });
       if (it != r_pending.end()) {
         if (focus_read_txn(*it) || trace_icache_read_txn(*it, sim_time)) {
@@ -1407,22 +1484,10 @@ read_handshake_done:
   // ========== Write Channel ==========
 
   if (llc_enabled()) {
-    // The LLC already retires upstream response slots in comb() using the
-    // master's ready signal. For icache reads, interconnect-side duplicate
-    // clearing races with same-cycle slot reuse on lookup hits and can erase a
-    // freshly generated response before llc.seq() commits it. Keep the legacy
-    // interconnect-side retirement for the other masters until they are proven
-    // safe under the narrower LLC response ownership model.
-    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-      if (i == MASTER_ICACHE) {
-        continue;
-      }
-      if (llc.io.regs.read_resp_valid_r[i] && read_ports[i].resp.ready) {
-        llc.io.reg_write.read_resp_valid_r[i] = false;
-        llc.io.reg_write.read_resp_id_r[i] = 0;
-        llc.io.reg_write.read_resp_data_r[i].clear();
-      }
-    }
+    // LLC read-response ownership lives entirely inside AXI_LLC::comb().
+    // Duplicating retirement here races with same-cycle slot reuse once a
+    // master can keep multiple misses in flight, and can erase a fresh
+    // response before llc.seq() commits it.
     for (int i = 0; i < NUM_WRITE_MASTERS; ++i) {
       if (llc.io.regs.write_resp_valid_r[i] && write_ports[i].resp.ready) {
         llc.io.reg_write.write_resp_valid_r[i] = false;
@@ -1452,12 +1517,14 @@ read_handshake_done:
       w_current.beats_sent = 0;
       w_current.aw_done = false;
       w_current.w_done = false;
+      w_current.llc_victim_write =
+          llc.io.regs.victim_wb_valid_r || llc.io.reg_write.victim_wb_valid_r;
       w_current_master = -1;
 
       aw_latched.valid = true;
       aw_latched.addr = w_current.addr;
       aw_latched.len = w_current.total_beats - 1;
-      aw_latched.size = 2;
+      aw_latched.size = kDownstreamAxiSize;
       aw_latched.burst = sim_ddr::AXI_BURST_INCR;
       aw_latched.id = w_current.orig_id & 0x7;
     }
@@ -1471,20 +1538,34 @@ read_handshake_done:
       w_current.beats_sent++;
       if (axi_io.w.wlast) {
         w_current.w_done = true;
+        if (w_current.llc_victim_write) {
+          llc_mem_write_resp_valid_ = true;
+          llc_mem_write_resp_ = sim_ddr::AXI_RESP_OKAY;
+          llc_mem_ignored_b_count_++;
+          w_active = false;
+          w_current = {};
+          w_current_master = -1;
+        }
       }
     }
 
     if (axi_io.b.bvalid && axi_io.b.bready) {
-      llc_mem_write_resp_valid_ = true;
-      llc_mem_write_resp_ = axi_io.b.bresp;
+      if (llc_mem_ignored_b_count_ > 0) {
+        llc_mem_ignored_b_count_--;
+      } else {
+        llc_mem_write_resp_valid_ = true;
+        llc_mem_write_resp_ = axi_io.b.bresp;
+      }
     }
 
     if (llc_mem_write_resp_valid_prev && llc.io.ext_out.mem.write_resp_ready) {
       llc_mem_write_resp_valid_ = false;
       llc_mem_write_resp_ = 0;
-      w_active = false;
-      w_current = {};
-      w_current_master = -1;
+      if (w_active) {
+        w_active = false;
+        w_current = {};
+        w_current_master = -1;
+      }
     }
 
     llc.seq();
@@ -1562,14 +1643,16 @@ read_handshake_done:
     if (pending_idx >= 0) {
       auto &txn = w_pending[static_cast<size_t>(pending_idx)];
       if (focus_write_line(txn.addr)) {
-        const uint32_t beat_addr = txn.addr + txn.beats_sent * 4u;
+        const uint32_t beat_addr =
+            txn.addr + static_cast<uint32_t>(txn.beats_sent) * kDownstreamBeatBytes;
         std::printf(
             "[AXI-W][W-HS] cyc=%lld axi_id=%u beat=%u/%u beat_addr=0x%08x "
-            "data=0x%08x wstrb=0x%x wlast=%d\n",
+            "data=0x%016llx wstrb=0x%llx wlast=%d\n",
             sim_time, static_cast<unsigned>(txn.axi_id),
             static_cast<unsigned>(txn.beats_sent),
-            static_cast<unsigned>(txn.total_beats), beat_addr, axi_io.w.wdata,
-            static_cast<unsigned>(axi_io.w.wstrb),
+            static_cast<unsigned>(txn.total_beats), beat_addr,
+            static_cast<unsigned long long>(axi_io.w.wdata),
+            static_cast<unsigned long long>(axi_io.w.wstrb),
             static_cast<int>(axi_io.w.wlast));
       }
       txn.beats_sent++;
@@ -1631,7 +1714,7 @@ read_handshake_done:
       aw_latched.valid = true;
       aw_latched.addr = txn.addr;
       aw_latched.len = txn.total_beats - 1;
-      aw_latched.size = 2;
+      aw_latched.size = kDownstreamAxiSize;
       aw_latched.burst = sim_ddr::AXI_BURST_INCR;
       aw_latched.id = txn.axi_id;
     }
@@ -1716,7 +1799,7 @@ void AXI_Interconnect::debug_print() {
 // ============================================================================
 uint8_t AXI_Interconnect::calc_burst_len(uint8_t total_size) {
   uint16_t bytes = static_cast<uint16_t>(total_size) + 1u;
-  uint16_t beats = (bytes + 3u) / 4u;
+  uint16_t beats = (bytes + kDownstreamBeatBytes - 1u) / kDownstreamBeatBytes;
   return beats > 0 ? static_cast<uint8_t>(beats - 1u) : 0;
 }
 

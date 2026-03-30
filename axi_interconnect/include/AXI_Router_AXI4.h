@@ -7,7 +7,8 @@
  * - SimDDR (normal memory range)
  * - MMIO bus (MMIO range)
  *
- * The router tracks one active read stream and one active write stream.
+ * The router tracks read targets by AXI ID so DDR/MMIO reads can be
+ * outstanding concurrently. The write side still keeps a single active stream.
  */
 
 #include "SimDDR_IO.h"
@@ -31,8 +32,13 @@ public:
            const sim_ddr::SimDDR_IO_t &mmio);
 
 private:
-  bool r_active;
-  bool r_to_mmio;
+  static constexpr uint32_t ROUTER_AXI_ID_SLOTS = 256;
+
+  bool r_route_valid[ROUTER_AXI_ID_SLOTS];
+  bool r_route_to_mmio[ROUTER_AXI_ID_SLOTS];
+  bool r_drive_valid;
+  bool r_drive_to_mmio;
+  uint8_t r_drive_id;
 
   bool w_active;
   bool w_to_mmio;

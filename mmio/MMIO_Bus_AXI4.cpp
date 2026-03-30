@@ -20,7 +20,7 @@ void MMIO_Bus_AXI4::init() {
   io.aw.awid = 0;
   io.aw.awaddr = 0;
   io.aw.awlen = 0;
-  io.aw.awsize = 2;
+  io.aw.awsize = sim_ddr::AXI_SIZE_CODE;
   io.aw.awburst = sim_ddr::AXI_BURST_INCR;
 
   io.w.wready = false;
@@ -38,7 +38,7 @@ void MMIO_Bus_AXI4::init() {
   io.ar.arid = 0;
   io.ar.araddr = 0;
   io.ar.arlen = 0;
-  io.ar.arsize = 2;
+  io.ar.arsize = sim_ddr::AXI_SIZE_CODE;
   io.ar.arburst = sim_ddr::AXI_BURST_INCR;
 
   io.r.rvalid = false;
@@ -68,7 +68,7 @@ uint8_t MMIO_Bus_AXI4::beat_bytes(uint8_t size) {
   if (bytes == 0) {
     return 1;
   }
-  return static_cast<uint8_t>(std::min<uint32_t>(bytes, 4u));
+  return static_cast<uint8_t>(std::min<uint32_t>(bytes, sim_ddr::AXI_DATA_BYTES));
 }
 
 uint32_t MMIO_Bus_AXI4::beat_addr(uint32_t base_addr, uint8_t burst,
@@ -79,17 +79,20 @@ uint32_t MMIO_Bus_AXI4::beat_addr(uint32_t base_addr, uint8_t burst,
   return base_addr + (static_cast<uint32_t>(beat_idx) << size);
 }
 
-uint32_t MMIO_Bus_AXI4::load_le32(const uint8_t *p) {
-  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) |
-         (static_cast<uint32_t>(p[3]) << 24);
+sim_ddr::axi_data_t MMIO_Bus_AXI4::load_beat(const uint8_t *p, uint8_t nbytes) {
+  sim_ddr::axi_data_t value = 0;
+  for (uint8_t i = 0; i < nbytes; ++i) {
+    value |= static_cast<sim_ddr::axi_data_t>(
+        static_cast<unsigned __int128>(p[i]) << (i * 8u));
+  }
+  return value;
 }
 
-void MMIO_Bus_AXI4::store_le32(uint8_t *p, uint32_t v) {
-  p[0] = static_cast<uint8_t>(v & 0xFF);
-  p[1] = static_cast<uint8_t>((v >> 8) & 0xFF);
-  p[2] = static_cast<uint8_t>((v >> 16) & 0xFF);
-  p[3] = static_cast<uint8_t>((v >> 24) & 0xFF);
+void MMIO_Bus_AXI4::store_beat(uint8_t *p, sim_ddr::axi_data_t v, uint8_t nbytes) {
+  for (uint8_t i = 0; i < nbytes; ++i) {
+    p[i] = static_cast<uint8_t>(
+        (static_cast<unsigned __int128>(v) >> (i * 8u)) & 0xFFu);
+  }
 }
 
 void MMIO_Bus_AXI4::build_read_beat() {
@@ -102,7 +105,7 @@ void MMIO_Bus_AXI4::build_read_beat() {
   uint32_t base = 0;
   MMIO_Device *dev = find_device(addr, base);
 
-  uint8_t bytes[4] = {0};
+  uint8_t bytes[sim_ddr::AXI_DATA_BYTES] = {0};
   uint8_t nbytes = beat_bytes(r_pending.size);
   if (dev) {
     dev->read(addr, bytes, nbytes);
@@ -111,7 +114,7 @@ void MMIO_Bus_AXI4::build_read_beat() {
     r_pending.beat_resp = sim_ddr::AXI_RESP_DECERR;
   }
 
-  r_pending.beat_data = load_le32(bytes);
+  r_pending.beat_data = load_beat(bytes, nbytes);
   r_pending.beat_valid = true;
 }
 
@@ -227,9 +230,9 @@ void MMIO_Bus_AXI4::seq() {
     uint32_t base = 0;
     MMIO_Device *dev = find_device(addr, base);
 
-    uint8_t in_bytes[4] = {0};
-    store_le32(in_bytes, io.w.wdata);
     uint8_t nbytes = beat_bytes(w_pending.size);
+    uint8_t in_bytes[sim_ddr::AXI_DATA_BYTES] = {0};
+    store_beat(in_bytes, io.w.wdata, nbytes);
     uint32_t local_wstrb = io.w.wstrb & ((1u << nbytes) - 1u);
 
     if (dev != nullptr) {

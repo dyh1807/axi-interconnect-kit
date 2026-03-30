@@ -20,7 +20,14 @@ namespace axi_interconnect {
 // ============================================================================
 constexpr uint8_t NUM_READ_MASTERS = 4;  // icache, dcache, uncore-lsu, extra
 constexpr uint8_t NUM_WRITE_MASTERS = 2; // dcache + uncore-lsu
-constexpr uint8_t MAX_OUTSTANDING = 8;
+#ifndef AXI_KIT_MAX_OUTSTANDING
+#ifdef CONFIG_AXI_KIT_MAX_OUTSTANDING
+#define AXI_KIT_MAX_OUTSTANDING CONFIG_AXI_KIT_MAX_OUTSTANDING
+#else
+#define AXI_KIT_MAX_OUTSTANDING 8
+#endif
+#endif
+constexpr uint8_t MAX_OUTSTANDING = AXI_KIT_MAX_OUTSTANDING;
 
 #ifndef AXI_KIT_MAX_WRITE_TRANSACTION_BYTES
 #define AXI_KIT_MAX_WRITE_TRANSACTION_BYTES 64
@@ -37,8 +44,24 @@ constexpr uint16_t MAX_WRITE_TRANSACTION_BYTES =
     AXI_KIT_MAX_WRITE_TRANSACTION_BYTES;
 constexpr uint16_t MAX_WRITE_TRANSACTION_WORDS =
     MAX_WRITE_TRANSACTION_BYTES / sizeof(uint32_t);
-constexpr uint8_t MAX_READ_OUTSTANDING_PER_MASTER = 4;
-constexpr uint8_t MAX_WRITE_OUTSTANDING = 8;
+#ifndef AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER
+#ifdef CONFIG_AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER
+#define AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER                          \
+  CONFIG_AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER
+#else
+#define AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER 4
+#endif
+#endif
+constexpr uint8_t MAX_READ_OUTSTANDING_PER_MASTER =
+    AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER;
+#ifndef AXI_KIT_MAX_WRITE_OUTSTANDING
+#ifdef CONFIG_AXI_KIT_MAX_WRITE_OUTSTANDING
+#define AXI_KIT_MAX_WRITE_OUTSTANDING CONFIG_AXI_KIT_MAX_WRITE_OUTSTANDING
+#else
+#define AXI_KIT_MAX_WRITE_OUTSTANDING 8
+#endif
+#endif
+constexpr uint8_t MAX_WRITE_OUTSTANDING = AXI_KIT_MAX_WRITE_OUTSTANDING;
 constexpr uint8_t AXI_BEAT_WORDS = MAX_WRITE_TRANSACTION_WORDS; // upstream/cache payload granularity = 8 x 32-bit
 constexpr uint8_t AXI_BEAT_BYTES = AXI_BEAT_WORDS * sizeof(uint32_t);
 constexpr uint8_t CACHELINE_WORDS = AXI_BEAT_WORDS; // legacy beat-width alias

@@ -40,7 +40,7 @@ private:
     uint8_t beat_idx;
     uint32_t latency_cnt;
     bool beat_valid;
-    uint32_t beat_data;
+    sim_ddr::axi_data_t beat_data;
     uint8_t beat_resp;
   };
 
@@ -73,8 +73,8 @@ private:
   static uint8_t beat_bytes(uint8_t size);
   static uint32_t beat_addr(uint32_t base_addr, uint8_t burst, uint8_t size,
                             uint8_t beat_idx);
-  static uint32_t load_le32(const uint8_t *p);
-  static void store_le32(uint8_t *p, uint32_t v);
+  static sim_ddr::axi_data_t load_beat(const uint8_t *p, uint8_t nbytes);
+  static void store_beat(uint8_t *p, sim_ddr::axi_data_t v, uint8_t nbytes);
   void build_read_beat();
 };
 

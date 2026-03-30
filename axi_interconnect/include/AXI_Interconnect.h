@@ -104,6 +104,7 @@ struct WritePendingTxn {
   uint8_t beats_sent;
   bool aw_done;
   bool w_done;
+  bool llc_victim_write;
 };
 
 // ============================================================================
@@ -232,6 +233,7 @@ private:
   std::deque<LlcUpstreamWriteReqLatch> llc_upstream_write_q[NUM_WRITE_MASTERS];
   bool llc_mem_write_resp_valid_ = false;
   uint8_t llc_mem_write_resp_ = 0;
+  uint32_t llc_mem_ignored_b_count_ = 0;
   bool ar_from_llc_c = false;
   uint8_t ar_llc_mem_id_c = 0;
   int ar_master_c = -1;

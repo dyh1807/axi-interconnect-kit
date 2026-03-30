@@ -10,7 +10,7 @@
  * - 5 AXI4 channels (AW, W, B, AR, R)
  * - Configurable memory latency
  * - Outstanding transaction support (multiple in-flight transactions)
- * - Read data interleaving (can switch between transactions mid-burst)
+ * - Burst-drain read service with burst-to-burst round-robin fairness
  * - INCR burst mode support
  * - Uses external p_memory for storage (shared with main simulator)
  */
@@ -27,9 +27,31 @@ namespace sim_ddr {
 // ============================================================================
 // SimDDR Configuration
 // ============================================================================
-constexpr uint32_t SIM_DDR_LATENCY = ICACHE_MISS_LATENCY;
+constexpr uint32_t SIM_DDR_LATENCY = CONFIG_SIM_DDR_LATENCY;
+// Write response latency is modeled separately from read latency. Older
+// simulator glue reused a frontend-side latency knob for the whole DDR path,
+// but the current shared-AXI design benefits from controlling write completion
+// independently when analyzing dirty-victim critical paths.
+#ifndef AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY
+#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY
+#define AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY \
+  CONFIG_AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY
+#else
+#define AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY 2
+#endif
+#endif
+constexpr uint32_t SIM_DDR_WRITE_RESP_LATENCY =
+    AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY;
 constexpr uint32_t SIM_DDR_MAX_BURST = 256;     // Max burst length (AXI4 limit)
-constexpr uint32_t SIM_DDR_MAX_OUTSTANDING = 8; // Max outstanding transactions
+#ifndef AXI_KIT_SIM_DDR_MAX_OUTSTANDING
+#ifdef CONFIG_AXI_KIT_SIM_DDR_MAX_OUTSTANDING
+#define AXI_KIT_SIM_DDR_MAX_OUTSTANDING CONFIG_AXI_KIT_SIM_DDR_MAX_OUTSTANDING
+#else
+#define AXI_KIT_SIM_DDR_MAX_OUTSTANDING 8
+#endif
+#endif
+constexpr uint32_t SIM_DDR_MAX_OUTSTANDING =
+    AXI_KIT_SIM_DDR_MAX_OUTSTANDING; // Max outstanding transactions
 
 // ============================================================================
 // Transaction Structures for Outstanding Support
@@ -66,7 +88,7 @@ struct ReadTransaction {
 };
 
 // ============================================================================
-// SimDDR Class with Outstanding + Interleaving Support
+// SimDDR Class with Outstanding + Burst-Drain Read Service
 // ============================================================================
 class SimDDR {
 public:
@@ -98,25 +120,28 @@ private:
   // Pending write responses (in latency)
   std::queue<WriteRespPending> w_resp_queue;
 
-  // ========== Read Channel with Interleaving ==========
-  // Vector allows access to any transaction for interleaving
+  // ========== Read Channel with Burst-Drain Service ==========
+  // Vector allows access to any transaction while preserving issue order.
   std::vector<ReadTransaction> r_transactions;
 
-  // Round-robin index for fair interleaving
+  // Round-robin index for fair burst-to-burst scheduling
   size_t r_rr_index;
 
   // Currently selected transaction index for this cycle (-1 if none)
   int r_selected_idx;
+
+  // Active transaction whose burst is being drained.
+  int r_active_idx;
 
   // ========== Combinational Logic Functions ==========
   void comb_write_channel();
   void comb_read_channel();
 
   // ========== Helper Functions ==========
-  void do_memory_write(uint32_t addr, uint32_t data, uint8_t wstrb);
-  uint32_t do_memory_read(uint32_t addr);
+  void do_memory_write(uint32_t addr, axi_data_t data, axi_strb_t wstrb);
+  axi_data_t do_memory_read(uint32_t addr);
 
-  // Find next ready transaction using round-robin
+  // Find next ready transaction using round-robin once the current burst finishes
   int find_next_ready_transaction();
 };
 

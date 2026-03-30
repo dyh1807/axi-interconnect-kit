@@ -1,5 +1,9 @@
 #pragma once
 
+#if __has_include("config.h")
+#include "config.h"
+#endif
+
 #include <cstdint>
 
 // Minimal signal aliases used by AXI interconnect/uncore modules.
@@ -36,10 +40,12 @@ using wire30_t = uint32_t;
 using wire31_t = uint32_t;
 using wire32_t = uint32_t;
 using wire64_t = uint64_t;
+using wire128_t = unsigned __int128;
 
 // Configurable defaults for standalone build (can be overridden via -D).
-#ifndef AXI_KIT_DDR_LATENCY
-#define AXI_KIT_DDR_LATENCY 50
+// Keep a single simulator-facing DDR read latency entrypoint.
+#ifndef CONFIG_SIM_DDR_LATENCY
+#define CONFIG_SIM_DDR_LATENCY 50
 #endif
 
 #ifndef AXI_KIT_DEBUG
@@ -68,11 +74,6 @@ using wire64_t = uint64_t;
 #else
 #define AXI_KIT_MMIO_SIZE 0x00001000u
 #endif
-#endif
-
-// Legacy compatibility macros used by extracted code.
-#ifndef ICACHE_MISS_LATENCY
-#define ICACHE_MISS_LATENCY AXI_KIT_DDR_LATENCY
 #endif
 
 #ifndef DEBUG

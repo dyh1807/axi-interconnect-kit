@@ -9,8 +9,13 @@
 namespace axi_interconnect {
 
 void AXI_Router_AXI4::init() {
-  r_active = false;
-  r_to_mmio = false;
+  for (uint32_t i = 0; i < ROUTER_AXI_ID_SLOTS; ++i) {
+    r_route_valid[i] = false;
+    r_route_to_mmio[i] = false;
+  }
+  r_drive_valid = false;
+  r_drive_to_mmio = false;
+  r_drive_id = 0;
   w_active = false;
   w_to_mmio = false;
 }
@@ -23,9 +28,27 @@ void AXI_Router_AXI4::comb_outputs(sim_ddr::SimDDR_IO_t &up,
   up.aw.awready = false;
   up.w.wready = false;
 
-  // Route R channel from selected target
-  if (r_active) {
-    const auto &src = r_to_mmio ? mmio.r : ddr.r;
+  // Route R channel from whichever downstream source has a response whose AXI
+  // ID is still owned by that source. Prioritize MMIO to avoid starving rare
+  // MMIO completions behind long DDR traffic.
+  r_drive_valid = false;
+  r_drive_to_mmio = false;
+  r_drive_id = 0;
+
+  const bool mmio_r_match =
+      mmio.r.rvalid &&
+      r_route_valid[static_cast<uint8_t>(mmio.r.rid)] &&
+      r_route_to_mmio[static_cast<uint8_t>(mmio.r.rid)];
+  const bool ddr_r_match =
+      ddr.r.rvalid &&
+      r_route_valid[static_cast<uint8_t>(ddr.r.rid)] &&
+      !r_route_to_mmio[static_cast<uint8_t>(ddr.r.rid)];
+
+  if (mmio_r_match || ddr_r_match) {
+    r_drive_valid = true;
+    r_drive_to_mmio = mmio_r_match;
+    const auto &src = r_drive_to_mmio ? mmio.r : ddr.r;
+    r_drive_id = src.rid;
     up.r.rvalid = src.rvalid;
     up.r.rid = src.rid;
     up.r.rdata = src.rdata;
@@ -73,17 +96,15 @@ void AXI_Router_AXI4::comb_inputs(sim_ddr::SimDDR_IO_t &up,
 
   // Read address routing
   bool ar_sel_mmio = is_mmio_addr(up.ar.araddr);
-  if (!r_active) {
-    ar_ready = ar_sel_mmio ? mmio.ar.arready : ddr.ar.arready;
-    if (up.ar.arvalid) {
-      auto &dst = ar_sel_mmio ? mmio.ar : ddr.ar;
-      dst.arvalid = true;
-      dst.araddr = up.ar.araddr;
-      dst.arid = up.ar.arid;
-      dst.arlen = up.ar.arlen;
-      dst.arsize = up.ar.arsize;
-      dst.arburst = up.ar.arburst;
-    }
+  ar_ready = ar_sel_mmio ? mmio.ar.arready : ddr.ar.arready;
+  if (up.ar.arvalid) {
+    auto &dst = ar_sel_mmio ? mmio.ar : ddr.ar;
+    dst.arvalid = true;
+    dst.araddr = up.ar.araddr;
+    dst.arid = up.ar.arid;
+    dst.arlen = up.ar.arlen;
+    dst.arsize = up.ar.arsize;
+    dst.arburst = up.ar.arburst;
   }
 
   // Write address routing
@@ -122,8 +143,8 @@ void AXI_Router_AXI4::comb_inputs(sim_ddr::SimDDR_IO_t &up,
   up.w.wready = w_ready;
 
   // Route R ready to selected target
-  if (r_active) {
-    if (r_to_mmio) {
+  if (r_drive_valid) {
+    if (r_drive_to_mmio) {
       mmio.r.rready = up.r.rready;
       ddr.r.rready = false;
     } else {
@@ -153,18 +174,18 @@ void AXI_Router_AXI4::comb_inputs(sim_ddr::SimDDR_IO_t &up,
 void AXI_Router_AXI4::seq(const sim_ddr::SimDDR_IO_t &up,
                           const sim_ddr::SimDDR_IO_t &ddr,
                           const sim_ddr::SimDDR_IO_t &mmio) {
-  // Latch read target on AR handshake
+  // Latch read target on every AR handshake.
   if (up.ar.arvalid && up.ar.arready) {
-    r_active = true;
-    r_to_mmio = is_mmio_addr(up.ar.araddr);
+    const uint8_t id = up.ar.arid;
+    r_route_valid[id] = true;
+    r_route_to_mmio[id] = is_mmio_addr(up.ar.araddr);
   }
 
-  // Complete read on RLAST handshake from selected target
-  if (r_active) {
-    const auto &src = r_to_mmio ? mmio.r : ddr.r;
-    if (src.rvalid && src.rready && src.rlast) {
-      r_active = false;
-    }
+  // Complete read route on RLAST handshake.
+  if (up.r.rvalid && up.r.rready && up.r.rlast) {
+    const uint8_t id = up.r.rid;
+    r_route_valid[id] = false;
+    r_route_to_mmio[id] = false;
   }
 
   // Latch write target on AW handshake

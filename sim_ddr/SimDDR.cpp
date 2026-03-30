@@ -2,8 +2,9 @@
  * @file SimDDR.cpp
  * @brief SimDDR Implementation - DDR Memory Simulator with AXI4 Interface
  *
- * Implementation with outstanding transaction support and read interleaving.
- * Uses vector + round-robin for fair interleaved data delivery.
+ * Implementation with outstanding transaction support and burst-drain read
+ * service. Reads still use round-robin arbitration, but only between bursts,
+ * so a selected burst drains contiguously instead of ping-ponging every beat.
  */
 
 #include "SimDDR.h"
@@ -42,6 +43,11 @@ bool focus_write_line(uint32_t addr) {
          (CONFIG_AXI_LLC_FOCUS_LINE1 != 0u &&
           line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1));
 }
+
+inline uint8_t extract_data_byte(axi_data_t data, uint8_t byte_idx) {
+  return static_cast<uint8_t>(
+      (static_cast<unsigned __int128>(data) >> (byte_idx * 8u)) & 0xFFu);
+}
 } // namespace
 
 // ============================================================================
@@ -60,6 +66,7 @@ void SimDDR::init() {
   r_transactions.clear();
   r_rr_index = 0;
   r_selected_idx = -1;
+  r_active_idx = -1;
 
   // Initialize IO outputs
   io.aw.awready = false;
@@ -123,7 +130,8 @@ void SimDDR::comb_write_channel() {
   if (!w_resp_queue.empty()) {
     WriteRespPending &front =
         const_cast<WriteRespPending &>(w_resp_queue.front());
-    if (front.latency_cnt >= SIM_DDR_LATENCY) {
+    if (SIM_DDR_WRITE_RESP_LATENCY == 0 ||
+        front.latency_cnt >= SIM_DDR_WRITE_RESP_LATENCY) {
       io.b.bvalid = true;
       io.b.bid = front.id;
       io.b.bresp = AXI_RESP_OKAY;
@@ -132,7 +140,7 @@ void SimDDR::comb_write_channel() {
 }
 
 // ============================================================================
-// Find next ready transaction using round-robin (for interleaving)
+// Find next ready transaction using round-robin once the current burst finishes
 // ============================================================================
 int SimDDR::find_next_ready_transaction() {
   if (r_transactions.empty())
@@ -152,7 +160,7 @@ int SimDDR::find_next_ready_transaction() {
 }
 
 // ============================================================================
-// Combinational Logic - Read Channel with Interleaving
+// Combinational Logic - Read Channel with Burst-Drain Service
 // ============================================================================
 void SimDDR::comb_read_channel() {
   // Default outputs
@@ -163,7 +171,7 @@ void SimDDR::comb_read_channel() {
   io.r.rresp = AXI_RESP_OKAY;
   io.r.rlast = false;
 
-  // Reset selection
+  // Reset selection unless an active burst is still eligible to drive.
   r_selected_idx = -1;
 
   // --- AR Channel: Accept new read address if not full ---
@@ -171,8 +179,18 @@ void SimDDR::comb_read_channel() {
     io.ar.arready = true;
   }
 
-  // --- R Channel: Interleaved data from any ready transaction ---
-  r_selected_idx = find_next_ready_transaction();
+  // --- R Channel: Drain the active burst before rotating to the next ready one ---
+  if (r_active_idx >= 0 &&
+      r_active_idx < static_cast<int>(r_transactions.size())) {
+    const ReadTransaction &active = r_transactions[static_cast<size_t>(r_active_idx)];
+    if (active.in_data_phase && !active.complete) {
+      r_selected_idx = r_active_idx;
+    }
+  }
+
+  if (r_selected_idx < 0) {
+    r_selected_idx = find_next_ready_transaction();
+  }
 
   if (r_selected_idx >= 0) {
     ReadTransaction &txn = r_transactions[r_selected_idx];
@@ -217,11 +235,13 @@ void SimDDR::seq() {
     if (focus_write_line(w_current.addr)) {
       std::printf(
           "[DDR-W][W-HS] cyc=%lld id=%u beat=%u/%u beat_addr=0x%08x "
-          "data=0x%08x wstrb=0x%x wlast=%d\n",
+          "data=0x%016llx wstrb=0x%llx wlast=%d\n",
           sim_time, static_cast<unsigned>(w_current.id),
           static_cast<unsigned>(w_current.beat_cnt),
-          static_cast<unsigned>(w_current.len + 1), current_addr, io.w.wdata,
-          static_cast<unsigned>(io.w.wstrb), static_cast<int>(io.w.wlast));
+          static_cast<unsigned>(w_current.len + 1), current_addr,
+          static_cast<unsigned long long>(io.w.wdata),
+          static_cast<unsigned long long>(io.w.wstrb),
+          static_cast<int>(io.w.wlast));
     }
     do_memory_write(current_addr, io.w.wdata, io.w.wstrb);
     w_current.beat_cnt++;
@@ -287,11 +307,13 @@ void SimDDR::seq() {
 
     if (io.r.rlast) {
       txn.complete = true;
+      r_active_idx = -1;
+      r_rr_index =
+          (static_cast<size_t>(r_selected_idx) + 1) %
+          std::max(static_cast<size_t>(1), r_transactions.size());
+    } else {
+      r_active_idx = r_selected_idx;
     }
-
-    // Advance round-robin index for interleaving
-    r_rr_index =
-        (r_selected_idx + 1) % std::max((size_t)1, r_transactions.size());
   }
 
   // Update all read transactions: increment latency, mark data phase
@@ -304,15 +326,28 @@ void SimDDR::seq() {
     }
   }
 
-  // Remove completed transactions
-  r_transactions.erase(
-      std::remove_if(r_transactions.begin(), r_transactions.end(),
-                     [](const ReadTransaction &t) { return t.complete; }),
-      r_transactions.end());
+  // Remove completed transactions while keeping the active index stable.
+  size_t dst = 0;
+  for (size_t src = 0; src < r_transactions.size(); ++src) {
+    if (r_transactions[src].complete) {
+      if (r_active_idx >= 0 && static_cast<int>(src) < r_active_idx) {
+        r_active_idx--;
+      }
+      continue;
+    }
+    if (dst != src) {
+      r_transactions[dst] = r_transactions[src];
+    }
+    dst++;
+  }
+  r_transactions.resize(dst);
 
   // Adjust rr_index if vector size changed
   if (!r_transactions.empty() && r_rr_index >= r_transactions.size()) {
     r_rr_index = 0;
+  }
+  if (r_active_idx >= static_cast<int>(r_transactions.size())) {
+    r_active_idx = -1;
   }
 }
 
@@ -320,49 +355,48 @@ void SimDDR::seq() {
 // Helper Functions
 // ============================================================================
 
-void SimDDR::do_memory_write(uint32_t addr, uint32_t data, uint8_t wstrb) {
+void SimDDR::do_memory_write(uint32_t addr, axi_data_t data, axi_strb_t wstrb) {
   if (focus_write_line(addr)) {
     std::printf(
-        "[DDR-W][COMMIT] cyc=%lld addr=0x%08x data=0x%08x wstrb=0x%x\n",
-        sim_time, addr, data, static_cast<unsigned>(wstrb));
+        "[DDR-W][COMMIT] cyc=%lld addr=0x%08x data=0x%016llx wstrb=0x%llx\n",
+        sim_time, addr, static_cast<unsigned long long>(data),
+        static_cast<unsigned long long>(wstrb));
   }
-  uint32_t word_addr = addr >> 2;
 
   if (p_memory == nullptr) {
     return;
   }
 
-  uint32_t old_data = p_memory[word_addr];
-  uint32_t mask = 0;
-
-  if (wstrb & 0x1)
-    mask |= 0x000000FF;
-  if (wstrb & 0x2)
-    mask |= 0x0000FF00;
-  if (wstrb & 0x4)
-    mask |= 0x00FF0000;
-  if (wstrb & 0x8)
-    mask |= 0xFF000000;
-
-  p_memory[word_addr] = (data & mask) | (old_data & ~mask);
+  auto *byte_mem = reinterpret_cast<uint8_t *>(p_memory);
+  for (uint8_t byte = 0; byte < AXI_DATA_BYTES; ++byte) {
+    if (((static_cast<uint64_t>(wstrb) >> byte) & 0x1u) == 0u) {
+      continue;
+    }
+    byte_mem[addr + byte] = extract_data_byte(data, byte);
+  }
 
   if (DCACHE_LOG) {
-    printf("[SimDDR] Write: addr=0x%08x data=0x%08x wstrb=0x%x\n", addr, data,
-           wstrb);
+    printf("[SimDDR] Write: addr=0x%08x data=0x%016llx wstrb=0x%llx\n", addr,
+           static_cast<unsigned long long>(data),
+           static_cast<unsigned long long>(wstrb));
   }
 }
 
-uint32_t SimDDR::do_memory_read(uint32_t addr) {
-  uint32_t word_addr = addr >> 2;
-
+axi_data_t SimDDR::do_memory_read(uint32_t addr) {
   if (p_memory == nullptr) {
-    return 0xDEADBEEF;
+    return static_cast<axi_data_t>(0xDEADBEEF);
   }
 
-  uint32_t data = p_memory[word_addr];
+  auto *byte_mem = reinterpret_cast<uint8_t *>(p_memory);
+  axi_data_t data = 0;
+  for (uint8_t byte = 0; byte < AXI_DATA_BYTES; ++byte) {
+    data |= static_cast<axi_data_t>(
+        static_cast<unsigned __int128>(byte_mem[addr + byte]) << (byte * 8u));
+  }
 
   if (DCACHE_LOG) {
-    printf("[SimDDR] Read: addr=0x%08x -> 0x%08x\n", addr, data);
+    printf("[SimDDR] Read: addr=0x%08x -> 0x%016llx\n", addr,
+           static_cast<unsigned long long>(data));
   }
 
   return data;
@@ -374,8 +408,8 @@ uint32_t SimDDR::do_memory_read(uint32_t addr) {
 void SimDDR::print_state() {
   printf("[SimDDR] Write: active=%d resp_pending=%zu\n", w_active,
          w_resp_queue.size());
-  printf("[SimDDR] Read: txn_count=%zu rr_index=%zu\n", r_transactions.size(),
-         r_rr_index);
+  printf("[SimDDR] Read: txn_count=%zu rr_index=%zu active_idx=%d\n",
+         r_transactions.size(), r_rr_index, r_active_idx);
   for (size_t i = 0; i < r_transactions.size(); ++i) {
     const auto &txn = r_transactions[i];
     printf("[SimDDR] ReadTxn[%zu]: addr=0x%08x id=%u len=%u size=%u beat=%u lat=%u in_data=%d complete=%d\n",
