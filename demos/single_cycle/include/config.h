@@ -13,8 +13,8 @@
 #define MAX_COMMIT_INST 150000000ull
 #endif
 
-#ifndef ICACHE_MISS_LATENCY
-#define ICACHE_MISS_LATENCY 8u
+#ifndef CONFIG_SIM_DDR_LATENCY
+#define CONFIG_SIM_DDR_LATENCY 8u
 #endif
 
 #ifndef UART_BASE

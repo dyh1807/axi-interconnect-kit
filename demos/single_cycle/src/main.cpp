@@ -233,7 +233,7 @@ int main(int argc, char **argv) {
             << " size=" << image_size
             << " max_inst=" << cfg.max_inst
             << " max_cycles=" << cfg.max_cycles
-            << " ddr_latency=" << ICACHE_MISS_LATENCY << std::endl;
+            << " ddr_latency=" << sim_ddr::SIM_DDR_LATENCY << std::endl;
 
   sc_axi4_in_t axi_in{};
   sc_axi4_out_t axi_out{};

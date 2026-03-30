@@ -62,9 +62,15 @@ constexpr uint8_t MAX_READ_OUTSTANDING_PER_MASTER =
 #endif
 #endif
 constexpr uint8_t MAX_WRITE_OUTSTANDING = AXI_KIT_MAX_WRITE_OUTSTANDING;
-constexpr uint8_t AXI_BEAT_WORDS = MAX_WRITE_TRANSACTION_WORDS; // upstream/cache payload granularity = 8 x 32-bit
-constexpr uint8_t AXI_BEAT_BYTES = AXI_BEAT_WORDS * sizeof(uint32_t);
-constexpr uint8_t CACHELINE_WORDS = AXI_BEAT_WORDS; // legacy beat-width alias
+constexpr uint8_t AXI_UPSTREAM_PAYLOAD_WORDS = MAX_WRITE_TRANSACTION_WORDS;
+constexpr uint8_t AXI_UPSTREAM_PAYLOAD_BYTES =
+    AXI_UPSTREAM_PAYLOAD_WORDS * sizeof(uint32_t);
+constexpr uint8_t AXI_BEAT_WORDS =
+    AXI_UPSTREAM_PAYLOAD_WORDS; // legacy alias
+constexpr uint8_t AXI_BEAT_BYTES =
+    AXI_UPSTREAM_PAYLOAD_BYTES; // legacy alias
+constexpr uint8_t CACHELINE_WORDS =
+    AXI_UPSTREAM_PAYLOAD_WORDS; // legacy beat-width alias
 constexpr uint16_t MAX_READ_TRANSACTION_BYTES = 256;
 constexpr uint16_t MAX_READ_TRANSACTION_WORDS =
     MAX_READ_TRANSACTION_BYTES / sizeof(uint32_t);
@@ -165,10 +171,10 @@ struct WideWriteStrb_t {
 };
 
 struct WideData256_t {
-  uint32_t words[AXI_BEAT_WORDS];
+  uint32_t words[AXI_UPSTREAM_PAYLOAD_WORDS];
 
   void clear() {
-    for (int i = 0; i < AXI_BEAT_WORDS; i++)
+    for (int i = 0; i < AXI_UPSTREAM_PAYLOAD_WORDS; i++)
       words[i] = 0;
   }
 
@@ -178,14 +184,14 @@ struct WideData256_t {
 
 inline WideWriteData_t::WideWriteData_t(const WideData256_t &other) {
   clear();
-  for (int i = 0; i < AXI_BEAT_WORDS; ++i) {
+  for (int i = 0; i < AXI_UPSTREAM_PAYLOAD_WORDS; ++i) {
     words[i] = other.words[i];
   }
 }
 
 inline WideWriteData_t &WideWriteData_t::operator=(const WideData256_t &other) {
   clear();
-  for (int i = 0; i < AXI_BEAT_WORDS; ++i) {
+  for (int i = 0; i < AXI_UPSTREAM_PAYLOAD_WORDS; ++i) {
     words[i] = other.words[i];
   }
   return *this;

@@ -36,11 +36,12 @@ static_assert(AXI_KIT_SIM_DDR_BEAT_BYTES == 4 ||
                   AXI_KIT_SIM_DDR_BEAT_BYTES == 8 ||
                   AXI_KIT_SIM_DDR_BEAT_BYTES == 16,
               "AXI_KIT_SIM_DDR_BEAT_BYTES must be 4, 8, or 16");
-constexpr uint8_t AXI_DATA_BYTES = AXI_KIT_SIM_DDR_BEAT_BYTES;
+constexpr uint8_t SIM_DDR_BEAT_BYTES = AXI_KIT_SIM_DDR_BEAT_BYTES;
+constexpr uint8_t AXI_DATA_BYTES = SIM_DDR_BEAT_BYTES; // legacy alias
 constexpr uint8_t AXI_DATA_WORDS =
-    AXI_DATA_BYTES / static_cast<uint8_t>(sizeof(uint32_t));
+    SIM_DDR_BEAT_BYTES / static_cast<uint8_t>(sizeof(uint32_t));
 constexpr uint8_t AXI_SIZE_CODE =
-    (AXI_DATA_BYTES == 16) ? 4u : ((AXI_DATA_BYTES == 8) ? 3u : 2u);
+    (SIM_DDR_BEAT_BYTES == 16) ? 4u : ((SIM_DDR_BEAT_BYTES == 8) ? 3u : 2u);
 #if AXI_KIT_SIM_DDR_BEAT_BYTES == 16
 using axi_data_t = wire128_t;
 using axi_strb_t = wire16_t;

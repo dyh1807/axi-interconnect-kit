@@ -10,7 +10,7 @@ struct AXI_LLCConfig {
   // Mainline simulator profiles keep the line shape and policy fixed.
   uint32_t line_bytes = 64;
   uint32_t ways = 16;
-  uint32_t mshr_num = 4;
+  uint32_t mshr_num = 8;
   uint32_t lookup_latency = 3;
   bool prefetch_enable = false;
   uint32_t prefetch_degree = 1;

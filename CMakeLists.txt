@@ -154,7 +154,7 @@ if(AXI_KIT_BUILD_SINGLE_CYCLE)
   target_compile_features(axi_kit_axi4_sc PUBLIC cxx_std_20)
   target_compile_definitions(axi_kit_axi4_sc PRIVATE
       AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
-      AXI_KIT_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+      CONFIG_SIM_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
   )
 
   add_library(axi_kit_single_cycle_core STATIC
@@ -168,8 +168,7 @@ if(AXI_KIT_BUILD_SINGLE_CYCLE)
       ${AXI_KIT_SINGLE_CYCLE_COMPILE_OPTS}
   )
   target_compile_definitions(axi_kit_single_cycle_core PRIVATE
-      AXI_KIT_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
-      ICACHE_MISS_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+      CONFIG_SIM_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
   )
   target_link_libraries(axi_kit_single_cycle_core PUBLIC axi_kit_axi4_sc)
 
@@ -183,8 +182,7 @@ if(AXI_KIT_BUILD_SINGLE_CYCLE)
       ${AXI_KIT_SINGLE_CYCLE_COMPILE_OPTS}
   )
   target_compile_definitions(single_cycle_axi4_demo PRIVATE
-      AXI_KIT_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
-      ICACHE_MISS_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+      CONFIG_SIM_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
   )
   target_link_libraries(single_cycle_axi4_demo PRIVATE
       axi_kit_single_cycle_core
