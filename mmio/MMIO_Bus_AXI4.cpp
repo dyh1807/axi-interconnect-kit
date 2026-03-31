@@ -80,18 +80,16 @@ uint32_t MMIO_Bus_AXI4::beat_addr(uint32_t base_addr, uint8_t burst,
 }
 
 sim_ddr::axi_data_t MMIO_Bus_AXI4::load_beat(const uint8_t *p, uint8_t nbytes) {
-  sim_ddr::axi_data_t value = 0;
+  sim_ddr::axi_data_t value{};
   for (uint8_t i = 0; i < nbytes; ++i) {
-    value |= static_cast<sim_ddr::axi_data_t>(
-        static_cast<unsigned __int128>(p[i]) << (i * 8u));
+    axi_compat::set_byte(value, i, p[i]);
   }
   return value;
 }
 
 void MMIO_Bus_AXI4::store_beat(uint8_t *p, sim_ddr::axi_data_t v, uint8_t nbytes) {
   for (uint8_t i = 0; i < nbytes; ++i) {
-    p[i] = static_cast<uint8_t>(
-        (static_cast<unsigned __int128>(v) >> (i * 8u)) & 0xFFu);
+    p[i] = axi_compat::get_byte(v, i);
   }
 }
 
@@ -233,7 +231,12 @@ void MMIO_Bus_AXI4::seq() {
     uint8_t nbytes = beat_bytes(w_pending.size);
     uint8_t in_bytes[sim_ddr::AXI_DATA_BYTES] = {0};
     store_beat(in_bytes, io.w.wdata, nbytes);
-    uint32_t local_wstrb = io.w.wstrb & ((1u << nbytes) - 1u);
+    uint32_t local_wstrb = 0;
+    for (uint8_t i = 0; i < nbytes && i < 32u; ++i) {
+      if (axi_compat::test_bit(io.w.wstrb, i)) {
+        local_wstrb |= (1u << i);
+      }
+    }
 
     if (dev != nullptr) {
       dev->write(addr, in_bytes, nbytes, local_wstrb);

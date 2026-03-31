@@ -34,20 +34,24 @@ constexpr uint8_t AXI_ID_WIDTH =
 #endif
 static_assert(AXI_KIT_SIM_DDR_BEAT_BYTES == 4 ||
                   AXI_KIT_SIM_DDR_BEAT_BYTES == 8 ||
-                  AXI_KIT_SIM_DDR_BEAT_BYTES == 16,
-              "AXI_KIT_SIM_DDR_BEAT_BYTES must be 4, 8, or 16");
-static_assert(!AXI_KIT_USE_PARENT_WIRE_REG || AXI_KIT_SIM_DDR_BEAT_BYTES <= 8,
-              "parent simulator wire/reg currently carries at most 64 bits; "
-              "16B DDR beats require a dedicated wide-bit carrier first");
+                  AXI_KIT_SIM_DDR_BEAT_BYTES == 16 ||
+                  AXI_KIT_SIM_DDR_BEAT_BYTES == 32,
+              "AXI_KIT_SIM_DDR_BEAT_BYTES must be 4, 8, 16, or 32");
 constexpr uint8_t SIM_DDR_BEAT_BYTES = AXI_KIT_SIM_DDR_BEAT_BYTES;
 constexpr uint8_t AXI_DATA_BYTES = SIM_DDR_BEAT_BYTES; // legacy alias
+constexpr uint8_t AXI_STRB_STORAGE_BYTES =
+    (SIM_DDR_BEAT_BYTES + 7u) / 8u;
 constexpr uint8_t AXI_DATA_WORDS =
     SIM_DDR_BEAT_BYTES / static_cast<uint8_t>(sizeof(uint32_t));
 constexpr uint8_t AXI_SIZE_CODE =
-    (SIM_DDR_BEAT_BYTES == 16) ? 4u : ((SIM_DDR_BEAT_BYTES == 8) ? 3u : 2u);
-// PR1 keeps the standalone carrier capped at 128 bits. 32B beats and wider
-// payload carriers are handled separately by the later AXI 256-bit support work.
-#if AXI_KIT_SIM_DDR_BEAT_BYTES == 16
+    (SIM_DDR_BEAT_BYTES == 32)
+        ? 5u
+        : ((SIM_DDR_BEAT_BYTES == 16) ? 4u
+                                      : ((SIM_DDR_BEAT_BYTES == 8) ? 3u : 2u));
+#if AXI_KIT_SIM_DDR_BEAT_BYTES == 32
+using axi_data_t = wire<256>;
+using axi_strb_t = wire<32>;
+#elif AXI_KIT_SIM_DDR_BEAT_BYTES == 16
 using axi_data_t = wire<128>;
 using axi_strb_t = wire<16>;
 #elif AXI_KIT_SIM_DDR_BEAT_BYTES == 8
@@ -57,6 +61,10 @@ using axi_strb_t = wire<8>;
 using axi_data_t = wire<32>;
 using axi_strb_t = wire<4>;
 #endif
+static_assert(sizeof(axi_data_t) >= AXI_DATA_BYTES,
+              "wire carrier is narrower than the configured DDR beat width");
+static_assert(sizeof(axi_strb_t) >= AXI_STRB_STORAGE_BYTES,
+              "wire carrier is narrower than the configured DDR strobe width");
 
 // ============================================================================
 // AXI4 Burst Types

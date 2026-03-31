@@ -174,9 +174,9 @@ struct WideWriteStrb_t {
 };
 
 struct WideData256_t {
-  // Historical name retained for source compatibility. The actual payload
-  // carrier in this PR is still bounded by AXI_KIT_MAX_WRITE_TRANSACTION_BYTES
-  // and does not imply wire<256> support.
+  // Historical name retained for source compatibility. The upstream payload
+  // remains bounded by AXI_KIT_MAX_WRITE_TRANSACTION_BYTES, while downstream
+  // SimDDR beats may now use a true wire<256> carrier in standalone mode.
   uint32_t words[AXI_UPSTREAM_PAYLOAD_WORDS];
 
   void clear() {

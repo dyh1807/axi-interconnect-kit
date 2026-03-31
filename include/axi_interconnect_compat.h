@@ -4,11 +4,14 @@
 #include "config.h"
 #endif
 
+#include <array>
 #include <cstdint>
+#include <string>
 #include <type_traits>
+#include <utility>
 
 #ifndef AXI_KIT_HAS_PARENT_CONFIG
-#if __has_include("config.h") && __has_include("base_types.h")
+#if __has_include("config.h")
 #define AXI_KIT_HAS_PARENT_CONFIG 1
 #else
 #define AXI_KIT_HAS_PARENT_CONFIG 0
@@ -16,16 +19,298 @@
 #endif
 
 #ifndef AXI_KIT_USE_PARENT_WIRE_REG
-#define AXI_KIT_USE_PARENT_WIRE_REG AXI_KIT_HAS_PARENT_CONFIG
+#ifdef SIMULATOR_HAS_PARENT_WIRE_REG
+#define AXI_KIT_USE_PARENT_WIRE_REG 1
+#else
+#define AXI_KIT_USE_PARENT_WIRE_REG 0
 #endif
+#endif
+
+namespace axi_compat {
+
+template <typename T>
+using remove_cvref_t = std::remove_cv_t<std::remove_reference_t<T>>;
+
+template <typename T>
+inline constexpr bool is_builtin_wire_v =
+    std::is_integral_v<remove_cvref_t<T>> ||
+    std::is_same_v<remove_cvref_t<T>, unsigned __int128> ||
+    std::is_same_v<remove_cvref_t<T>, __int128>;
+
+template <typename T, typename = void>
+struct has_byte_array : std::false_type {};
+
+template <typename T>
+struct has_byte_array<
+    T, std::void_t<decltype(std::declval<remove_cvref_t<T> &>().bytes[0])>>
+    : std::true_type {};
+
+template <typename T>
+inline constexpr bool has_byte_array_v = has_byte_array<T>::value;
+
+#if !AXI_KIT_USE_PARENT_WIRE_REG
+template <int Bits>
+struct wide_bits {
+  static_assert(Bits > 0, "wire/reg bit width must be positive");
+
+  static constexpr uint32_t kBits = Bits;
+  static constexpr uint32_t kLaneCount = (Bits + 63) / 64;
+
+  std::array<uint64_t, kLaneCount> lanes{};
+
+  constexpr wide_bits() = default;
+
+  template <typename T,
+            typename = std::enable_if_t<is_builtin_wire_v<T>>>
+  constexpr wide_bits(T value) {
+    *this = value;
+  }
+
+  constexpr void clear() { lanes.fill(0); }
+
+  constexpr void trim_unused_bits() {
+    if constexpr ((Bits % 64) != 0) {
+      lanes[kLaneCount - 1] &=
+          (static_cast<uint64_t>(1u) << (Bits % 64)) - 1u;
+    }
+  }
+
+  template <typename T,
+            typename = std::enable_if_t<is_builtin_wire_v<T>>>
+  constexpr wide_bits &operator=(T value) {
+    clear();
+    if constexpr (std::is_same_v<remove_cvref_t<T>, bool>) {
+      lanes[0] = value ? 1u : 0u;
+    } else if constexpr (sizeof(remove_cvref_t<T>) <= sizeof(uint64_t)) {
+      lanes[0] = static_cast<uint64_t>(value);
+    } else {
+      const unsigned __int128 wide = static_cast<unsigned __int128>(value);
+      lanes[0] = static_cast<uint64_t>(wide);
+      if constexpr (kLaneCount > 1) {
+        lanes[1] = static_cast<uint64_t>(wide >> 64u);
+      }
+    }
+    trim_unused_bits();
+    return *this;
+  }
+
+  constexpr wide_bits &operator|=(const wide_bits &other) {
+    for (uint32_t lane = 0; lane < kLaneCount; ++lane) {
+      lanes[lane] |= other.lanes[lane];
+    }
+    trim_unused_bits();
+    return *this;
+  }
+
+  template <typename T,
+            typename = std::enable_if_t<is_builtin_wire_v<T>>>
+  constexpr wide_bits &operator|=(T value) {
+    wide_bits other;
+    other = value;
+    return (*this |= other);
+  }
+
+  constexpr bool operator==(const wide_bits &other) const {
+    return lanes == other.lanes;
+  }
+
+  template <typename T,
+            typename = std::enable_if_t<is_builtin_wire_v<T>>>
+  constexpr bool operator==(T value) const {
+    wide_bits other;
+    other = value;
+    return *this == other;
+  }
+};
+
+template <int Bits,
+          typename T,
+          typename = std::enable_if_t<is_builtin_wire_v<T>>>
+constexpr bool operator==(T value, const wide_bits<Bits> &rhs) {
+  return rhs == value;
+}
+
+template <int Bits>
+constexpr wide_bits<Bits> operator|(wide_bits<Bits> lhs,
+                                    const wide_bits<Bits> &rhs) {
+  lhs |= rhs;
+  return lhs;
+}
+
+template <int Bits,
+          typename T,
+          typename = std::enable_if_t<is_builtin_wire_v<T>>>
+constexpr wide_bits<Bits> operator|(wide_bits<Bits> lhs, T value) {
+  lhs |= value;
+  return lhs;
+}
+
+template <typename T>
+struct is_wide_bits : std::false_type {};
+
+template <int Bits>
+struct is_wide_bits<wide_bits<Bits>> : std::true_type {};
+#else
+template <typename T>
+struct is_wide_bits : std::false_type {};
+#endif
+
+template <typename T>
+inline constexpr bool is_wide_bits_v = is_wide_bits<remove_cvref_t<T>>::value;
+
+template <typename T>
+inline uint8_t get_byte(const T &value, uint32_t byte_idx) {
+  if constexpr (is_wide_bits_v<T>) {
+    using ValueT = remove_cvref_t<T>;
+    const uint32_t lane_idx = byte_idx / 8u;
+    if (lane_idx >= ValueT::kLaneCount) {
+      return 0;
+    }
+    const uint32_t shift = (byte_idx % 8u) * 8u;
+    return static_cast<uint8_t>((value.lanes[lane_idx] >> shift) & 0xFFu);
+  } else if constexpr (has_byte_array_v<T>) {
+    constexpr uint32_t kByteCount =
+        sizeof(value.bytes) / sizeof(value.bytes[0]);
+    if (byte_idx >= kByteCount) {
+      return 0;
+    }
+    return static_cast<uint8_t>(value.bytes[byte_idx]);
+  } else if constexpr (std::is_same_v<remove_cvref_t<T>, bool>) {
+    return (byte_idx == 0 && value) ? 1u : 0u;
+  } else if constexpr (sizeof(remove_cvref_t<T>) <= sizeof(uint64_t)) {
+    if (byte_idx >= sizeof(remove_cvref_t<T>)) {
+      return 0;
+    }
+    const uint64_t raw = static_cast<uint64_t>(value);
+    return static_cast<uint8_t>((raw >> (byte_idx * 8u)) & 0xFFu);
+  } else {
+    if (byte_idx >= sizeof(remove_cvref_t<T>)) {
+      return 0;
+    }
+    const unsigned __int128 raw = static_cast<unsigned __int128>(value);
+    return static_cast<uint8_t>(
+        (raw >> (byte_idx * 8u)) & static_cast<unsigned __int128>(0xFFu));
+  }
+}
+
+template <typename T>
+inline void set_byte(T &value, uint32_t byte_idx, uint8_t byte) {
+  if constexpr (is_wide_bits_v<T>) {
+    using ValueT = remove_cvref_t<T>;
+    const uint32_t lane_idx = byte_idx / 8u;
+    if (lane_idx >= ValueT::kLaneCount) {
+      return;
+    }
+    const uint32_t shift = (byte_idx % 8u) * 8u;
+    value.lanes[lane_idx] &= ~(static_cast<uint64_t>(0xFFu) << shift);
+    value.lanes[lane_idx] |= static_cast<uint64_t>(byte) << shift;
+    value.trim_unused_bits();
+  } else if constexpr (has_byte_array_v<T>) {
+    constexpr uint32_t kByteCount =
+        sizeof(value.bytes) / sizeof(value.bytes[0]);
+    if (byte_idx < kByteCount) {
+      value.bytes[byte_idx] = byte;
+    }
+  } else if constexpr (std::is_same_v<remove_cvref_t<T>, bool>) {
+    if (byte_idx == 0) {
+      value = (byte & 0x1u) != 0u;
+    }
+  } else if constexpr (sizeof(remove_cvref_t<T>) <= sizeof(uint64_t)) {
+    if (byte_idx >= sizeof(remove_cvref_t<T>)) {
+      return;
+    }
+    uint64_t raw = static_cast<uint64_t>(value);
+    const uint32_t shift = byte_idx * 8u;
+    raw &= ~(static_cast<uint64_t>(0xFFu) << shift);
+    raw |= static_cast<uint64_t>(byte) << shift;
+    value = static_cast<remove_cvref_t<T>>(raw);
+  } else {
+    if (byte_idx >= sizeof(remove_cvref_t<T>)) {
+      return;
+    }
+    unsigned __int128 raw = static_cast<unsigned __int128>(value);
+    const uint32_t shift = byte_idx * 8u;
+    const unsigned __int128 mask =
+        static_cast<unsigned __int128>(0xFFu) << shift;
+    raw = (raw & ~mask) |
+          (static_cast<unsigned __int128>(byte) << shift);
+    value = static_cast<remove_cvref_t<T>>(raw);
+  }
+}
+
+template <typename T>
+inline uint32_t get_u32(const T &value, uint32_t word_idx) {
+  uint32_t out = 0;
+  const uint32_t first_byte = word_idx * 4u;
+  for (uint32_t byte = 0; byte < 4u; ++byte) {
+    out |= static_cast<uint32_t>(get_byte(value, first_byte + byte))
+           << (byte * 8u);
+  }
+  return out;
+}
+
+template <typename T>
+inline void set_u32(T &value, uint32_t word_idx, uint32_t word) {
+  const uint32_t first_byte = word_idx * 4u;
+  for (uint32_t byte = 0; byte < 4u; ++byte) {
+    set_byte(value, first_byte + byte,
+             static_cast<uint8_t>((word >> (byte * 8u)) & 0xFFu));
+  }
+}
+
+template <typename T>
+inline bool test_bit(const T &value, uint32_t bit_idx) {
+  const uint8_t byte = get_byte(value, bit_idx / 8u);
+  return ((byte >> (bit_idx % 8u)) & 0x1u) != 0u;
+}
+
+template <typename T>
+inline void set_bit(T &value, uint32_t bit_idx, bool enabled) {
+  const uint32_t byte_idx = bit_idx / 8u;
+  uint8_t byte = get_byte(value, byte_idx);
+  const uint8_t mask = static_cast<uint8_t>(1u << (bit_idx % 8u));
+  if (enabled) {
+    byte |= mask;
+  } else {
+    byte &= static_cast<uint8_t>(~mask);
+  }
+  set_byte(value, byte_idx, byte);
+}
+
+template <typename T>
+inline uint32_t low_u32(const T &value) {
+  return get_u32(value, 0);
+}
+
+template <typename T>
+inline uint64_t low_u64(const T &value) {
+  uint64_t out = 0;
+  for (uint32_t byte = 0; byte < 8u; ++byte) {
+    out |= static_cast<uint64_t>(get_byte(value, byte)) << (byte * 8u);
+  }
+  return out;
+}
+
+template <typename T>
+inline std::string hex_string(const T &value, uint32_t byte_count) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(2 + byte_count * 2u);
+  out += "0x";
+  for (int idx = static_cast<int>(byte_count) - 1; idx >= 0; --idx) {
+    const uint8_t byte = get_byte(value, static_cast<uint32_t>(idx));
+    out += kHex[byte >> 4];
+    out += kHex[byte & 0x0Fu];
+  }
+  return out;
+}
+
+} // namespace axi_compat
 
 #if !AXI_KIT_USE_PARENT_WIRE_REG
 template <int Bits>
 struct AutoTypeHelper {
   static_assert(Bits > 0, "wire/reg bit width must be positive");
-  static_assert(Bits <= 128,
-                "axi-interconnect-kit currently supports wire/reg up to 128 "
-                "bits; wider carriers are a later follow-up");
 
   using type = std::conditional_t<
       Bits == 1, bool,
@@ -33,9 +318,12 @@ struct AutoTypeHelper {
           (Bits <= 8), uint8_t,
           std::conditional_t<
               (Bits <= 16), uint16_t,
-              std::conditional_t<(Bits <= 32), uint32_t,
-                                 std::conditional_t<(Bits <= 64), uint64_t,
-                                                    unsigned __int128>>>>>;
+              std::conditional_t<
+                  (Bits <= 32), uint32_t,
+                  std::conditional_t<
+                      (Bits <= 64), uint64_t,
+                      std::conditional_t<(Bits <= 128), unsigned __int128,
+                                         axi_compat::wide_bits<Bits>>>>>>>;
 };
 
 template <int Bits>
@@ -49,6 +337,9 @@ static_assert(std::is_same_v<wire<1>, bool>);
 static_assert(std::is_same_v<wire<32>, uint32_t>);
 static_assert(sizeof(wire<128>) == 16,
               "wire<128> must remain a real 128-bit carrier in standalone "
+              "axi-interconnect-kit");
+static_assert(sizeof(wire<256>) == 32,
+              "wire<256> must remain a real 256-bit carrier in standalone "
               "axi-interconnect-kit");
 #endif
 

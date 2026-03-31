@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 // Use the global p_memory from the simulator
 extern uint32_t *p_memory;
@@ -45,8 +46,7 @@ bool focus_write_line(uint32_t addr) {
 }
 
 inline uint8_t extract_data_byte(axi_data_t data, uint8_t byte_idx) {
-  return static_cast<uint8_t>(
-      (static_cast<unsigned __int128>(data) >> (byte_idx * 8u)) & 0xFFu);
+  return axi_compat::get_byte(data, byte_idx);
 }
 } // namespace
 
@@ -233,14 +233,17 @@ void SimDDR::seq() {
     uint32_t current_addr =
         w_current.addr + (w_current.beat_cnt << w_current.size);
     if (focus_write_line(w_current.addr)) {
+      const std::string data_hex =
+          axi_compat::hex_string(io.w.wdata, AXI_DATA_BYTES);
+      const std::string wstrb_hex =
+          axi_compat::hex_string(io.w.wstrb, AXI_STRB_STORAGE_BYTES);
       std::printf(
           "[DDR-W][W-HS] cyc=%lld id=%u beat=%u/%u beat_addr=0x%08x "
-          "data=0x%016llx wstrb=0x%llx wlast=%d\n",
+          "data=%s wstrb=%s wlast=%d\n",
           sim_time, static_cast<unsigned>(w_current.id),
           static_cast<unsigned>(w_current.beat_cnt),
-          static_cast<unsigned>(w_current.len + 1), current_addr,
-          static_cast<unsigned long long>(io.w.wdata),
-          static_cast<unsigned long long>(io.w.wstrb),
+          static_cast<unsigned>(w_current.len + 1), current_addr, data_hex.c_str(),
+          wstrb_hex.c_str(),
           static_cast<int>(io.w.wlast));
     }
     do_memory_write(current_addr, io.w.wdata, io.w.wstrb);
@@ -357,10 +360,12 @@ void SimDDR::seq() {
 
 void SimDDR::do_memory_write(uint32_t addr, axi_data_t data, axi_strb_t wstrb) {
   if (focus_write_line(addr)) {
+    const std::string data_hex = axi_compat::hex_string(data, AXI_DATA_BYTES);
+    const std::string wstrb_hex =
+        axi_compat::hex_string(wstrb, AXI_STRB_STORAGE_BYTES);
     std::printf(
-        "[DDR-W][COMMIT] cyc=%lld addr=0x%08x data=0x%016llx wstrb=0x%llx\n",
-        sim_time, addr, static_cast<unsigned long long>(data),
-        static_cast<unsigned long long>(wstrb));
+        "[DDR-W][COMMIT] cyc=%lld addr=0x%08x data=%s wstrb=%s\n", sim_time,
+        addr, data_hex.c_str(), wstrb_hex.c_str());
   }
 
   if (p_memory == nullptr) {
@@ -369,34 +374,37 @@ void SimDDR::do_memory_write(uint32_t addr, axi_data_t data, axi_strb_t wstrb) {
 
   auto *byte_mem = reinterpret_cast<uint8_t *>(p_memory);
   for (uint8_t byte = 0; byte < AXI_DATA_BYTES; ++byte) {
-    if (((static_cast<uint64_t>(wstrb) >> byte) & 0x1u) == 0u) {
+    if (!axi_compat::test_bit(wstrb, byte)) {
       continue;
     }
     byte_mem[addr + byte] = extract_data_byte(data, byte);
   }
 
   if (DCACHE_LOG) {
-    printf("[SimDDR] Write: addr=0x%08x data=0x%016llx wstrb=0x%llx\n", addr,
-           static_cast<unsigned long long>(data),
-           static_cast<unsigned long long>(wstrb));
+    const std::string data_hex = axi_compat::hex_string(data, AXI_DATA_BYTES);
+    const std::string wstrb_hex =
+        axi_compat::hex_string(wstrb, AXI_STRB_STORAGE_BYTES);
+    printf("[SimDDR] Write: addr=0x%08x data=%s wstrb=%s\n", addr,
+           data_hex.c_str(), wstrb_hex.c_str());
   }
 }
 
 axi_data_t SimDDR::do_memory_read(uint32_t addr) {
   if (p_memory == nullptr) {
-    return static_cast<axi_data_t>(0xDEADBEEF);
+    axi_data_t poison{};
+    poison = 0xDEADBEEF;
+    return poison;
   }
 
   auto *byte_mem = reinterpret_cast<uint8_t *>(p_memory);
-  axi_data_t data = 0;
+  axi_data_t data{};
   for (uint8_t byte = 0; byte < AXI_DATA_BYTES; ++byte) {
-    data |= static_cast<axi_data_t>(
-        static_cast<unsigned __int128>(byte_mem[addr + byte]) << (byte * 8u));
+    axi_compat::set_byte(data, byte, byte_mem[addr + byte]);
   }
 
   if (DCACHE_LOG) {
-    printf("[SimDDR] Read: addr=0x%08x -> 0x%016llx\n", addr,
-           static_cast<unsigned long long>(data));
+    const std::string data_hex = axi_compat::hex_string(data, AXI_DATA_BYTES);
+    printf("[SimDDR] Read: addr=0x%08x -> %s\n", addr, data_hex.c_str());
   }
 
   return data;

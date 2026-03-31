@@ -10,6 +10,7 @@
 #include "AXI_Interconnect.h"
 #include <algorithm>
 #include <cstdio>
+#include <string>
 
 extern long long sim_time;
 
@@ -23,6 +24,8 @@ constexpr uint8_t kDownstreamBeatBytes = sim_ddr::AXI_DATA_BYTES;
 constexpr uint8_t kDownstreamBeatWords =
     kDownstreamBeatBytes / static_cast<uint8_t>(sizeof(uint32_t));
 constexpr uint8_t kDownstreamAxiSize = sim_ddr::AXI_SIZE_CODE;
+constexpr uint8_t kUpstreamStrbBytes =
+    (MAX_WRITE_TRANSACTION_BYTES + 7u) / 8u;
 
 #ifndef CONFIG_AXI_LLC_FOCUS_LINE0
 #define CONFIG_AXI_LLC_FOCUS_LINE0 0u
@@ -92,27 +95,26 @@ uint32_t txn_word_count(const ReadPendingTxn &txn) {
 
 sim_ddr::axi_data_t pack_downstream_write_beat(const WideWriteData_t &wdata,
                                                uint8_t beat_idx) {
-  sim_ddr::axi_data_t value = 0;
+  sim_ddr::axi_data_t value{};
   const uint32_t base = static_cast<uint32_t>(beat_idx) * kDownstreamBeatWords;
   for (uint8_t word = 0; word < kDownstreamBeatWords; ++word) {
     const uint32_t idx = base + word;
     if (idx >= MAX_WRITE_TRANSACTION_WORDS) {
       break;
     }
-    value |= static_cast<sim_ddr::axi_data_t>(
-        static_cast<unsigned __int128>(wdata.words[idx]) << (word * 32u));
+    axi_compat::set_u32(value, word, wdata.words[idx]);
   }
   return value;
 }
 
 sim_ddr::axi_strb_t pack_downstream_write_strobe(const WideWriteStrb_t &wstrb,
                                                  uint8_t beat_idx) {
-  sim_ddr::axi_strb_t mask = 0;
+  sim_ddr::axi_strb_t mask{};
   const uint32_t first_byte =
       static_cast<uint32_t>(beat_idx) * kDownstreamBeatBytes;
   for (uint8_t byte = 0; byte < kDownstreamBeatBytes; ++byte) {
     if (wstrb.test(first_byte + byte)) {
-      mask |= static_cast<sim_ddr::axi_strb_t>(1u << byte);
+      axi_compat::set_bit(mask, byte, true);
     }
   }
   return mask;
@@ -126,8 +128,7 @@ void unpack_downstream_read_beat(ReadPendingTxn &txn, sim_ddr::axi_data_t beat) 
     if (idx >= MAX_READ_TRANSACTION_WORDS) {
       break;
     }
-    txn.data[idx] = static_cast<uint32_t>(
-        (static_cast<unsigned __int128>(beat) >> (word * 32u)) & 0xFFFFFFFFu);
+    txn.data[idx] = axi_compat::get_u32(beat, word);
   }
 }
 
@@ -268,8 +269,10 @@ void AXI_Interconnect::init() {
   axi_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
   axi_io.w.wvalid = false;
   axi_io.w.wdata = 0;
-  axi_io.w.wstrb =
-      static_cast<sim_ddr::axi_strb_t>((1ull << kDownstreamBeatBytes) - 1ull);
+  axi_io.w.wstrb = 0;
+  for (uint8_t byte = 0; byte < kDownstreamBeatBytes; ++byte) {
+    axi_compat::set_bit(axi_io.w.wstrb, byte, true);
+  }
   axi_io.w.wlast = false;
   axi_io.b.bready = true;
 }
@@ -1383,15 +1386,16 @@ read_handshake_done:
         unpack_downstream_read_beat(txn, axi_io.r.rdata);
         txn.beats_done++;
         if (focus_read_txn(txn) || trace_icache_read_txn(txn, sim_time)) {
+          const std::string beat_hex =
+              axi_compat::hex_string(axi_io.r.rdata, kDownstreamBeatBytes);
           std::printf(
               "[AXI-R][R-BEAT] cyc=%lld addr=0x%08x master=%u orig_id=%u axi_id=%u "
-              "rid=%u beat=%u/%u data=0x%016llx rlast=%u\n",
+              "rid=%u beat=%u/%u data=%s rlast=%u\n",
               sim_time, txn.addr, static_cast<unsigned>(txn.master_id),
               static_cast<unsigned>(txn.orig_id), static_cast<unsigned>(txn.axi_id),
               static_cast<unsigned>(axi_io.r.rid & kAxiIdMask),
               static_cast<unsigned>(txn.beats_done),
-              static_cast<unsigned>(txn.total_beats),
-              static_cast<unsigned long long>(axi_io.r.rdata),
+              static_cast<unsigned>(txn.total_beats), beat_hex.c_str(),
               static_cast<unsigned>(axi_io.r.rlast));
           if (txn.beats_done == txn.total_beats) {
             dump_focus_read_txn("R-COMPLETE", sim_time, txn);
@@ -1596,14 +1600,15 @@ read_handshake_done:
     txn.w_done = false;
     w_pending.push_back(txn);
     if (focus_write_line(txn.addr)) {
+      const std::string wstrb_hex =
+          axi_compat::hex_string(txn.wstrb, kUpstreamStrbBytes);
       std::printf(
           "[AXI-W][ENQ] cyc=%lld master=%d axi_id=%u orig_id=%u addr=0x%08x "
-          "total_size=%u beats=%u wstrb=0x%016llx\n",
+          "total_size=%u beats=%u wstrb=%s\n",
           sim_time, idx, static_cast<unsigned>(txn.axi_id),
           static_cast<unsigned>(txn.orig_id), txn.addr,
           static_cast<unsigned>(write_ports[idx].req.total_size),
-          static_cast<unsigned>(txn.total_beats),
-          static_cast<unsigned long long>(static_cast<uint64_t>(txn.wstrb)));
+          static_cast<unsigned>(txn.total_beats), wstrb_hex.c_str());
       std::printf(
           "[AXI-W][ENQ_DATA] [%08x %08x %08x %08x %08x %08x %08x %08x "
           "%08x %08x %08x %08x %08x %08x %08x %08x]\n",
@@ -1645,14 +1650,17 @@ read_handshake_done:
       if (focus_write_line(txn.addr)) {
         const uint32_t beat_addr =
             txn.addr + static_cast<uint32_t>(txn.beats_sent) * kDownstreamBeatBytes;
+        const std::string beat_hex =
+            axi_compat::hex_string(axi_io.w.wdata, kDownstreamBeatBytes);
+        const std::string strobe_hex =
+            axi_compat::hex_string(axi_io.w.wstrb, sim_ddr::AXI_STRB_STORAGE_BYTES);
         std::printf(
             "[AXI-W][W-HS] cyc=%lld axi_id=%u beat=%u/%u beat_addr=0x%08x "
-            "data=0x%016llx wstrb=0x%llx wlast=%d\n",
+            "data=%s wstrb=%s wlast=%d\n",
             sim_time, static_cast<unsigned>(txn.axi_id),
             static_cast<unsigned>(txn.beats_sent),
-            static_cast<unsigned>(txn.total_beats), beat_addr,
-            static_cast<unsigned long long>(axi_io.w.wdata),
-            static_cast<unsigned long long>(axi_io.w.wstrb),
+            static_cast<unsigned>(txn.total_beats), beat_addr, beat_hex.c_str(),
+            strobe_hex.c_str(),
             static_cast<int>(axi_io.w.wlast));
       }
       txn.beats_sent++;
