@@ -6,8 +6,6 @@ option(AXI_KIT_BUILD_DEMOS "Build AXI kit demos" ON)
 option(AXI_KIT_BUILD_SINGLE_CYCLE "Build single-cycle RV32 AXI demo" ON)
 set(AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES 64 CACHE STRING
     "AXI4 upstream write payload bytes (must be <=64)")
-set(AXI_KIT_AXI3_UPSTREAM_WRITE_BYTES 32 CACHE STRING
-    "AXI3 upstream write payload bytes (must be <=64)")
 set(AXI_KIT_SINGLE_CYCLE_DDR_LATENCY 8 CACHE STRING
     "SimDDR latency for single_cycle_axi4_demo")
 
@@ -35,19 +33,6 @@ target_compile_definitions(axi_kit_axi4 PUBLIC
     AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
 )
 
-add_library(axi_kit_axi3 STATIC
-    axi_interconnect/AXI_Interconnect_AXI3.cpp
-    axi_interconnect/AXI_Router_AXI3.cpp
-    sim_ddr/SimDDR_AXI3.cpp
-    mmio/MMIO_Bus_AXI3.cpp
-    mmio/UART16550_Device.cpp
-)
-target_include_directories(axi_kit_axi3 PUBLIC ${AXI_KIT_INCLUDE_DIRS})
-target_compile_features(axi_kit_axi3 PUBLIC cxx_std_20)
-target_compile_definitions(axi_kit_axi3 PUBLIC
-    AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI3_UPSTREAM_WRITE_BYTES}
-)
-
 if(AXI_KIT_BUILD_TESTS)
   enable_testing()
   set(AXI_KIT_MMIO_TEST_DEFS
@@ -68,20 +53,6 @@ if(AXI_KIT_BUILD_TESTS)
       AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
   )
   target_compile_definitions(axi_kit_axi4_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
-
-  add_library(axi_kit_axi3_test STATIC
-      axi_interconnect/AXI_Interconnect_AXI3.cpp
-      axi_interconnect/AXI_Router_AXI3.cpp
-      sim_ddr/SimDDR_AXI3.cpp
-      mmio/MMIO_Bus_AXI3.cpp
-      mmio/UART16550_Device.cpp
-  )
-  target_include_directories(axi_kit_axi3_test PUBLIC ${AXI_KIT_INCLUDE_DIRS})
-  target_compile_features(axi_kit_axi3_test PUBLIC cxx_std_20)
-  target_compile_definitions(axi_kit_axi3_test PUBLIC
-      AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI3_UPSTREAM_WRITE_BYTES}
-  )
-  target_compile_definitions(axi_kit_axi3_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
 
   add_executable(sim_ddr_test
       sim_ddr/sim_ddr_test.cpp
@@ -141,54 +112,61 @@ if(AXI_KIT_BUILD_SINGLE_CYCLE)
       ${AXI_KIT_INCLUDE_DIRS}
       ${AXI_KIT_SINGLE_CYCLE_DIR}/include
   )
-
-  add_library(axi_kit_axi4_sc STATIC
-      axi_interconnect/AXI_LLC.cpp
-      axi_interconnect/AXI_Interconnect.cpp
-      axi_interconnect/AXI_Router_AXI4.cpp
-      sim_ddr/SimDDR.cpp
-      mmio/MMIO_Bus_AXI4.cpp
-      mmio/UART16550_Device.cpp
-  )
-  target_include_directories(axi_kit_axi4_sc PUBLIC ${AXI_KIT_INCLUDE_DIRS})
-  target_compile_features(axi_kit_axi4_sc PUBLIC cxx_std_20)
-  target_compile_definitions(axi_kit_axi4_sc PRIVATE
-      AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
-      CONFIG_SIM_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
-  )
-
-  add_library(axi_kit_single_cycle_core STATIC
-      ${AXI_KIT_SINGLE_CYCLE_DIR}/src/sc_axi4_sim_api.cpp
-      ${AXI_KIT_SINGLE_CYCLE_DIR}/src/single_cycle_cpu.cpp
-  )
-  target_include_directories(axi_kit_single_cycle_core PUBLIC
-      ${AXI_KIT_SINGLE_CYCLE_INCLUDE_DIRS}
-  )
-  target_compile_options(axi_kit_single_cycle_core PRIVATE
-      ${AXI_KIT_SINGLE_CYCLE_COMPILE_OPTS}
-  )
-  target_compile_definitions(axi_kit_single_cycle_core PRIVATE
-      CONFIG_SIM_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
-  )
-  target_link_libraries(axi_kit_single_cycle_core PUBLIC axi_kit_axi4_sc)
-
-  add_executable(single_cycle_axi4_demo
-      ${AXI_KIT_SINGLE_CYCLE_DIR}/src/main.cpp
-  )
-  target_include_directories(single_cycle_axi4_demo PRIVATE
-      ${AXI_KIT_SINGLE_CYCLE_INCLUDE_DIRS}
-  )
-  target_compile_options(single_cycle_axi4_demo PRIVATE
-      ${AXI_KIT_SINGLE_CYCLE_COMPILE_OPTS}
-  )
-  target_compile_definitions(single_cycle_axi4_demo PRIVATE
-      CONFIG_SIM_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
-  )
-  target_link_libraries(single_cycle_axi4_demo PRIVATE
-      axi_kit_single_cycle_core
-      axi_kit_axi4_sc
+  set(AXI_KIT_SINGLE_CYCLE_SOFTFLOAT_LIB
       ${AXI_KIT_SINGLE_CYCLE_DIR}/third_party/softfloat/softfloat.a
-      z
-      stdc++fs
   )
+
+  if(EXISTS "${AXI_KIT_SINGLE_CYCLE_SOFTFLOAT_LIB}")
+    add_library(axi_kit_axi4_sc STATIC
+        axi_interconnect/AXI_LLC.cpp
+        axi_interconnect/AXI_Interconnect.cpp
+        axi_interconnect/AXI_Router_AXI4.cpp
+        sim_ddr/SimDDR.cpp
+        mmio/MMIO_Bus_AXI4.cpp
+        mmio/UART16550_Device.cpp
+    )
+    target_include_directories(axi_kit_axi4_sc PUBLIC ${AXI_KIT_INCLUDE_DIRS})
+    target_compile_features(axi_kit_axi4_sc PUBLIC cxx_std_20)
+    target_compile_definitions(axi_kit_axi4_sc PRIVATE
+        AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
+        CONFIG_SIM_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+    )
+
+    add_library(axi_kit_single_cycle_core STATIC
+        ${AXI_KIT_SINGLE_CYCLE_DIR}/src/sc_axi4_sim_api.cpp
+        ${AXI_KIT_SINGLE_CYCLE_DIR}/src/single_cycle_cpu.cpp
+    )
+    target_include_directories(axi_kit_single_cycle_core PUBLIC
+        ${AXI_KIT_SINGLE_CYCLE_INCLUDE_DIRS}
+    )
+    target_compile_options(axi_kit_single_cycle_core PRIVATE
+        ${AXI_KIT_SINGLE_CYCLE_COMPILE_OPTS}
+    )
+    target_compile_definitions(axi_kit_single_cycle_core PRIVATE
+        CONFIG_SIM_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+    )
+    target_link_libraries(axi_kit_single_cycle_core PUBLIC axi_kit_axi4_sc)
+
+    add_executable(single_cycle_axi4_demo
+        ${AXI_KIT_SINGLE_CYCLE_DIR}/src/main.cpp
+    )
+    target_include_directories(single_cycle_axi4_demo PRIVATE
+        ${AXI_KIT_SINGLE_CYCLE_INCLUDE_DIRS}
+    )
+    target_compile_options(single_cycle_axi4_demo PRIVATE
+        ${AXI_KIT_SINGLE_CYCLE_COMPILE_OPTS}
+    )
+    target_compile_definitions(single_cycle_axi4_demo PRIVATE
+        CONFIG_SIM_DDR_LATENCY=${AXI_KIT_SINGLE_CYCLE_DDR_LATENCY}
+    )
+    target_link_libraries(single_cycle_axi4_demo PRIVATE
+        axi_kit_single_cycle_core
+        axi_kit_axi4_sc
+        ${AXI_KIT_SINGLE_CYCLE_SOFTFLOAT_LIB}
+        z
+        stdc++fs
+    )
+  else()
+    message(STATUS "single_cycle softfloat archive not present; skipping single_cycle demo targets")
+  endif()
 endif()

@@ -63,49 +63,49 @@ struct AXI_LLCPerfCounters_t {
 };
 
 struct AXI_LLC_ReadReqIn_t {
-  wire1_t valid = false;
-  wire32_t addr = 0;
-  wire8_t total_size = 0;
-  wire4_t id = 0;
-  wire1_t bypass = false;
+  wire<1> valid = false;
+  wire<32> addr = 0;
+  wire<8> total_size = 0;
+  wire<4> id = 0;
+  wire<1> bypass = false;
 };
 
 struct AXI_LLC_ReadReqOut_t {
-  wire1_t ready = false;
+  wire<1> ready = false;
 };
 
 struct AXI_LLC_ReadRespIn_t {
-  wire1_t ready = false;
+  wire<1> ready = false;
 };
 
 struct AXI_LLC_ReadRespOut_t {
-  wire1_t valid = false;
+  wire<1> valid = false;
   WideReadData_t data{};
-  wire4_t id = 0;
+  wire<4> id = 0;
 };
 
 struct AXI_LLC_WriteReqIn_t {
-  wire1_t valid = false;
-  wire32_t addr = 0;
+  wire<1> valid = false;
+  wire<32> addr = 0;
   WideWriteData_t wdata{};
   WideWriteStrb_t wstrb{};
-  wire8_t total_size = 0;
-  wire4_t id = 0;
-  wire1_t bypass = false;
+  wire<8> total_size = 0;
+  wire<4> id = 0;
+  wire<1> bypass = false;
 };
 
 struct AXI_LLC_WriteReqOut_t {
-  wire1_t ready = false;
+  wire<1> ready = false;
 };
 
 struct AXI_LLC_WriteRespIn_t {
-  wire1_t ready = false;
+  wire<1> ready = false;
 };
 
 struct AXI_LLC_WriteRespOut_t {
-  wire1_t valid = false;
-  wire4_t id = 0;
-  wire2_t resp = 0;
+  wire<1> valid = false;
+  wire<4> id = 0;
+  wire<2> resp = 0;
 };
 
 struct AXI_LLC_UpstreamIn_t {
@@ -123,35 +123,35 @@ struct AXI_LLC_UpstreamOut_t {
 };
 
 struct AXI_LLC_MemIn_t {
-  wire1_t invalidate_all = false;
-  wire1_t invalidate_line_valid = false;
-  wire32_t invalidate_line_addr = 0;
-  wire1_t prefetch_allow = true;
-  wire1_t read_req_ready = false;
-  wire1_t read_resp_valid = false;
+  wire<1> invalidate_all = false;
+  wire<1> invalidate_line_valid = false;
+  wire<32> invalidate_line_addr = 0;
+  wire<1> prefetch_allow = true;
+  wire<1> read_req_ready = false;
+  wire<1> read_resp_valid = false;
   WideReadData_t read_resp_data{};
-  wire4_t read_resp_id = 0;
-  wire1_t write_req_ready = false;
-  wire1_t write_resp_valid = false;
-  wire4_t write_resp_id = 0;
-  wire2_t write_resp = 0;
+  wire<4> read_resp_id = 0;
+  wire<1> write_req_ready = false;
+  wire<1> write_resp_valid = false;
+  wire<4> write_resp_id = 0;
+  wire<2> write_resp = 0;
 };
 
 struct AXI_LLC_MemOut_t {
-  wire1_t invalidate_all_accepted = false;
-  wire1_t invalidate_line_accepted = false;
-  wire1_t read_req_valid = false;
-  wire32_t read_req_addr = 0;
-  wire8_t read_req_size = 0;
-  wire4_t read_req_id = 0;
-  wire1_t read_resp_ready = false;
-  wire1_t write_req_valid = false;
-  wire32_t write_req_addr = 0;
+  wire<1> invalidate_all_accepted = false;
+  wire<1> invalidate_line_accepted = false;
+  wire<1> read_req_valid = false;
+  wire<32> read_req_addr = 0;
+  wire<8> read_req_size = 0;
+  wire<4> read_req_id = 0;
+  wire<1> read_resp_ready = false;
+  wire<1> write_req_valid = false;
+  wire<32> write_req_addr = 0;
   WideWriteData_t write_req_data{};
   WideWriteStrb_t write_req_strobe{};
-  wire8_t write_req_size = 0;
-  wire4_t write_req_id = 0;
-  wire1_t write_resp_ready = false;
+  wire<8> write_req_size = 0;
+  wire<4> write_req_id = 0;
+  wire<1> write_resp_ready = false;
 };
 
 struct AXI_LLC_ExtIn_t {
@@ -165,17 +165,17 @@ struct AXI_LLC_ExtOut_t {
 };
 
 struct AXI_LLC_LookupIn_t {
-  wire1_t data_valid = false;
-  wire1_t meta_valid = false;
-  wire1_t repl_valid = false;
+  wire<1> data_valid = false;
+  wire<1> meta_valid = false;
+  wire<1> repl_valid = false;
   AXI_LLC_Bytes_t data{};
   AXI_LLC_Bytes_t meta{};
   AXI_LLC_Bytes_t repl{};
 };
 
 struct AXI_LLC_TableReq_t {
-  wire1_t enable = false;
-  wire1_t write = false;
+  wire<1> enable = false;
+  wire<1> write = false;
   uint32_t index = 0;
   uint32_t way = 0;
   AXI_LLC_Bytes_t payload{};
@@ -186,7 +186,7 @@ struct AXI_LLC_TableOut_t {
   AXI_LLC_TableReq_t data{};
   AXI_LLC_TableReq_t meta{};
   AXI_LLC_TableReq_t repl{};
-  wire1_t invalidate_all = false;
+  wire<1> invalidate_all = false;
 };
 
 enum class AXI_LLCState : uint8_t {

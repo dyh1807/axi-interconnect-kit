@@ -5,42 +5,36 @@
 #endif
 
 #include <cstdint>
+#include <type_traits>
 
-// Minimal signal aliases used by AXI interconnect/uncore modules.
-using wire1_t = bool;
-using wire2_t = uint8_t;
-using wire3_t = uint8_t;
-using wire4_t = uint8_t;
-using wire5_t = uint8_t;
-using wire6_t = uint8_t;
-using wire7_t = uint8_t;
-using wire8_t = uint8_t;
-using wire9_t = uint16_t;
-using wire10_t = uint16_t;
-using wire11_t = uint16_t;
-using wire12_t = uint16_t;
-using wire13_t = uint16_t;
-using wire14_t = uint16_t;
-using wire15_t = uint16_t;
-using wire16_t = uint16_t;
-using wire17_t = uint32_t;
-using wire18_t = uint32_t;
-using wire19_t = uint32_t;
-using wire20_t = uint32_t;
-using wire21_t = uint32_t;
-using wire22_t = uint32_t;
-using wire23_t = uint32_t;
-using wire24_t = uint32_t;
-using wire25_t = uint32_t;
-using wire26_t = uint32_t;
-using wire27_t = uint32_t;
-using wire28_t = uint32_t;
-using wire29_t = uint32_t;
-using wire30_t = uint32_t;
-using wire31_t = uint32_t;
-using wire32_t = uint32_t;
-using wire64_t = uint64_t;
-using wire128_t = unsigned __int128;
+#ifndef AXI_KIT_USE_PARENT_WIRE_REG
+template <int Bits> struct AutoTypeHelper {
+  static_assert(Bits > 0, "wire/reg bit width must be positive");
+  static_assert(Bits <= 128,
+                "axi-interconnect-kit currently supports wire/reg up to 128 "
+                "bits; wider carriers are a later follow-up");
+
+  using type = std::conditional_t<
+      Bits == 1, bool,
+      std::conditional_t<
+          (Bits <= 8), uint8_t,
+          std::conditional_t<
+              (Bits <= 16), uint16_t,
+              std::conditional_t<(Bits <= 32), uint32_t,
+                                 std::conditional_t<(Bits <= 64), uint64_t,
+                                                    unsigned __int128>>>>>;
+};
+
+template <int Bits> using AutoType = typename AutoTypeHelper<Bits>::type;
+template <int Bits> using wire = AutoType<Bits>;
+template <int Bits> using reg = AutoType<Bits>;
+
+static_assert(std::is_same_v<wire<1>, bool>);
+static_assert(std::is_same_v<wire<32>, uint32_t>);
+static_assert(sizeof(wire<128>) == 16,
+              "wire<128> must remain a real 128-bit carrier in standalone "
+              "axi-interconnect-kit");
+#endif
 
 // Configurable defaults for standalone build (can be overridden via -D).
 // Keep a single simulator-facing DDR read latency entrypoint.

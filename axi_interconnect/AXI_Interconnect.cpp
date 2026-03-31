@@ -105,12 +105,17 @@ sim_ddr::axi_data_t pack_downstream_write_beat(const WideWriteData_t &wdata,
   return value;
 }
 
-sim_ddr::axi_strb_t pack_downstream_write_strobe(uint64_t wstrb,
+sim_ddr::axi_strb_t pack_downstream_write_strobe(const WideWriteStrb_t &wstrb,
                                                  uint8_t beat_idx) {
-  const uint32_t shift =
+  sim_ddr::axi_strb_t mask = 0;
+  const uint32_t first_byte =
       static_cast<uint32_t>(beat_idx) * kDownstreamBeatBytes;
-  const uint64_t mask = (1ull << kDownstreamBeatBytes) - 1ull;
-  return static_cast<sim_ddr::axi_strb_t>((wstrb >> shift) & mask);
+  for (uint8_t byte = 0; byte < kDownstreamBeatBytes; ++byte) {
+    if (wstrb.test(first_byte + byte)) {
+      mask |= static_cast<sim_ddr::axi_strb_t>(1u << byte);
+    }
+  }
+  return mask;
 }
 
 void unpack_downstream_read_beat(ReadPendingTxn &txn, sim_ddr::axi_data_t beat) {
@@ -1505,12 +1510,7 @@ read_handshake_done:
       w_current = {};
       w_current.addr = llc.io.ext_out.mem.write_req_addr;
       w_current.wdata = llc.io.ext_out.mem.write_req_data;
-      w_current.wstrb = 0;
-      for (uint32_t byte = 0; byte < MAX_WRITE_TRANSACTION_BYTES && byte < 64; ++byte) {
-        if (llc.io.ext_out.mem.write_req_strobe.bytes[byte]) {
-          w_current.wstrb |= (uint64_t{1} << byte);
-        }
-      }
+      w_current.wstrb = llc.io.ext_out.mem.write_req_strobe;
       w_current.orig_id = llc.io.ext_out.mem.write_req_id;
       w_current.total_beats =
           calc_burst_len(llc.io.ext_out.mem.write_req_size) + 1;
@@ -1603,7 +1603,7 @@ read_handshake_done:
           static_cast<unsigned>(txn.orig_id), txn.addr,
           static_cast<unsigned>(write_ports[idx].req.total_size),
           static_cast<unsigned>(txn.total_beats),
-          static_cast<unsigned long long>(txn.wstrb));
+          static_cast<unsigned long long>(static_cast<uint64_t>(txn.wstrb)));
       std::printf(
           "[AXI-W][ENQ_DATA] [%08x %08x %08x %08x %08x %08x %08x %08x "
           "%08x %08x %08x %08x %08x %08x %08x %08x]\n",
