@@ -27,7 +27,7 @@ namespace sim_ddr {
 // ============================================================================
 // SimDDR Configuration
 // ============================================================================
-constexpr uint32_t SIM_DDR_LATENCY = CONFIG_SIM_DDR_LATENCY;
+constexpr uint32_t SIM_DDR_LATENCY = AXI_KIT_SIM_DDR_READ_LATENCY;
 // Write response latency is modeled separately from read latency. Older
 // simulator glue reused a frontend-side latency knob for the whole DDR path,
 // but the current shared-AXI design benefits from controlling write completion

@@ -36,6 +36,9 @@ static_assert(AXI_KIT_SIM_DDR_BEAT_BYTES == 4 ||
                   AXI_KIT_SIM_DDR_BEAT_BYTES == 8 ||
                   AXI_KIT_SIM_DDR_BEAT_BYTES == 16,
               "AXI_KIT_SIM_DDR_BEAT_BYTES must be 4, 8, or 16");
+static_assert(!AXI_KIT_USE_PARENT_WIRE_REG || AXI_KIT_SIM_DDR_BEAT_BYTES <= 8,
+              "parent simulator wire/reg currently carries at most 64 bits; "
+              "16B DDR beats require a dedicated wide-bit carrier first");
 constexpr uint8_t SIM_DDR_BEAT_BYTES = AXI_KIT_SIM_DDR_BEAT_BYTES;
 constexpr uint8_t AXI_DATA_BYTES = SIM_DDR_BEAT_BYTES; // legacy alias
 constexpr uint8_t AXI_DATA_WORDS =
