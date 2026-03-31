@@ -130,8 +130,8 @@ void SimDDR::comb_write_channel() {
   if (!w_resp_queue.empty()) {
     WriteRespPending &front =
         const_cast<WriteRespPending &>(w_resp_queue.front());
-    if (SIM_DDR_WRITE_RESP_LATENCY == 0 ||
-        front.latency_cnt >= SIM_DDR_WRITE_RESP_LATENCY) {
+    uint32_t required_latency = SIM_DDR_WRITE_RESP_LATENCY;
+    if (required_latency == 0 || front.latency_cnt >= required_latency) {
       io.b.bvalid = true;
       io.b.bid = front.id;
       io.b.bresp = AXI_RESP_OKAY;
@@ -210,6 +210,30 @@ void SimDDR::comb_read_channel() {
 void SimDDR::seq() {
   // ========== Write Channel Sequential Logic ==========
 
+  // B handshake: Complete response
+  if (io.b.bvalid && io.b.bready) {
+    if (!w_resp_queue.empty()) {
+      const auto &resp = w_resp_queue.front();
+      if (focus_write_line(w_current.addr)) {
+        std::printf("[DDR-W][B-HS] cyc=%lld id=%u active_addr=0x%08x\n",
+                    sim_time, static_cast<unsigned>(resp.id), w_current.addr);
+      }
+    }
+    w_resp_queue.pop();
+  }
+
+  // Responses age once per full cycle after enqueue. Increment existing
+  // responses before processing the current cycle's W handshake so newly
+  // enqueued responses keep latency_cnt=0 until the next cycle.
+  std::queue<WriteRespPending> temp_queue;
+  while (!w_resp_queue.empty()) {
+    WriteRespPending resp = w_resp_queue.front();
+    w_resp_queue.pop();
+    resp.latency_cnt++;
+    temp_queue.push(resp);
+  }
+  w_resp_queue = temp_queue;
+
   // AW handshake: Start new write transaction
   if (io.aw.awvalid && io.aw.awready) {
     w_active = true;
@@ -224,7 +248,8 @@ void SimDDR::seq() {
       std::printf(
           "[DDR-W][AW-HS] cyc=%lld id=%u addr=0x%08x len=%u size=%u\n",
           sim_time, static_cast<unsigned>(w_current.id), w_current.addr,
-          static_cast<unsigned>(w_current.len), static_cast<unsigned>(w_current.size));
+          static_cast<unsigned>(w_current.len),
+          static_cast<unsigned>(w_current.size));
     }
   }
 
@@ -242,9 +267,8 @@ void SimDDR::seq() {
           "data=%s wstrb=%s wlast=%d\n",
           sim_time, static_cast<unsigned>(w_current.id),
           static_cast<unsigned>(w_current.beat_cnt),
-          static_cast<unsigned>(w_current.len + 1), current_addr, data_hex.c_str(),
-          wstrb_hex.c_str(),
-          static_cast<int>(io.w.wlast));
+          static_cast<unsigned>(w_current.len + 1), current_addr,
+          data_hex.c_str(), wstrb_hex.c_str(), static_cast<int>(io.w.wlast));
     }
     do_memory_write(current_addr, io.w.wdata, io.w.wstrb);
     w_current.beat_cnt++;
@@ -257,34 +281,13 @@ void SimDDR::seq() {
       w_resp_queue.push(resp);
       if (focus_write_line(w_current.addr)) {
         std::printf("[DDR-W][RESP-ENQ] cyc=%lld id=%u addr=0x%08x beats=%u\n",
-                    sim_time, static_cast<unsigned>(w_current.id), w_current.addr,
+                    sim_time, static_cast<unsigned>(w_current.id),
+                    w_current.addr,
                     static_cast<unsigned>(w_current.beat_cnt));
       }
       w_active = false;
     }
   }
-
-  // B handshake: Complete response
-  if (io.b.bvalid && io.b.bready) {
-    if (!w_resp_queue.empty()) {
-      const auto &resp = w_resp_queue.front();
-      if (focus_write_line(w_current.addr)) {
-        std::printf("[DDR-W][B-HS] cyc=%lld id=%u active_addr=0x%08x\n",
-                    sim_time, static_cast<unsigned>(resp.id), w_current.addr);
-      }
-    }
-    w_resp_queue.pop();
-  }
-
-  // Increment latency counters for pending responses
-  std::queue<WriteRespPending> temp_queue;
-  while (!w_resp_queue.empty()) {
-    WriteRespPending resp = w_resp_queue.front();
-    w_resp_queue.pop();
-    resp.latency_cnt++;
-    temp_queue.push(resp);
-  }
-  w_resp_queue = temp_queue;
 
   // ========== Read Channel Sequential Logic ==========
 

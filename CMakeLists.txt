@@ -48,6 +48,31 @@ if(AXI_KIT_BUILD_TESTS)
       MMIO_TEST_BASE=0x200000
       MMIO_TEST_SIZE=0x1000
   )
+  function(add_axi_kit_write_resp_latency_test target_name latency_value)
+    add_library(${target_name}_lib STATIC
+        ${AXI_KIT_AXI4_SOURCES}
+    )
+    target_include_directories(${target_name}_lib PUBLIC ${AXI_KIT_INCLUDE_DIRS})
+    target_compile_features(${target_name}_lib PUBLIC cxx_std_20)
+    target_compile_definitions(${target_name}_lib PUBLIC
+        ${AXI_KIT_AXI4_COMMON_DEFS}
+        AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY=${latency_value}
+    )
+    target_compile_definitions(${target_name}_lib PRIVATE
+        ${AXI_KIT_MMIO_TEST_DEFS}
+    )
+
+    add_executable(${target_name}
+        sim_ddr/sim_ddr_write_resp_latency_test.cpp
+    )
+    target_compile_definitions(${target_name} PRIVATE
+        ${AXI_KIT_MMIO_TEST_DEFS}
+        SIM_DDR_WRITE_RESP_TEST_LATENCY=${latency_value}
+    )
+    target_link_libraries(${target_name} PRIVATE ${target_name}_lib)
+    add_test(NAME ${target_name} COMMAND ${target_name})
+  endfunction()
+
   add_library(axi_kit_axi4_test STATIC
       ${AXI_KIT_AXI4_SOURCES}
   )
@@ -78,6 +103,10 @@ if(AXI_KIT_BUILD_TESTS)
   )
   target_compile_definitions(sim_ddr_32b_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
   target_link_libraries(sim_ddr_32b_test PRIVATE axi_kit_axi4_test_32b)
+
+  add_axi_kit_write_resp_latency_test(sim_ddr_write_resp_latency_0_test 0)
+  add_axi_kit_write_resp_latency_test(sim_ddr_write_resp_latency_1_test 1)
+  add_axi_kit_write_resp_latency_test(sim_ddr_write_resp_latency_2_test 2)
 
   add_executable(axi_interconnect_test
       axi_interconnect/axi_interconnect_test.cpp

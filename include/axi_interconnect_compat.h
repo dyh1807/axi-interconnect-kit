@@ -399,7 +399,7 @@ static_assert(sizeof(wire<256>) == 32,
 #define AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY \
   CONFIG_AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY
 #else
-#define AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY 2
+#define AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY 1
 #endif
 #endif
 
