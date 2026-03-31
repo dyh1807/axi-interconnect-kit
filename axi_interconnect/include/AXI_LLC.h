@@ -52,6 +52,10 @@ struct AXI_LLCPerfCounters_t {
   uint64_t prefetch_drop_mshr_full = 0;
   uint64_t prefetch_drop_queue_full = 0;
   uint64_t prefetch_drop_table_hit = 0;
+  uint64_t ddr_read_total_cycles = 0;
+  uint64_t ddr_read_samples = 0;
+  uint64_t ddr_write_total_cycles = 0;
+  uint64_t ddr_write_samples = 0;
   uint64_t lookup_active_cycles = 0;
   uint64_t read_resp_block_cycles = 0;
   uint64_t read_resp_pending_cycles = 0;
@@ -215,6 +219,7 @@ struct AXI_LLCMissEntry_t {
   uint8_t master = 0;
   uint8_t id = 0;
   uint8_t epoch = 0;
+  uint64_t mem_issue_cycle = 0;
   bool victim_dirty = false;
   bool victim_writeback_done = false;
   uint32_t victim_addr = 0;
@@ -258,6 +263,7 @@ struct AXI_LLCWriteCtx_t {
   uint8_t way = 0;
   uint32_t repl_next_way = 0;
   uint32_t tag = 0;
+  uint64_t mem_issue_cycle = 0;
   WideWriteData_t data{};
   WideWriteStrb_t strobe{};
   WideWriteData_t line{};
@@ -328,6 +334,7 @@ struct AXI_LLC_Regs_t {
   uint8_t victim_wb_write_master_r = 0;
   uint8_t victim_wb_mshr_slot_r = 0;
   uint32_t victim_wb_addr_r = 0;
+  uint64_t victim_wb_issue_cycle_r = 0;
   WideWriteData_t victim_wb_data_r{};
   WideWriteStrb_t victim_wb_strobe_r{};
 

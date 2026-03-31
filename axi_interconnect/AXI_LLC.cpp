@@ -1272,8 +1272,14 @@ void AXI_LLC::drive_write_path() {
       io.reg_write.victim_wb_write_master_r = 0;
       io.reg_write.victim_wb_mshr_slot_r = 0;
       io.reg_write.victim_wb_addr_r = 0;
+      io.reg_write.victim_wb_issue_cycle_r = 0;
       io.reg_write.victim_wb_data_r.clear();
       io.reg_write.victim_wb_strobe_r.clear();
+      if (io.regs.victim_wb_issue_cycle_r != 0) {
+        io.reg_write.perf.ddr_write_total_cycles +=
+            static_cast<uint64_t>(sim_time) - io.regs.victim_wb_issue_cycle_r;
+        io.reg_write.perf.ddr_write_samples++;
+      }
 
       if (io.regs.victim_wb_for_write_r) {
         const uint8_t master = io.regs.victim_wb_write_master_r;
@@ -1358,6 +1364,12 @@ void AXI_LLC::drive_write_path() {
         auto &ctx = io.reg_write.write_ctx[owner];
         ctx.mem_done = true;
         ctx.mem_resp_code = io.ext_in.mem.write_resp;
+        if (io.regs.write_ctx[owner].mem_issue_cycle != 0) {
+          io.reg_write.perf.ddr_write_total_cycles +=
+              static_cast<uint64_t>(sim_time) -
+              io.regs.write_ctx[owner].mem_issue_cycle;
+          io.reg_write.perf.ddr_write_samples++;
+        }
       }
     }
   }
@@ -1429,6 +1441,7 @@ void AXI_LLC::drive_write_path() {
       io.ext_out.mem.write_req_id = 0;
       if (io.ext_in.mem.write_req_ready) {
         io.reg_write.victim_wb_issued_r = true;
+        io.reg_write.victim_wb_issue_cycle_r = static_cast<uint64_t>(sim_time);
       }
     }
     return;
@@ -1445,6 +1458,8 @@ void AXI_LLC::drive_write_path() {
     io.ext_out.mem.write_req_id = ctx.id;
     if (io.ext_in.mem.write_req_ready) {
       io.reg_write.write_ctx[bypass_master].mem_issued = true;
+      io.reg_write.write_ctx[bypass_master].mem_issue_cycle =
+          static_cast<uint64_t>(sim_time);
     }
   }
 
@@ -2076,6 +2091,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.reg_write.victim_wb_mshr_slot_r = 0;
       io.reg_write.victim_wb_addr_r =
           build_line_addr_from_tag_set(config_, victim_meta.tag, set);
+      io.reg_write.victim_wb_issue_cycle_r = 0;
       io.reg_write.victim_wb_data_r = line_bytes_to_write_words(victim_line);
       io.reg_write.victim_wb_strobe_r = full_line_strobe(config_);
       ctx.cache_pending = true;
@@ -2331,6 +2347,11 @@ void AXI_LLC::drive_mem_read_path() {
     const int slot = find_mshr_by_mem_id(io.regs, io.ext_in.mem.read_resp_id);
     if (slot >= 0) {
       const auto &entry_prev = io.regs.mshr[slot];
+      if (entry_prev.mem_issue_cycle != 0) {
+        io.reg_write.perf.ddr_read_total_cycles +=
+            static_cast<uint64_t>(sim_time) - entry_prev.mem_issue_cycle;
+        io.reg_write.perf.ddr_read_samples++;
+      }
       llc_dump_words("MEM-RSP", entry_prev.line_addr,
                      static_cast<uint8_t>(slot), entry_prev.master, entry_prev.id,
                      io.ext_in.mem.read_resp_data);
@@ -2407,6 +2428,7 @@ void AXI_LLC::drive_mem_read_path() {
             static_cast<unsigned>(entry.id));
       }
       io.reg_write.mshr[slot].mem_req_issued = true;
+      io.reg_write.mshr[slot].mem_issue_cycle = static_cast<uint64_t>(sim_time);
     } else {
       io.reg_write.perf.mem_read_block_cycles++;
     }
@@ -2456,6 +2478,7 @@ void AXI_LLC::drive_mem_read_path() {
       io.reg_write.victim_wb_write_master_r = 0;
       io.reg_write.victim_wb_mshr_slot_r = static_cast<uint8_t>(commit_slot);
       io.reg_write.victim_wb_addr_r = entry.victim_addr;
+      io.reg_write.victim_wb_issue_cycle_r = 0;
       io.reg_write.victim_wb_data_r = entry.victim_data;
       io.reg_write.victim_wb_strobe_r = full_line_strobe(config_);
       return false;
