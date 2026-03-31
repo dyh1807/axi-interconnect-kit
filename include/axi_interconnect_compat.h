@@ -20,7 +20,8 @@
 #endif
 
 #if !AXI_KIT_USE_PARENT_WIRE_REG
-template <int Bits> struct AutoTypeHelper {
+template <int Bits>
+struct AutoTypeHelper {
   static_assert(Bits > 0, "wire/reg bit width must be positive");
   static_assert(Bits <= 128,
                 "axi-interconnect-kit currently supports wire/reg up to 128 "
@@ -37,9 +38,12 @@ template <int Bits> struct AutoTypeHelper {
                                                     unsigned __int128>>>>>;
 };
 
-template <int Bits> using AutoType = typename AutoTypeHelper<Bits>::type;
-template <int Bits> using wire = AutoType<Bits>;
-template <int Bits> using reg = AutoType<Bits>;
+template <int Bits>
+using AutoType = typename AutoTypeHelper<Bits>::type;
+template <int Bits>
+using wire = AutoType<Bits>;
+template <int Bits>
+using reg = AutoType<Bits>;
 
 static_assert(std::is_same_v<wire<1>, bool>);
 static_assert(std::is_same_v<wire<32>, uint32_t>);

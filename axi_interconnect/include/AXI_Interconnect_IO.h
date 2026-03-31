@@ -46,7 +46,7 @@ constexpr uint16_t MAX_WRITE_TRANSACTION_WORDS =
     MAX_WRITE_TRANSACTION_BYTES / sizeof(uint32_t);
 #ifndef AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER
 #ifdef CONFIG_AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER
-#define AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER                          \
+#define AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER \
   CONFIG_AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER
 #else
 #define AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER 4
@@ -224,7 +224,7 @@ struct ReadMasterResp_t {
   wire<1> valid; // ← Output from interleaver
   wire<1> ready;
   WideReadData_t data; // Wide data (up to one 256B upstream transaction)
-  wire<4> id;         // Matching transaction ID
+  wire<4> id;          // Matching transaction ID
 };
 
 // Combined Read Master Port
@@ -254,8 +254,8 @@ struct WriteMasterReq_t {
 struct WriteMasterResp_t {
   wire<1> valid; // ← Output from interleaver
   wire<1> ready;
-  wire<4> id;    // Matching transaction ID
-  wire<2> resp;  // AXI response (OKAY, SLVERR, etc.)
+  wire<4> id;   // Matching transaction ID
+  wire<2> resp; // AXI response (OKAY, SLVERR, etc.)
 };
 
 // Combined Write Master Port

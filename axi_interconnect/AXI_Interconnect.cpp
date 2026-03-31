@@ -61,7 +61,7 @@ bool llc_focus_line(uint32_t line_addr) {
   return (CONFIG_AXI_LLC_FOCUS_LINE0 != 0u &&
           line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE0)) ||
          (CONFIG_AXI_LLC_FOCUS_LINE1 != 0u &&
-         line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1));
+          line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1));
 }
 
 bool focus_read_line(uint32_t line_addr) { return llc_focus_line(line_addr); }
@@ -169,7 +169,7 @@ inline bool write_size_supported(uint8_t total_size) {
          MAX_WRITE_TRANSACTION_BYTES;
 }
 constexpr uint8_t kInvalidAxiWriteId = 0xFF;
-}
+} // namespace
 
 // ============================================================================
 // Initialization
@@ -1000,8 +1000,8 @@ void AXI_Interconnect::comb_write_request() {
           continue;
         }
         if (!write_size_supported(write_ports[idx].req.total_size)) {
-            printf("[axi] write size too large total_size=%u master=%d\n",
-                   static_cast<unsigned>(write_ports[idx].req.total_size), idx);
+          printf("[axi] write size too large total_size=%u master=%d\n",
+                 static_cast<unsigned>(write_ports[idx].req.total_size), idx);
           continue;
         }
         if (w_req_ready_curr[idx]) {
@@ -1094,7 +1094,7 @@ void AXI_Interconnect::seq() {
                       llc.io.regs.lookup_id_r ==
                           consumed_req.id;
       for (uint32_t slot = 0; !retained && slot < llc_config.mshr_num &&
-                                  slot < MAX_OUTSTANDING;
+                              slot < MAX_OUTSTANDING;
            ++slot) {
         const auto &entry = llc.io.regs.mshr[slot];
         retained = entry.valid && !entry.is_prefetch &&
@@ -1437,7 +1437,7 @@ read_handshake_done:
                                    return t.to_llc &&
                                           t.beats_done == t.total_beats &&
                                           t.orig_id == mem_id;
-                           });
+                                 });
     if (exact_it != r_pending.end()) {
       if (llc_focus_line(exact_it->addr) ||
           trace_icache_read_txn(*exact_it, sim_time)) {

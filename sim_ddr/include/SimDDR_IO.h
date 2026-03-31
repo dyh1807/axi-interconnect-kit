@@ -104,7 +104,7 @@ struct AXI4_W_t {
   // Data
   axi_data_t wdata; // Write data
   axi_strb_t wstrb; // Write strobes (byte enables)
-  wire<1> wlast;  // Last beat of burst (Master output)
+  wire<1> wlast;    // Last beat of burst (Master output)
 };
 
 // ============================================================================
@@ -156,8 +156,8 @@ struct AXI4_R_t {
 
   // Data and response
   axi_data_t rdata; // Read data
-  wire<2> rresp;  // Read response (OKAY/EXOKAY/SLVERR/DECERR)
-  wire<1> rlast;  // Last beat of burst (Slave output)
+  wire<2> rresp;    // Read response (OKAY/EXOKAY/SLVERR/DECERR)
+  wire<1> rlast;    // Last beat of burst (Slave output)
 };
 
 // ============================================================================

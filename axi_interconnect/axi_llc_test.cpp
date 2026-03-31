@@ -23,7 +23,10 @@ void clear_inputs(AXI_LLC &llc) {
   llc.io.lookup_in = {};
 }
 
-void cycle(AXI_LLC &llc) { llc.comb(); llc.seq(); }
+void cycle(AXI_LLC &llc) {
+  llc.comb();
+  llc.seq();
+}
 
 AXI_LLC_Bytes_t make_meta_set(const AXI_LLCConfig &config, uint32_t hit_way,
                               uint32_t tag) {
@@ -521,7 +524,7 @@ bool test_cacheable_write_updates_table() {
       static_cast<uint8_t>(config.line_bytes - 1);
   llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 2;
   for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
-  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[i] = 0x7000 + i;
+    llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[i] = 0x7000 + i;
   }
   for (uint32_t b = 0; b < config.line_bytes; ++b) {
     llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb.set(b, true);
@@ -2293,7 +2296,7 @@ bool test_cacheable_write_hit_then_read_latest() {
   llc.io.lookup_in.repl_valid = true;
   llc.io.lookup_in.data = make_data_set(config, 1, 0x2200);
   llc.io.lookup_in.meta = make_meta_set_with_flags(config, 1, tag,
-      static_cast<uint8_t>(AXI_LLC_META_VALID));
+                                                   static_cast<uint8_t>(AXI_LLC_META_VALID));
   llc.io.lookup_in.repl = make_repl(0);
   llc.comb();
   if (!llc.io.table_out.data.enable || !llc.io.table_out.data.write ||
@@ -3044,13 +3047,13 @@ bool test_same_master_multi_write_queue() {
   llc.seq();
   if (llc.io.regs.write_q_count_r[MASTER_DCACHE_W] != 1 ||
       !llc.io.regs.write_q[MASTER_DCACHE_W]
-                         [llc.io.regs.write_q_head_r[MASTER_DCACHE_W]]
-                             .valid) {
+                          [llc.io.regs.write_q_head_r[MASTER_DCACHE_W]]
+                              .valid) {
     printf("FAIL: second LLC write not queued count=%u head_valid=%d\n",
            llc.io.regs.write_q_count_r[MASTER_DCACHE_W],
            static_cast<int>(llc.io.regs.write_q[MASTER_DCACHE_W]
-                                            [llc.io.regs.write_q_head_r[MASTER_DCACHE_W]]
-                                                .valid));
+                                               [llc.io.regs.write_q_head_r[MASTER_DCACHE_W]]
+                                                   .valid));
     return false;
   }
   if (!llc.io.table_out.data.enable || !llc.io.table_out.meta.enable ||

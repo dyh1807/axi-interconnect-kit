@@ -18,7 +18,7 @@ long long sim_time = 0;
 namespace {
 
 void wire_ddr_to_interconnect(axi_interconnect::AXI_Interconnect &interconnect,
-                       sim_ddr::SimDDR &ddr) {
+                              sim_ddr::SimDDR &ddr) {
   interconnect.axi_io.ar.arready = ddr.io.ar.arready;
   interconnect.axi_io.r.rvalid = ddr.io.r.rvalid;
   interconnect.axi_io.r.rid = ddr.io.r.rid;
@@ -33,7 +33,7 @@ void wire_ddr_to_interconnect(axi_interconnect::AXI_Interconnect &interconnect,
 }
 
 void wire_interconnect_to_ddr(axi_interconnect::AXI_Interconnect &interconnect,
-                       sim_ddr::SimDDR &ddr) {
+                              sim_ddr::SimDDR &ddr) {
   ddr.io.ar.arvalid = interconnect.axi_io.ar.arvalid;
   ddr.io.ar.araddr = interconnect.axi_io.ar.araddr;
   ddr.io.ar.arid = interconnect.axi_io.ar.arid;

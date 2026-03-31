@@ -304,7 +304,7 @@ struct AXI_LLC_Regs_t {
   uint8_t read_resp_q_tail_r[NUM_READ_MASTERS] = {0};
   uint8_t read_resp_q_count_r[NUM_READ_MASTERS] = {0};
   WideReadData_t read_resp_q_data_r[NUM_READ_MASTERS]
-                                    [AXI_LLC_READ_RESP_QUEUE_DEPTH] = {};
+                                   [AXI_LLC_READ_RESP_QUEUE_DEPTH] = {};
   uint8_t read_resp_q_id_r[NUM_READ_MASTERS][AXI_LLC_READ_RESP_QUEUE_DEPTH] = {};
   uint8_t read_victim_wb_q_head_r = 0;
   uint8_t read_victim_wb_q_tail_r = 0;

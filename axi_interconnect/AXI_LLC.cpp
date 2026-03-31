@@ -369,8 +369,8 @@ void AXI_LLC::debug_print() const {
         static_cast<unsigned>(io.regs.read_resp_q_head_r[i]),
         static_cast<unsigned>(io.regs.read_resp_q_tail_r[i]),
         static_cast<unsigned>(io.regs.read_resp_q_id_r[i]
-                                                [io.regs.read_resp_q_head_r[i] %
-                                                 AXI_LLC_READ_RESP_QUEUE_DEPTH]),
+                                                      [io.regs.read_resp_q_head_r[i] %
+                                                       AXI_LLC_READ_RESP_QUEUE_DEPTH]),
         io.regs.read_resp_q_data_r[i][io.regs.read_resp_q_head_r[i] %
                                       AXI_LLC_READ_RESP_QUEUE_DEPTH][0]);
   }
@@ -2341,14 +2341,14 @@ void AXI_LLC::drive_mem_read_path() {
         io.reg_write.state =
             io.regs.lookup_valid_r ? AXI_LLCState::kLookup : AXI_LLCState::kIdle;
       } else {
-      auto &entry = io.reg_write.mshr[slot];
-      entry.refill_valid = true;
-      entry.refill_data = io.ext_in.mem.read_resp_data;
-      entry.refill_committed = entry.bypass;
-      io.reg_write.state = AXI_LLCState::kRefill;
-      if (!entry.bypass) {
-        io.reg_write.perf.refill++;
-      }
+        auto &entry = io.reg_write.mshr[slot];
+        entry.refill_valid = true;
+        entry.refill_data = io.ext_in.mem.read_resp_data;
+        entry.refill_committed = entry.bypass;
+        io.reg_write.state = AXI_LLCState::kRefill;
+        if (!entry.bypass) {
+          io.reg_write.perf.refill++;
+        }
       }
     } else {
       std::printf(
