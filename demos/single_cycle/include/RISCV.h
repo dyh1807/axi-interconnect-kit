@@ -18,13 +18,13 @@ enum enum_number_opcode {
   number_7_opcode_addi =
       0b0010011, // addi, slti, sltiu, xori, ori, andi, slli, srli, srai
   number_8_opcode_add =
-      0b0110011, // add, sub, sll, slt, sltu, xor, srl, sra, or, and
+      0b0110011,                     // add, sub, sll, slt, sltu, xor, srl, sra, or, and
   number_9_opcode_fence = 0b0001111, // fence, fence.i
   number_10_opcode_ecall =
       0b1110011, // ecall, ebreak, csrrw, csrrs, csrrc, csrrwi, csrrsi, csrrci
   number_11_opcode_lrw =
-      0b0101111, // lr.w, sc.w, amoswap.w, amoadd.w, amoxor.w, amoand.w,
-                 // amoor.w, amomin.w, amomax.w, amominu.w, amomaxu.w
+      0b0101111,                       // lr.w, sc.w, amoswap.w, amoadd.w, amoxor.w, amoand.w,
+                                       // amoor.w, amomin.w, amomax.w, amominu.w, amomaxu.w
   number_12_opcode_float = 0b1010011,  // fadd.s, fsub.s...
   number_13_opcode_fmadd = 0b1000011,  // fmadd.s
   number_14_opcode_fmsub = 0b1000111,  // fmsub.s

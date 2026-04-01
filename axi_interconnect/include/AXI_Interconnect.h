@@ -99,7 +99,7 @@ struct WritePendingTxn {
   uint8_t orig_id;
   uint32_t addr;
   WideWriteData_t wdata;
-  uint64_t wstrb;
+  WideWriteStrb_t wstrb{};
   uint8_t total_beats;
   uint8_t beats_sent;
   bool aw_done;

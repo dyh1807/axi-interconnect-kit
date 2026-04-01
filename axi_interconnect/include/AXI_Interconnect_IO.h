@@ -46,7 +46,7 @@ constexpr uint16_t MAX_WRITE_TRANSACTION_WORDS =
     MAX_WRITE_TRANSACTION_BYTES / sizeof(uint32_t);
 #ifndef AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER
 #ifdef CONFIG_AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER
-#define AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER                          \
+#define AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER \
   CONFIG_AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER
 #else
 #define AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER 4
@@ -153,24 +153,30 @@ struct WideWriteStrb_t {
     return out;
   }
 
-  WideWriteStrb_t &operator=(uint32_t mask) {
+  template <typename T,
+            typename = std::enable_if_t<std::is_integral_v<T>>>
+  WideWriteStrb_t &operator=(T mask) {
     clear();
-    for (uint32_t i = 0; i < 32 && i < MAX_WRITE_TRANSACTION_BYTES; ++i) {
-      bytes[i] = static_cast<uint8_t>((mask >> i) & 0x1u);
+    const uint64_t wide_mask = static_cast<uint64_t>(mask);
+    for (uint32_t i = 0; i < 64 && i < MAX_WRITE_TRANSACTION_BYTES; ++i) {
+      bytes[i] = static_cast<uint8_t>((wide_mask >> i) & 0x1u);
     }
     return *this;
   }
 
-  WideWriteStrb_t &operator=(uint64_t mask) {
-    clear();
+  explicit operator uint64_t() const {
+    uint64_t mask = 0;
     for (uint32_t i = 0; i < 64 && i < MAX_WRITE_TRANSACTION_BYTES; ++i) {
-      bytes[i] = static_cast<uint8_t>((mask >> i) & 0x1u);
+      mask |= static_cast<uint64_t>(bytes[i] != 0) << i;
     }
-    return *this;
+    return mask;
   }
 };
 
 struct WideData256_t {
+  // Historical name retained for source compatibility. The upstream payload
+  // remains bounded by AXI_KIT_MAX_WRITE_TRANSACTION_BYTES, while downstream
+  // SimDDR beats may now use a true wire<256> carrier in standalone mode.
   uint32_t words[AXI_UPSTREAM_PAYLOAD_WORDS];
 
   void clear() {
@@ -203,22 +209,22 @@ inline WideWriteData_t &WideWriteData_t::operator=(const WideData256_t &other) {
 
 // Read Request: Master → Interleaver
 struct ReadMasterReq_t {
-  wire1_t valid;
-  wire1_t ready;      // ← Output from interleaver
-  wire1_t accepted;   // ← One-cycle pulse when request is truly accepted
-  wire4_t accepted_id; // ← ID of the request accepted in this pulse
-  wire32_t addr;      // Byte address
-  wire8_t total_size; // 0=1B ... 255=256B
-  wire4_t id;         // Transaction ID (for out-of-order)
-  wire1_t bypass;     // Skip LLC / cacheable path and force memory/MMIO routing
+  wire<1> valid;
+  wire<1> ready;       // ← Output from interleaver
+  wire<1> accepted;    // ← One-cycle pulse when request is truly accepted
+  wire<4> accepted_id; // ← ID of the request accepted in this pulse
+  wire<32> addr;       // Byte address
+  wire<8> total_size;  // 0=1B ... 255=256B
+  wire<4> id;          // Transaction ID (for out-of-order)
+  wire<1> bypass;      // Skip LLC / cacheable path and force memory/MMIO routing
 };
 
 // Read Response: Interleaver → Master
 struct ReadMasterResp_t {
-  wire1_t valid; // ← Output from interleaver
-  wire1_t ready;
+  wire<1> valid; // ← Output from interleaver
+  wire<1> ready;
   WideReadData_t data; // Wide data (up to one 256B upstream transaction)
-  wire4_t id;         // Matching transaction ID
+  wire<4> id;          // Matching transaction ID
 };
 
 // Combined Read Master Port
@@ -233,23 +239,23 @@ struct ReadMasterPort_t {
 
 // Write Request: Master → Interleaver (AW+W combined)
 struct WriteMasterReq_t {
-  wire1_t valid;
-  wire1_t ready;       // ← Output from interleaver
-  wire1_t accepted;    // ← One-cycle pulse when request is truly accepted
-  wire32_t addr;       // Byte address
+  wire<1> valid;
+  wire<1> ready;         // ← Output from interleaver
+  wire<1> accepted;      // ← One-cycle pulse when request is truly accepted
+  wire<32> addr;         // Byte address
   WideWriteData_t wdata; // Wide write data
-  wire64_t wstrb;        // Byte strobe (1 bit per byte, up to 64B)
-  wire8_t total_size;    // 0=1B ... 63=64B (default cap)
-  wire4_t id;          // Transaction ID
-  wire1_t bypass;      // Skip LLC / cacheable path and force memory/MMIO routing
+  WideWriteStrb_t wstrb; // Byte strobe (1 bit per byte, up to 64B)
+  wire<8> total_size;    // 0=1B ... 63=64B (default cap)
+  wire<4> id;            // Transaction ID
+  wire<1> bypass;        // Skip LLC / cacheable path and force memory/MMIO routing
 };
 
 // Write Response: Interleaver → Master
 struct WriteMasterResp_t {
-  wire1_t valid; // ← Output from interleaver
-  wire1_t ready;
-  wire4_t id;   // Matching transaction ID
-  wire2_t resp; // AXI response (OKAY, SLVERR, etc.)
+  wire<1> valid; // ← Output from interleaver
+  wire<1> ready;
+  wire<4> id;   // Matching transaction ID
+  wire<2> resp; // AXI response (OKAY, SLVERR, etc.)
 };
 
 // Combined Write Master Port

@@ -6,24 +6,24 @@
 #define RISCV_MODE_M 0b11
 
 #define BITMASK(bits) ((1ull << (bits)) - 1)
-#define BITS(x, hi, lo)                                                        \
+#define BITS(x, hi, lo) \
   (((x) >> (lo)) & BITMASK((hi) - (lo) + 1)) // similar to x[hi:lo] in verilog
-#define SEXT(x, len)                                                           \
-  ({                                                                           \
-    struct {                                                                   \
-      int64_t n : len;                                                         \
-    } __x = {.n = (int64_t)x};                                                 \
-    (uint64_t) __x.n;                                                          \
+#define SEXT(x, len)           \
+  ({                           \
+    struct {                   \
+      int64_t n : len;         \
+    } __x = {.n = (int64_t)x}; \
+    (uint64_t) __x.n;          \
   })
 
 #define immI(i) SEXT(BITS(i, 31, 20), 12)
 #define immU(i) (SEXT(BITS(i, 31, 12), 20) << 12)
 #define immS(i) ((SEXT(BITS(i, 31, 25), 7) << 5) | BITS(i, 11, 7))
-#define immJ(i)                                                                \
-  ((SEXT(BITS(i, 31, 31), 1) << 20) | (BITS(i, 19, 12) << 12) |                \
+#define immJ(i)                                                 \
+  ((SEXT(BITS(i, 31, 31), 1) << 20) | (BITS(i, 19, 12) << 12) | \
    (BITS(i, 20, 20) << 11) | (BITS(i, 30, 21) << 1))
-#define immB(i)                                                                \
-  ((SEXT(BITS(i, 31, 31), 1) << 12) | (BITS(i, 7, 7) << 11) |                  \
+#define immB(i)                                               \
+  ((SEXT(BITS(i, 31, 31), 1) << 12) | (BITS(i, 7, 7) << 11) | \
    (BITS(i, 30, 25) << 5) | (BITS(i, 11, 8) << 1))
 
 // ================= CSR Bit Masks (Standard RISC-V) =================
@@ -133,7 +133,7 @@ enum CpuMemReadResult : uint8_t {
 
 // Physical-memory read hook used by va2pa page-table walk (supports pending).
 extern CpuMemReadResult (*g_cpu_mem_read32_hook)(uint32_t paddr,
-                                                  uint32_t *data);
+                                                 uint32_t *data);
 
 // Immediate read/write hooks used by instruction/load/store/amo paths.
 // These hooks must be provided by the embedding runtime.

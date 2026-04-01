@@ -116,6 +116,20 @@ This is the current write-side correctness target for this stage. Future
 performance work, if needed, would deepen internal write-resource parallelism
 rather than reopen basic ordering/coherence rules.
 
+## SimDDR Modeling Notes
+
+- `AXI_KIT_SIM_DDR_BEAT_BYTES` supports `4/8/16/32B`; `32B` is the required
+  setting for AXI4 256-bit single-beat traffic.
+- `AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY` means: after the final `W` beat
+  handshakes, wait this many additional full cycles before `B` can first become
+  visible.
+- In the parent simulator, `AXI_KIT_*` integration parameters come from
+  `config.h`; missing required definitions are treated as build errors rather
+  than silently falling back to submodule defaults.
+- `SimDDR` remains a fixed-latency functional model. It is not intended to be a
+  cycle-accurate DDR controller model, and it does not yet model richer `AW/W`
+  backpressure or write-channel scheduling effects.
+
 ## Test Tiers
 
 - `P0`: deterministic component tests

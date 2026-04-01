@@ -27,22 +27,32 @@ namespace sim_ddr {
 // ============================================================================
 // SimDDR Configuration
 // ============================================================================
-constexpr uint32_t SIM_DDR_LATENCY = CONFIG_SIM_DDR_LATENCY;
+constexpr uint32_t SIM_DDR_LATENCY = AXI_KIT_SIM_DDR_READ_LATENCY;
 // Write response latency is modeled separately from read latency. Older
 // simulator glue reused a frontend-side latency knob for the whole DDR path,
 // but the current shared-AXI design benefits from controlling write completion
 // independently when analyzing dirty-victim critical paths.
+//
+// Semantics:
+// - The final W handshake enqueues a write response with latency_cnt = 0.
+// - Because comb runs before seq, the earliest observable B response is the
+//   next cycle.
+// - This knob counts the additional full cycles to wait after enqueue before
+//   B can first become visible:
+//   - 0 => visible on the very next cycle
+//   - 1 => one bubble cycle, then visible
+//   - N => N bubble cycles, then visible
 #ifndef AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY
 #ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY
 #define AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY \
   CONFIG_AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY
 #else
-#define AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY 2
+#define AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY 1
 #endif
 #endif
 constexpr uint32_t SIM_DDR_WRITE_RESP_LATENCY =
     AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY;
-constexpr uint32_t SIM_DDR_MAX_BURST = 256;     // Max burst length (AXI4 limit)
+constexpr uint32_t SIM_DDR_MAX_BURST = 256; // Max burst length (AXI4 limit)
 #ifndef AXI_KIT_SIM_DDR_MAX_OUTSTANDING
 #ifdef CONFIG_AXI_KIT_SIM_DDR_MAX_OUTSTANDING
 #define AXI_KIT_SIM_DDR_MAX_OUTSTANDING CONFIG_AXI_KIT_SIM_DDR_MAX_OUTSTANDING
@@ -71,6 +81,7 @@ struct WriteTransaction {
 // Write response pending (in latency phase after W complete)
 struct WriteRespPending {
   uint8_t id;
+  // Number of full cycles elapsed since the last W beat enqueued the response.
   uint32_t latency_cnt;
 };
 
