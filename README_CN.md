@@ -112,6 +112,17 @@ router 负责 AXI 侧地址译码。
 这就是当前阶段写路径 correctness 的目标边界。后续如果还要继续追性能，重点会是
 进一步提高内部写资源并行度，而不是再回头修基本的一致性与顺序语义。
 
+## SimDDR 建模说明
+
+- `AXI_KIT_SIM_DDR_BEAT_BYTES` 目前支持 `4/8/16/32B`；其中 `32B` 是
+  AXI4 256-bit single-beat 传输所需配置。
+- `AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY` 的语义是：最后一个 `W` beat 完成
+  握手后，再额外等待多少个完整周期，`B` 通道才首次可见。
+- 集成到父 simulator 时，`AXI_KIT_*` 参数应来自 parent `config.h`；
+  若缺少必需定义，submodule 会直接编译报错，而不是静默回落到本地默认值。
+- `SimDDR` 仍然是固定延迟的功能模型，不是精确 DDR controller 时序模型；
+  当前也还没有细化建模更真实的 `AW/W` backpressure 与写通道调度行为。
+
 ## 测试分层
 
 - `P0`：纯组件级确定性单测
