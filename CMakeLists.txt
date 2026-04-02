@@ -120,6 +120,18 @@ if(AXI_KIT_BUILD_TESTS)
   )
   target_compile_definitions(axi_kit_axi4_test_32b PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
 
+  add_library(axi_kit_axi4_test_32b_wstall STATIC
+      ${AXI_KIT_AXI4_SOURCES}
+  )
+  target_include_directories(axi_kit_axi4_test_32b_wstall PUBLIC ${AXI_KIT_INCLUDE_DIRS})
+  target_compile_features(axi_kit_axi4_test_32b_wstall PUBLIC cxx_std_20)
+  target_compile_definitions(axi_kit_axi4_test_32b_wstall PUBLIC
+      AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
+      AXI_KIT_SIM_DDR_BEAT_BYTES=32
+      AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP=1
+  )
+  target_compile_definitions(axi_kit_axi4_test_32b_wstall PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
+
   add_executable(sim_ddr_test
       sim_ddr/sim_ddr_test.cpp
   )
@@ -144,11 +156,23 @@ if(AXI_KIT_BUILD_TESTS)
   target_compile_definitions(axi_interconnect_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
   target_link_libraries(axi_interconnect_test PRIVATE axi_kit_axi4_test)
 
+  add_executable(axi_interconnect_aw_latch_test
+      axi_interconnect/axi_interconnect_aw_latch_test.cpp
+  )
+  target_compile_definitions(axi_interconnect_aw_latch_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
+  target_link_libraries(axi_interconnect_aw_latch_test PRIVATE axi_kit_axi4_test)
+
   add_executable(axi_interconnect_32b_test
       axi_interconnect/axi_interconnect_32b_test.cpp
   )
   target_compile_definitions(axi_interconnect_32b_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
   target_link_libraries(axi_interconnect_32b_test PRIVATE axi_kit_axi4_test_32b)
+
+  add_executable(axi_interconnect_32b_wstall_test
+      axi_interconnect/axi_interconnect_32b_wstall_test.cpp
+  )
+  target_compile_definitions(axi_interconnect_32b_wstall_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
+  target_link_libraries(axi_interconnect_32b_wstall_test PRIVATE axi_kit_axi4_test_32b_wstall)
 
   add_executable(axi_llc_test
       axi_interconnect/axi_llc_test.cpp
@@ -171,7 +195,9 @@ if(AXI_KIT_BUILD_TESTS)
   add_test(NAME sim_ddr_test COMMAND sim_ddr_test)
   add_test(NAME sim_ddr_32b_test COMMAND sim_ddr_32b_test)
   add_test(NAME axi_interconnect_test COMMAND axi_interconnect_test)
+  add_test(NAME axi_interconnect_aw_latch_test COMMAND axi_interconnect_aw_latch_test)
   add_test(NAME axi_interconnect_32b_test COMMAND axi_interconnect_32b_test)
+  add_test(NAME axi_interconnect_32b_wstall_test COMMAND axi_interconnect_32b_wstall_test)
   add_test(NAME axi_llc_test COMMAND axi_llc_test)
   add_test(NAME axi_interconnect_llc_axi4_test COMMAND axi_interconnect_llc_axi4_test)
   add_test(NAME mmio_router_axi4_test COMMAND mmio_router_axi4_test)
