@@ -57,6 +57,8 @@ void SimDDR::init() {
   // Clear write channel state
   w_active = false;
   w_current = {};
+  w_pending.clear();
+  w_accept_cooldown = 0;
 
   // Clear queues
   while (!w_resp_queue.empty())
@@ -116,13 +118,14 @@ void SimDDR::comb_write_channel() {
   io.b.bid = 0;
   io.b.bresp = AXI_RESP_OKAY;
 
-  // --- AW Channel: Accept new write address if no active transaction ---
-  if (!w_active) {
+  // --- AW Channel: Accept new write address if the queue has room ---
+  if (w_pending.size() < SIM_DDR_WRITE_QUEUE_DEPTH) {
     io.aw.awready = true;
   }
 
-  // --- W Channel: Accept write data if active transaction ---
-  if (w_active && !w_current.data_done) {
+  // --- W Channel: Accept write data for the head-of-line transaction only ---
+  if (!w_pending.empty() && !w_pending.front().data_done &&
+      w_accept_cooldown == 0) {
     io.w.wready = true;
   }
 
@@ -210,13 +213,17 @@ void SimDDR::comb_read_channel() {
 void SimDDR::seq() {
   // ========== Write Channel Sequential Logic ==========
 
+  if (w_accept_cooldown > 0) {
+    w_accept_cooldown--;
+  }
+
   // B handshake: Complete response
   if (io.b.bvalid && io.b.bready) {
     if (!w_resp_queue.empty()) {
       const auto &resp = w_resp_queue.front();
-      if (focus_write_line(w_current.addr)) {
-        std::printf("[DDR-W][B-HS] cyc=%lld id=%u active_addr=0x%08x\n",
-                    sim_time, static_cast<unsigned>(resp.id), w_current.addr);
+      if (focus_write_line(resp.addr)) {
+        std::printf("[DDR-W][B-HS] cyc=%lld id=%u addr=0x%08x\n", sim_time,
+                    static_cast<unsigned>(resp.id), resp.addr);
       }
     }
     w_resp_queue.pop();
@@ -236,28 +243,28 @@ void SimDDR::seq() {
 
   // AW handshake: Start new write transaction
   if (io.aw.awvalid && io.aw.awready) {
-    w_active = true;
-    w_current.addr = io.aw.awaddr;
-    w_current.id = io.aw.awid;
-    w_current.len = io.aw.awlen;
-    w_current.size = io.aw.awsize;
-    w_current.burst = io.aw.awburst;
-    w_current.beat_cnt = 0;
-    w_current.data_done = false;
-    if (focus_write_line(w_current.addr)) {
+    WriteTransaction txn{};
+    txn.addr = io.aw.awaddr;
+    txn.id = io.aw.awid;
+    txn.len = io.aw.awlen;
+    txn.size = io.aw.awsize;
+    txn.burst = io.aw.awburst;
+    txn.beat_cnt = 0;
+    txn.data_done = false;
+    w_pending.push_back(txn);
+    if (focus_write_line(txn.addr)) {
       std::printf(
           "[DDR-W][AW-HS] cyc=%lld id=%u addr=0x%08x len=%u size=%u\n",
-          sim_time, static_cast<unsigned>(w_current.id), w_current.addr,
-          static_cast<unsigned>(w_current.len),
-          static_cast<unsigned>(w_current.size));
+          sim_time, static_cast<unsigned>(txn.id), txn.addr,
+          static_cast<unsigned>(txn.len), static_cast<unsigned>(txn.size));
     }
   }
 
   // W handshake: Process write data
-  if (io.w.wvalid && io.w.wready && w_active) {
-    uint32_t current_addr =
-        w_current.addr + (w_current.beat_cnt << w_current.size);
-    if (focus_write_line(w_current.addr)) {
+  if (io.w.wvalid && io.w.wready && !w_pending.empty()) {
+    WriteTransaction &txn = w_pending.front();
+    uint32_t current_addr = txn.addr + (txn.beat_cnt << txn.size);
+    if (focus_write_line(txn.addr)) {
       const std::string data_hex =
           axi_compat::hex_string(io.w.wdata, AXI_DATA_BYTES);
       const std::string wstrb_hex =
@@ -265,29 +272,33 @@ void SimDDR::seq() {
       std::printf(
           "[DDR-W][W-HS] cyc=%lld id=%u beat=%u/%u beat_addr=0x%08x "
           "data=%s wstrb=%s wlast=%d\n",
-          sim_time, static_cast<unsigned>(w_current.id),
-          static_cast<unsigned>(w_current.beat_cnt),
-          static_cast<unsigned>(w_current.len + 1), current_addr,
+          sim_time, static_cast<unsigned>(txn.id),
+          static_cast<unsigned>(txn.beat_cnt),
+          static_cast<unsigned>(txn.len + 1), current_addr,
           data_hex.c_str(), wstrb_hex.c_str(), static_cast<int>(io.w.wlast));
     }
     do_memory_write(current_addr, io.w.wdata, io.w.wstrb);
-    w_current.beat_cnt++;
+    txn.beat_cnt++;
+    w_accept_cooldown = SIM_DDR_WRITE_ACCEPT_GAP;
 
     if (io.w.wlast) {
-      w_current.data_done = true;
+      txn.data_done = true;
       WriteRespPending resp;
-      resp.id = w_current.id;
+      resp.id = txn.id;
+      resp.addr = txn.addr;
       resp.latency_cnt = 0;
       w_resp_queue.push(resp);
-      if (focus_write_line(w_current.addr)) {
+      if (focus_write_line(txn.addr)) {
         std::printf("[DDR-W][RESP-ENQ] cyc=%lld id=%u addr=0x%08x beats=%u\n",
-                    sim_time, static_cast<unsigned>(w_current.id),
-                    w_current.addr,
-                    static_cast<unsigned>(w_current.beat_cnt));
+                    sim_time, static_cast<unsigned>(txn.id), txn.addr,
+                    static_cast<unsigned>(txn.beat_cnt));
       }
-      w_active = false;
+      w_pending.pop_front();
     }
   }
+
+  w_active = !w_pending.empty();
+  w_current = w_active ? w_pending.front() : WriteTransaction{};
 
   // ========== Read Channel Sequential Logic ==========
 
@@ -417,8 +428,9 @@ axi_data_t SimDDR::do_memory_read(uint32_t addr) {
 // Debug
 // ============================================================================
 void SimDDR::print_state() {
-  printf("[SimDDR] Write: active=%d resp_pending=%zu\n", w_active,
-         w_resp_queue.size());
+  printf("[SimDDR] Write: active=%d queued=%zu resp_pending=%zu cooldown=%u\n",
+         w_active, w_pending.size(), w_resp_queue.size(),
+         static_cast<unsigned>(w_accept_cooldown));
   printf("[SimDDR] Read: txn_count=%zu rr_index=%zu active_idx=%d\n",
          r_transactions.size(), r_rr_index, r_active_idx);
   for (size_t i = 0; i < r_transactions.size(); ++i) {

@@ -23,6 +23,11 @@ void sim_cycle(sim_ddr::SimDDR &ddr) {
   ++sim_time;
 }
 
+void advance_seq(sim_ddr::SimDDR &ddr) {
+  ddr.seq();
+  ++sim_time;
+}
+
 sim_ddr::axi_strb_t make_full_strobe() {
   sim_ddr::axi_strb_t strobe{};
   strobe = 0;
@@ -68,40 +73,50 @@ void clear_master_signals(sim_ddr::SimDDR &ddr) {
 
 bool wait_aw_ready(sim_ddr::SimDDR &ddr) {
   int timeout = kHandshakeTimeout;
+  ddr.comb();
   while (!ddr.io.aw.awready && timeout-- > 0) {
-    sim_cycle(ddr);
+    advance_seq(ddr);
+    ddr.comb();
   }
   return ddr.io.aw.awready;
 }
 
 bool wait_w_ready(sim_ddr::SimDDR &ddr) {
   int timeout = kHandshakeTimeout;
+  ddr.comb();
   while (!ddr.io.w.wready && timeout-- > 0) {
-    sim_cycle(ddr);
+    advance_seq(ddr);
+    ddr.comb();
   }
   return ddr.io.w.wready;
 }
 
 bool wait_b_valid(sim_ddr::SimDDR &ddr) {
   int timeout = kDataTimeout;
+  ddr.comb();
   while (!ddr.io.b.bvalid && timeout-- > 0) {
-    sim_cycle(ddr);
+    advance_seq(ddr);
+    ddr.comb();
   }
   return ddr.io.b.bvalid;
 }
 
 bool wait_ar_ready(sim_ddr::SimDDR &ddr) {
   int timeout = kHandshakeTimeout;
+  ddr.comb();
   while (!ddr.io.ar.arready && timeout-- > 0) {
-    sim_cycle(ddr);
+    advance_seq(ddr);
+    ddr.comb();
   }
   return ddr.io.ar.arready;
 }
 
 bool wait_r_valid(sim_ddr::SimDDR &ddr) {
   int timeout = kDataTimeout;
+  ddr.comb();
   while (!ddr.io.r.rvalid && timeout-- > 0) {
-    sim_cycle(ddr);
+    advance_seq(ddr);
+    ddr.comb();
   }
   return ddr.io.r.rvalid;
 }
@@ -123,7 +138,7 @@ bool test_single_32b_write_read(sim_ddr::SimDDR &ddr) {
     std::printf("FAIL: AW handshake timeout\n");
     return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.aw.awvalid = false;
 
   ddr.io.w.wvalid = true;
@@ -134,7 +149,7 @@ bool test_single_32b_write_read(sim_ddr::SimDDR &ddr) {
     std::printf("FAIL: W handshake timeout\n");
     return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.w.wvalid = false;
   ddr.io.w.wlast = false;
 
@@ -221,7 +236,7 @@ bool test_partial_32b_strobe(sim_ddr::SimDDR &ddr) {
     std::printf("FAIL: AW handshake timeout\n");
     return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.aw.awvalid = false;
 
   ddr.io.w.wvalid = true;
@@ -232,7 +247,7 @@ bool test_partial_32b_strobe(sim_ddr::SimDDR &ddr) {
     std::printf("FAIL: W handshake timeout\n");
     return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.w.wvalid = false;
   ddr.io.w.wlast = false;
 

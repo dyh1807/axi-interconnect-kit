@@ -73,6 +73,34 @@ if(AXI_KIT_BUILD_TESTS)
     add_test(NAME ${target_name} COMMAND ${target_name})
   endfunction()
 
+  function(add_axi_kit_write_queue_test target_name beat_bytes)
+    add_library(${target_name}_lib STATIC
+        ${AXI_KIT_AXI4_SOURCES}
+    )
+    target_include_directories(${target_name}_lib PUBLIC ${AXI_KIT_INCLUDE_DIRS})
+    target_compile_features(${target_name}_lib PUBLIC cxx_std_20)
+    target_compile_definitions(${target_name}_lib PUBLIC
+        AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
+        AXI_KIT_SIM_DDR_BEAT_BYTES=${beat_bytes}
+        AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH=2
+        AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP=1
+    )
+    target_compile_definitions(${target_name}_lib PRIVATE
+        ${AXI_KIT_MMIO_TEST_DEFS}
+    )
+
+    add_executable(${target_name}
+        sim_ddr/sim_ddr_write_queue_test.cpp
+    )
+    target_compile_definitions(${target_name} PRIVATE
+        ${AXI_KIT_MMIO_TEST_DEFS}
+        SIM_DDR_WRITE_QUEUE_TEST_QUEUE_DEPTH=2
+        SIM_DDR_WRITE_QUEUE_TEST_ACCEPT_GAP=1
+    )
+    target_link_libraries(${target_name} PRIVATE ${target_name}_lib)
+    add_test(NAME ${target_name} COMMAND ${target_name})
+  endfunction()
+
   add_library(axi_kit_axi4_test STATIC
       ${AXI_KIT_AXI4_SOURCES}
   )
@@ -107,6 +135,8 @@ if(AXI_KIT_BUILD_TESTS)
   add_axi_kit_write_resp_latency_test(sim_ddr_write_resp_latency_0_test 0)
   add_axi_kit_write_resp_latency_test(sim_ddr_write_resp_latency_1_test 1)
   add_axi_kit_write_resp_latency_test(sim_ddr_write_resp_latency_2_test 2)
+  add_axi_kit_write_queue_test(sim_ddr_write_queue_test 4)
+  add_axi_kit_write_queue_test(sim_ddr_write_queue_32b_test 32)
 
   add_executable(axi_interconnect_test
       axi_interconnect/axi_interconnect_test.cpp

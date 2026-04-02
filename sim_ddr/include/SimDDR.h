@@ -19,6 +19,7 @@
 #include "axi_interconnect_compat.h"
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <queue>
 #include <vector>
 
@@ -63,6 +64,28 @@ constexpr uint32_t SIM_DDR_MAX_BURST = 256; // Max burst length (AXI4 limit)
 constexpr uint32_t SIM_DDR_MAX_OUTSTANDING =
     AXI_KIT_SIM_DDR_MAX_OUTSTANDING; // Max outstanding transactions
 
+#ifndef AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH
+#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH
+#define AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH \
+  CONFIG_AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH
+#else
+#define AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH AXI_KIT_SIM_DDR_MAX_OUTSTANDING
+#endif
+#endif
+constexpr uint32_t SIM_DDR_WRITE_QUEUE_DEPTH =
+    AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH;
+
+#ifndef AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP
+#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP
+#define AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP \
+  CONFIG_AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP
+#else
+#define AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP 0
+#endif
+#endif
+constexpr uint32_t SIM_DDR_WRITE_ACCEPT_GAP =
+    AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP;
+
 // ============================================================================
 // Transaction Structures for Outstanding Support
 // ============================================================================
@@ -81,6 +104,7 @@ struct WriteTransaction {
 // Write response pending (in latency phase after W complete)
 struct WriteRespPending {
   uint8_t id;
+  uint32_t addr;
   // Number of full cycles elapsed since the last W beat enqueued the response.
   uint32_t latency_cnt;
 };
@@ -124,9 +148,11 @@ public:
 
 private:
   // ========== Write Channel ==========
-  // Active write transaction (receiving W data)
+  // Head-of-line write transaction state for the single W data stream.
   bool w_active;
   WriteTransaction w_current;
+  std::deque<WriteTransaction> w_pending;
+  uint32_t w_accept_cooldown;
 
   // Pending write responses (in latency)
   std::queue<WriteRespPending> w_resp_queue;

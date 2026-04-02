@@ -34,6 +34,11 @@ void sim_cycle(sim_ddr::SimDDR &ddr) {
   sim_time++;
 }
 
+void advance_seq(sim_ddr::SimDDR &ddr) {
+  ddr.seq();
+  sim_time++;
+}
+
 // Simulate multiple cycles
 void sim_cycles(sim_ddr::SimDDR &ddr, int n) {
   for (int i = 0; i < n; i++) {
@@ -70,6 +75,63 @@ void clear_master_signals(sim_ddr::SimDDR &ddr) {
 
   // R channel (slave -> master, master provides ready)
   ddr.io.r.rready = true;
+}
+
+void reset_testbench(sim_ddr::SimDDR &ddr) {
+  ddr.init();
+  sim_time = 0;
+  std::memset(p_memory, 0, TEST_MEM_SIZE * sizeof(uint32_t));
+  clear_master_signals(ddr);
+}
+
+bool wait_aw_ready(sim_ddr::SimDDR &ddr, int timeout = HANDSHAKE_TIMEOUT) {
+  ddr.comb();
+  while (!ddr.io.aw.awready && timeout > 0) {
+    advance_seq(ddr);
+    ddr.comb();
+    timeout--;
+  }
+  return timeout > 0;
+}
+
+bool wait_w_ready(sim_ddr::SimDDR &ddr, int timeout = HANDSHAKE_TIMEOUT) {
+  ddr.comb();
+  while (!ddr.io.w.wready && timeout > 0) {
+    advance_seq(ddr);
+    ddr.comb();
+    timeout--;
+  }
+  return timeout > 0;
+}
+
+bool wait_ar_ready(sim_ddr::SimDDR &ddr, int timeout = HANDSHAKE_TIMEOUT) {
+  ddr.comb();
+  while (!ddr.io.ar.arready && timeout > 0) {
+    advance_seq(ddr);
+    ddr.comb();
+    timeout--;
+  }
+  return timeout > 0;
+}
+
+bool wait_b_valid(sim_ddr::SimDDR &ddr, int timeout = DATA_TIMEOUT) {
+  ddr.comb();
+  while (!ddr.io.b.bvalid && timeout > 0) {
+    advance_seq(ddr);
+    ddr.comb();
+    timeout--;
+  }
+  return timeout > 0;
+}
+
+bool wait_r_valid(sim_ddr::SimDDR &ddr, int timeout = DATA_TIMEOUT) {
+  ddr.comb();
+  while (!ddr.io.r.rvalid && timeout > 0) {
+    advance_seq(ddr);
+    ddr.comb();
+    timeout--;
+  }
+  return timeout > 0;
 }
 
 // ============================================================================
@@ -236,13 +298,11 @@ bool test_burst_write(sim_ddr::SimDDR &ddr) {
   ddr.io.aw.awlen = 3;  // 4 beats (len + 1)
   ddr.io.aw.awsize = 2; // 4 bytes
 
-  // Wait for awready
-  int timeout = 10;
-  while (!ddr.io.aw.awready && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
+  if (!wait_aw_ready(ddr)) {
+    printf("FAIL: AW handshake timeout\n");
+    return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.aw.awvalid = false;
 
   // Phase 2: Send 4 W beats
@@ -252,33 +312,17 @@ bool test_burst_write(sim_ddr::SimDDR &ddr) {
     ddr.io.w.wstrb = 0xF;
     ddr.io.w.wlast = (i == 3);
 
-    // Call comb first to update outputs (including wready)
-    ddr.comb();
-
-    // Wait for wready if not already set
-    timeout = 10;
-    while (!ddr.io.w.wready && timeout > 0) {
-      // Slave not ready, complete this cycle and try again
-      ddr.seq();
-      sim_time++;
-      ddr.comb();
-      timeout--;
+    if (!wait_w_ready(ddr)) {
+      printf("FAIL: W handshake timeout at beat %d\n", i);
+      return false;
     }
-
-    // Now wvalid && wready - complete the handshake cycle
-    ddr.seq();
-    sim_time++;
+    advance_seq(ddr);
   }
   ddr.io.w.wvalid = false;
   ddr.io.w.wlast = false;
 
   // Phase 3: Wait for B
-  timeout = DATA_TIMEOUT;
-  while (!ddr.io.b.bvalid && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
-  }
-  if (timeout == 0) {
+  if (!wait_b_valid(ddr)) {
     printf("FAIL: B response timeout\n");
     return false;
   }
@@ -374,12 +418,11 @@ bool test_partial_strobe(sim_ddr::SimDDR &ddr) {
   ddr.io.aw.awaddr = test_addr;
   ddr.io.aw.awlen = 0;
 
-  int timeout = 10;
-  while (!ddr.io.aw.awready && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
+  if (!wait_aw_ready(ddr)) {
+    printf("FAIL: AW handshake timeout\n");
+    return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.aw.awvalid = false;
 
   ddr.io.w.wvalid = true;
@@ -387,20 +430,18 @@ bool test_partial_strobe(sim_ddr::SimDDR &ddr) {
   ddr.io.w.wstrb = 0xC; // Only bytes 2,3 (upper half-word)
   ddr.io.w.wlast = true;
 
-  timeout = 10;
-  while (!ddr.io.w.wready && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
+  if (!wait_w_ready(ddr)) {
+    printf("FAIL: W handshake timeout\n");
+    return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.w.wvalid = false;
   ddr.io.w.wlast = false;
 
   // Wait for B
-  timeout = DATA_TIMEOUT;
-  while (!ddr.io.b.bvalid && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
+  if (!wait_b_valid(ddr)) {
+    printf("FAIL: B response timeout\n");
+    return false;
   }
   sim_cycle(ddr);
 
@@ -433,26 +474,29 @@ bool test_back_to_back(sim_ddr::SimDDR &ddr) {
   ddr.io.aw.awaddr = addr1;
   ddr.io.aw.awlen = 0;
 
-  int timeout = 10;
-  while (!ddr.io.aw.awready && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
+  if (!wait_aw_ready(ddr)) {
+    printf("FAIL: Transaction 1 AW handshake timeout\n");
+    return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.aw.awvalid = false;
 
   ddr.io.w.wvalid = true;
   ddr.io.w.wdata = data1;
   ddr.io.w.wlast = true;
 
-  while (!ddr.io.w.wready)
-    sim_cycle(ddr);
-  sim_cycle(ddr);
+  if (!wait_w_ready(ddr)) {
+    printf("FAIL: Transaction 1 W handshake timeout\n");
+    return false;
+  }
+  advance_seq(ddr);
   ddr.io.w.wvalid = false;
   ddr.io.w.wlast = false;
 
-  while (!ddr.io.b.bvalid)
-    sim_cycle(ddr);
+  if (!wait_b_valid(ddr)) {
+    printf("FAIL: Transaction 1 B response timeout\n");
+    return false;
+  }
   sim_cycle(ddr);
 
   // Transaction 2: Write (immediately after)
@@ -460,23 +504,29 @@ bool test_back_to_back(sim_ddr::SimDDR &ddr) {
   ddr.io.aw.awaddr = addr2;
   ddr.io.aw.awlen = 0;
 
-  while (!ddr.io.aw.awready)
-    sim_cycle(ddr);
-  sim_cycle(ddr);
+  if (!wait_aw_ready(ddr)) {
+    printf("FAIL: Transaction 2 AW handshake timeout\n");
+    return false;
+  }
+  advance_seq(ddr);
   ddr.io.aw.awvalid = false;
 
   ddr.io.w.wvalid = true;
   ddr.io.w.wdata = data2;
   ddr.io.w.wlast = true;
 
-  while (!ddr.io.w.wready)
-    sim_cycle(ddr);
-  sim_cycle(ddr);
+  if (!wait_w_ready(ddr)) {
+    printf("FAIL: Transaction 2 W handshake timeout\n");
+    return false;
+  }
+  advance_seq(ddr);
   ddr.io.w.wvalid = false;
   ddr.io.w.wlast = false;
 
-  while (!ddr.io.b.bvalid)
-    sim_cycle(ddr);
+  if (!wait_b_valid(ddr)) {
+    printf("FAIL: Transaction 2 B response timeout\n");
+    return false;
+  }
   sim_cycle(ddr);
 
   // Verify both writes
@@ -509,16 +559,11 @@ bool test_id_signals(sim_ddr::SimDDR &ddr) {
   ddr.io.aw.awaddr = test_addr;
   ddr.io.aw.awlen = 0;
 
-  ddr.comb();
-  int timeout = 10;
-  while (!ddr.io.aw.awready && timeout > 0) {
-    ddr.seq();
-    sim_time++;
-    ddr.comb();
-    timeout--;
+  if (!wait_aw_ready(ddr)) {
+    printf("FAIL: Write AW handshake timeout\n");
+    return false;
   }
-  ddr.seq();
-  sim_time++;
+  advance_seq(ddr);
   ddr.io.aw.awvalid = false;
 
   // Send W data
@@ -526,24 +571,18 @@ bool test_id_signals(sim_ddr::SimDDR &ddr) {
   ddr.io.w.wdata = test_data;
   ddr.io.w.wlast = true;
 
-  ddr.comb();
-  timeout = 10;
-  while (!ddr.io.w.wready && timeout > 0) {
-    ddr.seq();
-    sim_time++;
-    ddr.comb();
-    timeout--;
+  if (!wait_w_ready(ddr)) {
+    printf("FAIL: Write W handshake timeout\n");
+    return false;
   }
-  ddr.seq();
-  sim_time++;
+  advance_seq(ddr);
   ddr.io.w.wvalid = false;
   ddr.io.w.wlast = false;
 
   // Wait for B response and check bid
-  timeout = DATA_TIMEOUT;
-  while (!ddr.io.b.bvalid && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
+  if (!wait_b_valid(ddr)) {
+    printf("FAIL: Write B response timeout\n");
+    return false;
   }
 
   if (ddr.io.b.bid != test_awid) {
@@ -562,23 +601,17 @@ bool test_id_signals(sim_ddr::SimDDR &ddr) {
   ddr.io.ar.araddr = test_addr;
   ddr.io.ar.arlen = 0;
 
-  ddr.comb();
-  timeout = 10;
-  while (!ddr.io.ar.arready && timeout > 0) {
-    ddr.seq();
-    sim_time++;
-    ddr.comb();
-    timeout--;
+  if (!wait_ar_ready(ddr)) {
+    printf("FAIL: Read AR handshake timeout\n");
+    return false;
   }
-  ddr.seq();
-  sim_time++;
+  advance_seq(ddr);
   ddr.io.ar.arvalid = false;
 
   // Wait for R data and check rid
-  timeout = DATA_TIMEOUT;
-  while (!ddr.io.r.rvalid && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
+  if (!wait_r_valid(ddr)) {
+    printf("FAIL: Read R data timeout\n");
+    return false;
   }
 
   if (ddr.io.r.rid != test_arid) {
@@ -601,8 +634,6 @@ bool test_stress_sequential(sim_ddr::SimDDR &ddr) {
 
   const int NUM_TRANSACTIONS = 100;
   uint32_t base_addr = 0x10000;
-  int timeout;
-
   // Phase 1: Write 100 values
   for (int i = 0; i < NUM_TRANSACTIONS; i++) {
     uint32_t addr = base_addr + (i * 4);
@@ -615,16 +646,11 @@ bool test_stress_sequential(sim_ddr::SimDDR &ddr) {
     ddr.io.aw.awaddr = addr;
     ddr.io.aw.awlen = 0;
 
-    ddr.comb();
-    timeout = 10;
-    while (!ddr.io.aw.awready && timeout > 0) {
-      ddr.seq();
-      sim_time++;
-      ddr.comb();
-      timeout--;
+    if (!wait_aw_ready(ddr)) {
+      printf("FAIL: Write %d AW handshake timeout\n", i);
+      return false;
     }
-    ddr.seq();
-    sim_time++;
+    advance_seq(ddr);
     ddr.io.aw.awvalid = false;
 
     // W phase
@@ -632,26 +658,16 @@ bool test_stress_sequential(sim_ddr::SimDDR &ddr) {
     ddr.io.w.wdata = data;
     ddr.io.w.wlast = true;
 
-    ddr.comb();
-    timeout = 10;
-    while (!ddr.io.w.wready && timeout > 0) {
-      ddr.seq();
-      sim_time++;
-      ddr.comb();
-      timeout--;
+    if (!wait_w_ready(ddr)) {
+      printf("FAIL: Write %d W handshake timeout\n", i);
+      return false;
     }
-    ddr.seq();
-    sim_time++;
+    advance_seq(ddr);
     ddr.io.w.wvalid = false;
     ddr.io.w.wlast = false;
 
     // B phase
-    timeout = DATA_TIMEOUT;
-    while (!ddr.io.b.bvalid && timeout > 0) {
-      sim_cycle(ddr);
-      timeout--;
-    }
-    if (timeout == 0) {
+    if (!wait_b_valid(ddr)) {
       printf("FAIL: Write %d B response timeout\n", i);
       return false;
     }
@@ -674,25 +690,15 @@ bool test_stress_sequential(sim_ddr::SimDDR &ddr) {
     ddr.io.ar.araddr = addr;
     ddr.io.ar.arlen = 0;
 
-    ddr.comb();
-    timeout = 10;
-    while (!ddr.io.ar.arready && timeout > 0) {
-      ddr.seq();
-      sim_time++;
-      ddr.comb();
-      timeout--;
+    if (!wait_ar_ready(ddr)) {
+      printf("FAIL: Read %d AR handshake timeout\n", i);
+      return false;
     }
-    ddr.seq();
-    sim_time++;
+    advance_seq(ddr);
     ddr.io.ar.arvalid = false;
 
     // R phase
-    timeout = DATA_TIMEOUT;
-    while (!ddr.io.r.rvalid && timeout > 0) {
-      sim_cycle(ddr);
-      timeout--;
-    }
-    if (timeout == 0) {
+    if (!wait_r_valid(ddr)) {
       printf("FAIL: Read %d R data timeout\n", i);
       return false;
     }
@@ -1048,16 +1054,11 @@ bool test_bready_backpressure(sim_ddr::SimDDR &ddr) {
   ddr.io.aw.awsize = 2;
   ddr.io.aw.awburst = sim_ddr::AXI_BURST_INCR;
 
-  int timeout = HANDSHAKE_TIMEOUT;
-  while (!ddr.io.aw.awready && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
-  }
-  if (timeout == 0) {
+  if (!wait_aw_ready(ddr)) {
     printf("FAIL: AW handshake timeout\n");
     return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.aw.awvalid = false;
 
   // W
@@ -1066,27 +1067,17 @@ bool test_bready_backpressure(sim_ddr::SimDDR &ddr) {
   ddr.io.w.wstrb = 0xF;
   ddr.io.w.wlast = true;
 
-  timeout = HANDSHAKE_TIMEOUT;
-  while (!ddr.io.w.wready && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
-  }
-  if (timeout == 0) {
+  if (!wait_w_ready(ddr)) {
     printf("FAIL: W handshake timeout\n");
     return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.w.wvalid = false;
   ddr.io.w.wlast = false;
 
   // Stall B
   ddr.io.b.bready = false;
-  timeout = DATA_TIMEOUT;
-  while (!ddr.io.b.bvalid && timeout > 0) {
-    sim_cycle(ddr);
-    timeout--;
-  }
-  if (timeout == 0) {
+  if (!wait_b_valid(ddr)) {
     printf("FAIL: B response timeout\n");
     return false;
   }
@@ -1257,78 +1248,91 @@ int main() {
   int failed = 0;
 
   // Run tests
+  reset_testbench(ddr);
   if (test_single_write(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5); // Gap between tests
 
+  reset_testbench(ddr);
   if (test_single_read(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_burst_write(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_burst_read(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_partial_strobe(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_back_to_back(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_id_signals(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_stress_sequential(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_outstanding_reads(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_interleaving(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_rready_backpressure(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_bready_backpressure(ddr))
     passed++;
   else
     failed++;
   sim_cycles(ddr, 5);
 
+  reset_testbench(ddr);
   if (test_max_outstanding_limit(ddr))
     passed++;
   else
