@@ -58,7 +58,9 @@ void SimDDR::init() {
   w_active = false;
   w_current = {};
   w_pending.clear();
+  w_data_fifo.clear();
   w_accept_cooldown = 0;
+  w_drain_cooldown = 0;
 
   // Clear queues
   while (!w_resp_queue.empty())
@@ -123,8 +125,11 @@ void SimDDR::comb_write_channel() {
     io.aw.awready = true;
   }
 
-  // --- W Channel: Accept write data for the head-of-line transaction only ---
-  if (!w_pending.empty() && !w_pending.front().data_done &&
+  // --- W Channel: Accept write data while there is FIFO credit for the next
+  // transaction in AXI order. Backpressure appears when sustained writes fill
+  // the FIFO faster than the backend drain loop can consume them.
+  if (find_write_data_target() >= 0 &&
+      w_data_fifo.size() < SIM_DDR_WRITE_DATA_FIFO_DEPTH &&
       w_accept_cooldown == 0) {
     io.w.wready = true;
   }
@@ -160,6 +165,46 @@ int SimDDR::find_next_ready_transaction() {
   }
 
   return -1; // No ready transactions
+}
+
+int SimDDR::find_write_data_target() const {
+  for (size_t i = 0; i < w_pending.size(); ++i) {
+    if (!w_pending[i].data_done) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+int SimDDR::find_write_drain_target() const {
+  for (size_t i = 0; i < w_pending.size(); ++i) {
+    if (w_pending[i].beats_drained < w_pending[i].beats_accepted) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+void SimDDR::retire_completed_writes() {
+  while (!w_pending.empty()) {
+    const WriteTransaction &front = w_pending.front();
+    const uint16_t total_beats = static_cast<uint16_t>(front.len) + 1u;
+    if (!front.data_done || front.beats_drained != total_beats) {
+      break;
+    }
+
+    WriteRespPending resp{};
+    resp.id = front.id;
+    resp.addr = front.addr;
+    resp.latency_cnt = 0;
+    w_resp_queue.push(resp);
+    if (focus_write_line(front.addr)) {
+      std::printf("[DDR-W][RESP-ENQ] cyc=%lld id=%u addr=0x%08x beats=%u\n",
+                  sim_time, static_cast<unsigned>(front.id), front.addr,
+                  static_cast<unsigned>(total_beats));
+    }
+    w_pending.pop_front();
+  }
 }
 
 // ============================================================================
@@ -216,6 +261,9 @@ void SimDDR::seq() {
   if (w_accept_cooldown > 0) {
     w_accept_cooldown--;
   }
+  if (w_drain_cooldown > 0) {
+    w_drain_cooldown--;
+  }
 
   // B handshake: Complete response
   if (io.b.bvalid && io.b.bready) {
@@ -249,7 +297,8 @@ void SimDDR::seq() {
     txn.len = io.aw.awlen;
     txn.size = io.aw.awsize;
     txn.burst = io.aw.awburst;
-    txn.beat_cnt = 0;
+    txn.beats_accepted = 0;
+    txn.beats_drained = 0;
     txn.data_done = false;
     w_pending.push_back(txn);
     if (focus_write_line(txn.addr)) {
@@ -261,44 +310,58 @@ void SimDDR::seq() {
   }
 
   // W handshake: Process write data
-  if (io.w.wvalid && io.w.wready && !w_pending.empty()) {
-    WriteTransaction &txn = w_pending.front();
-    uint32_t current_addr = txn.addr + (txn.beat_cnt << txn.size);
-    if (focus_write_line(txn.addr)) {
-      const std::string data_hex =
-          axi_compat::hex_string(io.w.wdata, AXI_DATA_BYTES);
-      const std::string wstrb_hex =
-          axi_compat::hex_string(io.w.wstrb, AXI_STRB_STORAGE_BYTES);
-      std::printf(
-          "[DDR-W][W-HS] cyc=%lld id=%u beat=%u/%u beat_addr=0x%08x "
-          "data=%s wstrb=%s wlast=%d\n",
-          sim_time, static_cast<unsigned>(txn.id),
-          static_cast<unsigned>(txn.beat_cnt),
-          static_cast<unsigned>(txn.len + 1), current_addr,
-          data_hex.c_str(), wstrb_hex.c_str(), static_cast<int>(io.w.wlast));
-    }
-    do_memory_write(current_addr, io.w.wdata, io.w.wstrb);
-    txn.beat_cnt++;
-    w_accept_cooldown = SIM_DDR_WRITE_ACCEPT_GAP;
+  if (io.w.wvalid && io.w.wready) {
+    const int target_idx = find_write_data_target();
+    if (target_idx >= 0) {
+      WriteTransaction &txn = w_pending[static_cast<size_t>(target_idx)];
+      uint32_t current_addr =
+          txn.addr + (static_cast<uint32_t>(txn.beats_accepted) << txn.size);
+      WriteBeatPending beat{};
+      beat.addr = current_addr;
+      beat.data = io.w.wdata;
+      beat.wstrb = io.w.wstrb;
 
-    if (io.w.wlast) {
-      txn.data_done = true;
-      WriteRespPending resp;
-      resp.id = txn.id;
-      resp.addr = txn.addr;
-      resp.latency_cnt = 0;
-      w_resp_queue.push(resp);
+      w_data_fifo.push_back(beat);
+      txn.beats_accepted++;
+      w_accept_cooldown = SIM_DDR_WRITE_ACCEPT_GAP;
+
       if (focus_write_line(txn.addr)) {
-        std::printf("[DDR-W][RESP-ENQ] cyc=%lld id=%u addr=0x%08x beats=%u\n",
-                    sim_time, static_cast<unsigned>(txn.id), txn.addr,
-                    static_cast<unsigned>(txn.beat_cnt));
+        const std::string data_hex =
+            axi_compat::hex_string(io.w.wdata, AXI_DATA_BYTES);
+        const std::string wstrb_hex =
+            axi_compat::hex_string(io.w.wstrb, AXI_STRB_STORAGE_BYTES);
+        std::printf(
+            "[DDR-W][W-HS] cyc=%lld id=%u beat=%u/%u beat_addr=0x%08x "
+            "data=%s wstrb=%s wlast=%d\n",
+            sim_time, static_cast<unsigned>(txn.id),
+            static_cast<unsigned>(txn.beats_accepted - 1u),
+            static_cast<unsigned>(txn.len + 1), current_addr, data_hex.c_str(),
+            wstrb_hex.c_str(), static_cast<int>(io.w.wlast));
       }
-      w_pending.pop_front();
+
+      if (io.w.wlast) {
+        txn.data_done = true;
+      }
     }
   }
 
-  w_active = !w_pending.empty();
-  w_current = w_active ? w_pending.front() : WriteTransaction{};
+  // Drain at most one buffered W beat per cycle into backing memory.
+  if (!w_data_fifo.empty() && w_drain_cooldown == 0) {
+    const int target_idx = find_write_drain_target();
+    if (target_idx >= 0) {
+      const WriteBeatPending beat = w_data_fifo.front();
+      w_data_fifo.pop_front();
+      do_memory_write(beat.addr, beat.data, beat.wstrb);
+      WriteTransaction &txn = w_pending[static_cast<size_t>(target_idx)];
+      txn.beats_drained++;
+      w_drain_cooldown = SIM_DDR_WRITE_DRAIN_GAP;
+    }
+  }
+
+  retire_completed_writes();
+
+  w_active = !w_pending.empty() || !w_data_fifo.empty();
+  w_current = !w_pending.empty() ? w_pending.front() : WriteTransaction{};
 
   // ========== Read Channel Sequential Logic ==========
 
@@ -428,9 +491,10 @@ axi_data_t SimDDR::do_memory_read(uint32_t addr) {
 // Debug
 // ============================================================================
 void SimDDR::print_state() {
-  printf("[SimDDR] Write: active=%d queued=%zu resp_pending=%zu cooldown=%u\n",
-         w_active, w_pending.size(), w_resp_queue.size(),
-         static_cast<unsigned>(w_accept_cooldown));
+  printf("[SimDDR] Write: active=%d cmd_q=%zu data_fifo=%zu resp_pending=%zu accept_cd=%u drain_cd=%u\n",
+         w_active, w_pending.size(), w_data_fifo.size(), w_resp_queue.size(),
+         static_cast<unsigned>(w_accept_cooldown),
+         static_cast<unsigned>(w_drain_cooldown));
   printf("[SimDDR] Read: txn_count=%zu rr_index=%zu active_idx=%d\n",
          r_transactions.size(), r_rr_index, r_active_idx);
   for (size_t i = 0; i < r_transactions.size(); ++i) {

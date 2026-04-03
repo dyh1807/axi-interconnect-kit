@@ -83,7 +83,9 @@ if(AXI_KIT_BUILD_TESTS)
         AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
         AXI_KIT_SIM_DDR_BEAT_BYTES=${beat_bytes}
         AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH=2
-        AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP=1
+        AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP=0
+        AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH=2
+        AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP=2
     )
     target_compile_definitions(${target_name}_lib PRIVATE
         ${AXI_KIT_MMIO_TEST_DEFS}
@@ -95,7 +97,9 @@ if(AXI_KIT_BUILD_TESTS)
     target_compile_definitions(${target_name} PRIVATE
         ${AXI_KIT_MMIO_TEST_DEFS}
         SIM_DDR_WRITE_QUEUE_TEST_QUEUE_DEPTH=2
-        SIM_DDR_WRITE_QUEUE_TEST_ACCEPT_GAP=1
+        SIM_DDR_WRITE_QUEUE_TEST_ACCEPT_GAP=0
+        SIM_DDR_WRITE_QUEUE_TEST_DATA_FIFO_DEPTH=2
+        SIM_DDR_WRITE_QUEUE_TEST_DRAIN_GAP=2
     )
     target_link_libraries(${target_name} PRIVATE ${target_name}_lib)
     add_test(NAME ${target_name} COMMAND ${target_name})

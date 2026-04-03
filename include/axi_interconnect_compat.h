@@ -368,6 +368,18 @@ static_assert(sizeof(wire<256>) == 32,
 #ifndef CONFIG_AXI_KIT_SIM_DDR_MAX_OUTSTANDING
 #error "simulator config.h must define CONFIG_AXI_KIT_SIM_DDR_MAX_OUTSTANDING"
 #endif
+#ifndef CONFIG_AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH
+#error "simulator config.h must define CONFIG_AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH"
+#endif
+#ifndef CONFIG_AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP
+#error "simulator config.h must define CONFIG_AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP"
+#endif
+#ifndef CONFIG_AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH
+#error "simulator config.h must define CONFIG_AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH"
+#endif
+#ifndef CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP
+#error "simulator config.h must define CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP"
+#endif
 #ifndef CONFIG_AXI_KIT_AXI_ID_WIDTH
 #error "simulator config.h must define CONFIG_AXI_KIT_AXI_ID_WIDTH"
 #endif
@@ -408,6 +420,42 @@ static_assert(sizeof(wire<256>) == 32,
 #define AXI_KIT_SIM_DDR_MAX_OUTSTANDING CONFIG_AXI_KIT_SIM_DDR_MAX_OUTSTANDING
 #else
 #define AXI_KIT_SIM_DDR_MAX_OUTSTANDING 8
+#endif
+#endif
+
+#ifndef AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH
+#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH
+#define AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH \
+  CONFIG_AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH
+#else
+#define AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH AXI_KIT_SIM_DDR_MAX_OUTSTANDING
+#endif
+#endif
+
+#ifndef AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP
+#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP
+#define AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP \
+  CONFIG_AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP
+#else
+#define AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP 0
+#endif
+#endif
+
+#ifndef AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH
+#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH
+#define AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH \
+  CONFIG_AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH
+#else
+#define AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH 8
+#endif
+#endif
+
+#ifndef AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP
+#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP
+#define AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP \
+  CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP
+#else
+#define AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP 0
 #endif
 #endif
 
@@ -521,6 +569,10 @@ static_assert(AXI_KIT_AXI_ID_WIDTH <= 7,
               "AXI_KIT_AXI_ID_WIDTH must stay <= 7; 0xFF is reserved as invalid ID");
 static_assert(AXI_KIT_MAX_OUTSTANDING <= (1u << AXI_KIT_AXI_ID_WIDTH),
               "AXI_KIT_MAX_OUTSTANDING exceeds available AXI IDs");
+static_assert(AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH > 0,
+              "AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH must be positive");
+static_assert(AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH > 0,
+              "AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH must be positive");
 static_assert(AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER <= AXI_KIT_MAX_OUTSTANDING,
               "AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER exceeds total outstanding budget");
 static_assert(AXI_KIT_MAX_WRITE_OUTSTANDING <= (1u << AXI_KIT_AXI_ID_WIDTH),
@@ -550,6 +602,18 @@ static_assert(
 static_assert(AXI_KIT_SIM_DDR_MAX_OUTSTANDING ==
                   CONFIG_AXI_KIT_SIM_DDR_MAX_OUTSTANDING,
               "parent simulator SimDDR queue depth must come from config.h");
+static_assert(AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH ==
+                  CONFIG_AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH,
+              "parent simulator SimDDR write queue depth must come from config.h");
+static_assert(AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP ==
+                  CONFIG_AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP,
+              "parent simulator SimDDR write accept gap must come from config.h");
+static_assert(AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH ==
+                  CONFIG_AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH,
+              "parent simulator SimDDR write data fifo depth must come from config.h");
+static_assert(AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP ==
+                  CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP,
+              "parent simulator SimDDR write drain gap must come from config.h");
 static_assert(AXI_KIT_AXI_ID_WIDTH == CONFIG_AXI_KIT_AXI_ID_WIDTH,
               "parent simulator AXI ID width must come from config.h");
 static_assert(AXI_KIT_UART_BASE == CONFIG_AXI_KIT_UART_BASE,

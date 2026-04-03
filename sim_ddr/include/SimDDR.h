@@ -64,27 +64,17 @@ constexpr uint32_t SIM_DDR_MAX_BURST = 256; // Max burst length (AXI4 limit)
 constexpr uint32_t SIM_DDR_MAX_OUTSTANDING =
     AXI_KIT_SIM_DDR_MAX_OUTSTANDING; // Max outstanding transactions
 
-#ifndef AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH
-#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH
-#define AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH \
-  CONFIG_AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH
-#else
-#define AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH AXI_KIT_SIM_DDR_MAX_OUTSTANDING
-#endif
-#endif
 constexpr uint32_t SIM_DDR_WRITE_QUEUE_DEPTH =
     AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH;
 
-#ifndef AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP
-#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP
-#define AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP \
-  CONFIG_AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP
-#else
-#define AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP 0
-#endif
-#endif
 constexpr uint32_t SIM_DDR_WRITE_ACCEPT_GAP =
     AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP;
+
+constexpr uint32_t SIM_DDR_WRITE_DATA_FIFO_DEPTH =
+    AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH;
+
+constexpr uint32_t SIM_DDR_WRITE_DRAIN_GAP =
+    AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP;
 
 // ============================================================================
 // Transaction Structures for Outstanding Support
@@ -97,8 +87,9 @@ struct WriteTransaction {
   uint8_t len; // Burst length - 1
   uint8_t size;
   uint8_t burst;
-  uint8_t beat_cnt; // Current beat received
-  bool data_done;   // All W beats received
+  uint16_t beats_accepted;
+  uint16_t beats_drained;
+  bool data_done; // All W beats received
 };
 
 // Write response pending (in latency phase after W complete)
@@ -107,6 +98,12 @@ struct WriteRespPending {
   uint32_t addr;
   // Number of full cycles elapsed since the last W beat enqueued the response.
   uint32_t latency_cnt;
+};
+
+struct WriteBeatPending {
+  uint32_t addr;
+  axi_data_t data;
+  axi_strb_t wstrb;
 };
 
 // Read transaction (after AR handshake, in latency or sending data)
@@ -148,11 +145,13 @@ public:
 
 private:
   // ========== Write Channel ==========
-  // Head-of-line write transaction state for the single W data stream.
+  // Write address commands queue independently from write data buffering.
   bool w_active;
   WriteTransaction w_current;
   std::deque<WriteTransaction> w_pending;
+  std::deque<WriteBeatPending> w_data_fifo;
   uint32_t w_accept_cooldown;
+  uint32_t w_drain_cooldown;
 
   // Pending write responses (in latency)
   std::queue<WriteRespPending> w_resp_queue;
@@ -177,6 +176,10 @@ private:
   // ========== Helper Functions ==========
   void do_memory_write(uint32_t addr, axi_data_t data, axi_strb_t wstrb);
   axi_data_t do_memory_read(uint32_t addr);
+
+  int find_write_data_target() const;
+  int find_write_drain_target() const;
+  void retire_completed_writes();
 
   // Find next ready transaction using round-robin once the current burst finishes
   int find_next_ready_transaction();

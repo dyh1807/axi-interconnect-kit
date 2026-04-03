@@ -16,12 +16,26 @@ namespace {
 #error "SIM_DDR_WRITE_QUEUE_TEST_ACCEPT_GAP must be defined"
 #endif
 
+#ifndef SIM_DDR_WRITE_QUEUE_TEST_DATA_FIFO_DEPTH
+#error "SIM_DDR_WRITE_QUEUE_TEST_DATA_FIFO_DEPTH must be defined"
+#endif
+
+#ifndef SIM_DDR_WRITE_QUEUE_TEST_DRAIN_GAP
+#error "SIM_DDR_WRITE_QUEUE_TEST_DRAIN_GAP must be defined"
+#endif
+
 static_assert(sim_ddr::SIM_DDR_WRITE_QUEUE_DEPTH ==
                   SIM_DDR_WRITE_QUEUE_TEST_QUEUE_DEPTH,
               "test binary must use the intended write queue depth override");
 static_assert(sim_ddr::SIM_DDR_WRITE_ACCEPT_GAP ==
                   SIM_DDR_WRITE_QUEUE_TEST_ACCEPT_GAP,
               "test binary must use the intended write accept gap override");
+static_assert(sim_ddr::SIM_DDR_WRITE_DATA_FIFO_DEPTH ==
+                  SIM_DDR_WRITE_QUEUE_TEST_DATA_FIFO_DEPTH,
+              "test binary must use the intended write data fifo depth override");
+static_assert(sim_ddr::SIM_DDR_WRITE_DRAIN_GAP ==
+                  SIM_DDR_WRITE_QUEUE_TEST_DRAIN_GAP,
+              "test binary must use the intended write drain gap override");
 
 constexpr uint32_t kTestMemWords = 0x100000;
 constexpr int kHandshakeTimeout = 40;
@@ -149,6 +163,28 @@ bool issue_w_beat(sim_ddr::SimDDR &ddr, sim_ddr::axi_data_t data,
   return true;
 }
 
+bool issue_w_beat_expect_immediate_ready(sim_ddr::SimDDR &ddr,
+                                         sim_ddr::axi_data_t data,
+                                         sim_ddr::axi_strb_t strobe, bool last) {
+  ddr.io.w.wvalid = true;
+  ddr.io.w.wdata = data;
+  ddr.io.w.wstrb = strobe;
+  ddr.io.w.wlast = last;
+  ddr.comb();
+  if (!ddr.io.w.wready) {
+    std::printf("FAIL: WREADY unexpectedly low for a back-to-back beat at sim_time=%lld\n",
+                sim_time);
+    ddr.print_state();
+    ddr.io.w.wvalid = false;
+    ddr.io.w.wlast = false;
+    return false;
+  }
+  advance_seq(ddr);
+  ddr.io.w.wvalid = false;
+  ddr.io.w.wlast = false;
+  return true;
+}
+
 bool expect_memory_pattern(uint32_t addr, uint32_t seed) {
   for (uint32_t word = 0; word < sim_ddr::AXI_DATA_WORDS; ++word) {
     const uint32_t got = p_memory[(addr >> 2) + word];
@@ -156,6 +192,17 @@ bool expect_memory_pattern(uint32_t addr, uint32_t seed) {
     if (got != expected) {
       std::printf("FAIL: memory[%u] at 0x%08x exp=0x%08x got=0x%08x\n", word,
                   addr, expected, got);
+      return false;
+    }
+  }
+  return true;
+}
+
+bool expect_memory_patterns(uint32_t base_addr, uint32_t first_seed,
+                            uint32_t beat_count) {
+  for (uint32_t beat = 0; beat < beat_count; ++beat) {
+    const uint32_t beat_addr = base_addr + beat * sim_ddr::AXI_DATA_BYTES;
+    if (!expect_memory_pattern(beat_addr, first_seed + beat * 0x100u)) {
       return false;
     }
   }
@@ -209,70 +256,78 @@ bool test_aw_queue_full_backpressure_and_retry(sim_ddr::SimDDR &ddr) {
   return true;
 }
 
-bool test_w_stall_and_b_after_final_accepted_w(sim_ddr::SimDDR &ddr) {
-  std::printf("=== Test 2: W stall preserves beat and B starts from final W ===\n");
+bool test_w_fifo_backpressure_is_bursty_not_uniform(sim_ddr::SimDDR &ddr) {
+  std::printf("=== Test 2: W backpressure comes from FIFO fill, not every beat ===\n");
 
   constexpr uint32_t kAddr = 0x8000;
+  constexpr uint32_t kBeatCount = 6;
   const sim_ddr::axi_strb_t full_strobe = make_full_strobe();
-  const sim_ddr::axi_data_t beat0 = make_pattern(0x20000000u);
-  const sim_ddr::axi_data_t beat1 = make_pattern(0x30000000u);
-  const uint32_t second_beat_addr = kAddr + sim_ddr::AXI_DATA_BYTES;
-  const int expected_b_cycles =
-      static_cast<int>(sim_ddr::SIM_DDR_WRITE_RESP_LATENCY) + 1;
 
   clear_master_signals(ddr);
 
-  if (!issue_aw(ddr, 7, kAddr, 1)) {
+  if (!issue_aw(ddr, 7, kAddr, static_cast<uint8_t>(kBeatCount - 1))) {
     return false;
   }
-  if (!issue_w_beat(ddr, beat0, full_strobe, false)) {
+
+  uint32_t first_stalled_beat = kBeatCount;
+  for (uint32_t beat = 0; beat < kBeatCount; ++beat) {
+    ddr.io.w.wvalid = true;
+    ddr.io.w.wdata = make_pattern(0x20000000u + beat * 0x100u);
+    ddr.io.w.wstrb = full_strobe;
+    ddr.io.w.wlast = (beat + 1u == kBeatCount);
+    ddr.comb();
+    if (!ddr.io.w.wready) {
+      first_stalled_beat = beat;
+      break;
+    }
+    advance_seq(ddr);
+    ddr.io.w.wvalid = false;
+    ddr.io.w.wlast = false;
+  }
+
+  if (first_stalled_beat == kBeatCount) {
+    std::printf("FAIL: expected the write FIFO to apply backpressure\n");
+    return false;
+  }
+  if (first_stalled_beat < 2u) {
+    std::printf("FAIL: backpressure arrived too early; got only %u immediate beats\n",
+                first_stalled_beat);
+    return false;
+  }
+
+  const uint32_t stalled_beat_addr =
+      kAddr + first_stalled_beat * sim_ddr::AXI_DATA_BYTES;
+  if (!expect_memory_zero(stalled_beat_addr)) {
     return false;
   }
 
   ddr.io.w.wvalid = true;
-  ddr.io.w.wdata = beat1;
+  ddr.io.w.wdata = make_pattern(0x20000000u + first_stalled_beat * 0x100u);
   ddr.io.w.wstrb = full_strobe;
-  ddr.io.w.wlast = true;
-  ddr.comb();
-  if (ddr.io.w.wready) {
-    std::printf("FAIL: WREADY should stall for the configured accept gap\n");
-    return false;
-  }
-  if (!expect_memory_zero(second_beat_addr)) {
-    return false;
-  }
-
-  sim_cycle(ddr);
-  if (!expect_memory_zero(second_beat_addr)) {
-    return false;
-  }
-  if (ddr.io.b.bvalid) {
-    std::printf("FAIL: B became visible before the final W handshake\n");
-    return false;
-  }
-
+  ddr.io.w.wlast = (first_stalled_beat + 1u == kBeatCount);
   if (!wait_w_ready(ddr)) {
-    std::printf("FAIL: WREADY did not recover after the stall window\n");
+    std::printf("FAIL: WREADY did not reopen after backend drain freed FIFO credit\n");
     return false;
   }
-  sim_cycle(ddr);
+  advance_seq(ddr);
   ddr.io.w.wvalid = false;
   ddr.io.w.wlast = false;
 
+  for (uint32_t beat = first_stalled_beat + 1u; beat < kBeatCount; ++beat) {
+    if (!issue_w_beat(ddr, make_pattern(0x20000000u + beat * 0x100u),
+                      full_strobe, beat + 1u == kBeatCount)) {
+      return false;
+    }
+  }
+
   const int b_cycles = wait_b_visible(ddr);
-  if (b_cycles < 0) {
-    std::printf("FAIL: B response timeout after final W handshake\n");
+  if (b_cycles <= static_cast<int>(sim_ddr::SIM_DDR_WRITE_RESP_LATENCY) + 1) {
+    std::printf(
+        "FAIL: B became visible too early; expected extra delay from buffered writes, got %d cycles\n",
+        b_cycles);
     return false;
   }
-  if (b_cycles != expected_b_cycles) {
-    std::printf("FAIL: expected B after %d cycles from final W, got %d\n",
-                expected_b_cycles, b_cycles);
-    return false;
-  }
-  if (!expect_memory_pattern(kAddr, 0x20000000u)) {
-    return false;
-  }
-  if (!expect_memory_pattern(second_beat_addr, 0x30000000u)) {
+  if (!expect_memory_patterns(kAddr, 0x20000000u, kBeatCount)) {
     return false;
   }
 
@@ -407,7 +462,7 @@ int main() {
   ddr.init();
   sim_time = 0;
   std::memset(p_memory, 0, kTestMemWords * sizeof(uint32_t));
-  if (test_w_stall_and_b_after_final_accepted_w(ddr)) {
+  if (test_w_fifo_backpressure_is_bursty_not_uniform(ddr)) {
     ++passed;
   } else {
     ++failed;
