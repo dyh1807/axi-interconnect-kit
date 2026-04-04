@@ -8,13 +8,12 @@
  */
 
 #include "SimDDR.h"
+#include "PhysMemory.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
 
-// Use the global p_memory from the simulator
-extern uint32_t *p_memory;
 extern long long sim_time;
 
 namespace sim_ddr {
@@ -371,16 +370,23 @@ void SimDDR::do_memory_write(uint32_t addr, axi_data_t data, axi_strb_t wstrb) {
         addr, data_hex.c_str(), wstrb_hex.c_str());
   }
 
-  if (p_memory == nullptr) {
+  if (pmem_ram_ptr() == nullptr) {
     return;
   }
 
-  auto *byte_mem = reinterpret_cast<uint8_t *>(p_memory);
   for (uint8_t byte = 0; byte < AXI_DATA_BYTES; ++byte) {
     if (!axi_compat::test_bit(wstrb, byte)) {
       continue;
     }
-    byte_mem[addr + byte] = extract_data_byte(data, byte);
+    const uint32_t byte_addr = addr + byte;
+    const uint32_t word_addr = byte_addr & ~0x3u;
+    const uint32_t shift = (byte_addr & 0x3u) * 8u;
+    const uint32_t mask = 0xFFu << shift;
+    const uint32_t old_word = pmem_read(word_addr);
+    const uint32_t new_word =
+        (old_word & ~mask) |
+        (static_cast<uint32_t>(extract_data_byte(data, byte)) << shift);
+    pmem_write(word_addr, new_word);
   }
 
   if (DCACHE_LOG) {
@@ -393,16 +399,20 @@ void SimDDR::do_memory_write(uint32_t addr, axi_data_t data, axi_strb_t wstrb) {
 }
 
 axi_data_t SimDDR::do_memory_read(uint32_t addr) {
-  if (p_memory == nullptr) {
+  if (pmem_ram_ptr() == nullptr) {
     axi_data_t poison{};
     poison = 0xDEADBEEF;
     return poison;
   }
 
-  auto *byte_mem = reinterpret_cast<uint8_t *>(p_memory);
   axi_data_t data{};
   for (uint8_t byte = 0; byte < AXI_DATA_BYTES; ++byte) {
-    axi_compat::set_byte(data, byte, byte_mem[addr + byte]);
+    const uint32_t byte_addr = addr + byte;
+    const uint32_t word_addr = byte_addr & ~0x3u;
+    const uint32_t shift = (byte_addr & 0x3u) * 8u;
+    const uint8_t byte_val =
+        static_cast<uint8_t>((pmem_read(word_addr) >> shift) & 0xFFu);
+    axi_compat::set_byte(data, byte, byte_val);
   }
 
   if (DCACHE_LOG) {
