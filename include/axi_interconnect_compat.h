@@ -389,6 +389,9 @@ static_assert(sizeof(wire<256>) == 32,
 #ifndef CONFIG_AXI_KIT_AXI_ID_WIDTH
 #error "simulator config.h must define CONFIG_AXI_KIT_AXI_ID_WIDTH"
 #endif
+#ifndef CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC
+#error "simulator config.h must define CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC"
+#endif
 #ifndef CONFIG_AXI_KIT_DEBUG
 #error "simulator config.h must define CONFIG_AXI_KIT_DEBUG"
 #endif
@@ -510,6 +513,15 @@ static_assert(sizeof(wire<256>) == 32,
 #endif
 #endif
 
+#ifndef AXI_KIT_LLC_DCACHE_READ_MISS_NOALLOC
+#ifdef CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC
+#define AXI_KIT_LLC_DCACHE_READ_MISS_NOALLOC \
+  CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC
+#else
+#define AXI_KIT_LLC_DCACHE_READ_MISS_NOALLOC 0
+#endif
+#endif
+
 #ifndef AXI_KIT_SIM_DDR_BEAT_BYTES
 #ifdef CONFIG_AXI_KIT_SIM_DDR_BEAT_BYTES
 #define AXI_KIT_SIM_DDR_BEAT_BYTES CONFIG_AXI_KIT_SIM_DDR_BEAT_BYTES
@@ -610,6 +622,10 @@ static_assert(AXI_KIT_AXI_ID_WIDTH > 0,
               "AXI_KIT_AXI_ID_WIDTH must be positive");
 static_assert(AXI_KIT_AXI_ID_WIDTH <= 7,
               "AXI_KIT_AXI_ID_WIDTH must stay <= 7; 0xFF is reserved as invalid ID");
+static_assert(
+    AXI_KIT_LLC_DCACHE_READ_MISS_NOALLOC == 0 ||
+        AXI_KIT_LLC_DCACHE_READ_MISS_NOALLOC == 1,
+    "AXI_KIT_LLC_DCACHE_READ_MISS_NOALLOC must be 0 or 1");
 static_assert(AXI_KIT_MAX_OUTSTANDING <= (1u << AXI_KIT_AXI_ID_WIDTH),
               "AXI_KIT_MAX_OUTSTANDING exceeds available AXI IDs");
 static_assert(AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH > 0,
@@ -687,6 +703,10 @@ static_assert(
     "parent simulator SimDDR write drain low watermark must come from config.h");
 static_assert(AXI_KIT_AXI_ID_WIDTH == CONFIG_AXI_KIT_AXI_ID_WIDTH,
               "parent simulator AXI ID width must come from config.h");
+static_assert(AXI_KIT_LLC_DCACHE_READ_MISS_NOALLOC ==
+                  CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC,
+              "parent simulator LLC dcache read miss allocation policy must "
+              "come from config.h");
 static_assert(AXI_KIT_UART_BASE == CONFIG_AXI_KIT_UART_BASE,
               "parent simulator UART base must come from config.h");
 static_assert(AXI_KIT_MMIO_BASE == CONFIG_AXI_KIT_MMIO_BASE,

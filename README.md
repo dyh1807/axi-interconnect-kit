@@ -67,6 +67,11 @@ Current behavior:
 
 - Cacheable reads allocate and refill through external SRAM-style `data/meta/repl`
   tables supplied by the parent simulator.
+- `CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC` controls DCache demand read-miss
+  allocation:
+  - `0` (default): install the refill into LLC
+  - `1`: keep the miss on a no-allocate path while still returning refill data
+    upstream
 - AXI4 interconnect read upstream side supports multiple outstanding contexts:
   - global limit `8`
   - per-read-master limit `4`

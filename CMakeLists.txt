@@ -185,6 +185,31 @@ if(AXI_KIT_BUILD_TESTS)
     add_test(NAME ${target_name} COMMAND ${target_name})
   endfunction()
 
+  function(add_axi_kit_llc_read_alloc_test target_name noalloc_value)
+    add_library(${target_name}_lib STATIC
+        ${AXI_KIT_AXI4_SOURCES}
+    )
+    target_include_directories(${target_name}_lib PUBLIC ${AXI_KIT_INCLUDE_DIRS})
+    target_compile_features(${target_name}_lib PUBLIC cxx_std_20)
+    target_compile_definitions(${target_name}_lib PUBLIC
+        ${AXI_KIT_AXI4_COMMON_DEFS}
+        CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC=${noalloc_value}
+    )
+    target_compile_definitions(${target_name}_lib PRIVATE
+        ${AXI_KIT_MMIO_TEST_DEFS}
+    )
+
+    add_executable(${target_name}
+        axi_interconnect/axi_llc_dcache_read_alloc_test.cpp
+    )
+    target_compile_definitions(${target_name} PRIVATE
+        ${AXI_KIT_MMIO_TEST_DEFS}
+        AXI_LLC_EXPECT_DCACHE_READ_MISS_NOALLOC=${noalloc_value}
+    )
+    target_link_libraries(${target_name} PRIVATE ${target_name}_lib)
+    add_test(NAME ${target_name} COMMAND ${target_name})
+  endfunction()
+
   add_library(axi_kit_axi4_test STATIC
       ${AXI_KIT_AXI4_SOURCES}
   )
@@ -237,6 +262,8 @@ if(AXI_KIT_BUILD_TESTS)
   add_axi_kit_write_drain_mode_test(sim_ddr_write_drain_mode_32b_test 32)
   add_axi_kit_read_write_turnaround_test(sim_ddr_read_write_turnaround_test 4)
   add_axi_kit_read_write_turnaround_test(sim_ddr_read_write_turnaround_32b_test 32)
+  add_axi_kit_llc_read_alloc_test(axi_llc_dcache_read_alloc_test 0)
+  add_axi_kit_llc_read_alloc_test(axi_llc_dcache_read_noalloc_test 1)
 
   add_executable(axi_interconnect_test
       axi_interconnect/axi_interconnect_test.cpp

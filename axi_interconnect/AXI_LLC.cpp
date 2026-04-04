@@ -26,10 +26,6 @@ bool allow_parallel_demand_mshr(uint8_t master) {
   return master == MASTER_DCACHE_R;
 }
 
-#ifndef CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC
-#define CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC 1
-#endif
-
 #ifndef CONFIG_AXI_LLC_BYPASS_DIRECT_RESP
 #define CONFIG_AXI_LLC_BYPASS_DIRECT_RESP 1
 #endif
@@ -2215,7 +2211,7 @@ bool AXI_LLC::try_complete_lookup() {
   }
 
   const bool bypass_dcache_read_miss =
-      CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC != 0 && !is_prefetch_lookup &&
+      AXI_KIT_LLC_DCACHE_READ_MISS_NOALLOC != 0 && !is_prefetch_lookup &&
       !is_bypass_lookup && io.regs.lookup_master_r == MASTER_DCACHE_R;
   if (bypass_dcache_read_miss) {
     auto &entry = io.reg_write.mshr[free_slot];

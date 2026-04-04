@@ -67,6 +67,10 @@ router 负责 AXI 侧地址译码。
 
 - cacheable read 通过父模拟器提供的外部 SRAM 风格 `data/meta/repl` 表进行
   分配与回填。
+- `CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC` 用来控制 DCache demand read miss
+  是否在 LLC 中分配：
+  - `0`（默认）：miss 回填后安装进 LLC
+  - `1`：保持 no-allocate 路径，只把回填数据返回给上游，不在 LLC 中安装
 - AXI4 interconnect 的读上游侧支持 multiple outstanding：
   - 全局上限 `8`
   - 单个读 master 上限 `4`
