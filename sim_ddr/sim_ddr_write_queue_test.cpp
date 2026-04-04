@@ -258,8 +258,7 @@ bool test_aw_queue_full_backpressure_and_retry(sim_ddr::SimDDR &ddr) {
     return false;
   }
 
-  ddr.comb();
-  if (!ddr.io.aw.awready) {
+  if (!wait_aw_ready(ddr)) {
     std::printf("FAIL: AWREADY did not reopen after one queue slot freed\n");
     return false;
   }

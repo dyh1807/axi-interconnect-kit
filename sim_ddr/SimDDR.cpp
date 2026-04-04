@@ -72,6 +72,13 @@ void SimDDR::init() {
   r_rr_index = 0;
   r_selected_idx = -1;
   r_active_idx = -1;
+  backend_last_service_mode = BackendServiceMode::None;
+  backend_turnaround_cooldown = 0;
+  backend_read_grant = false;
+  backend_write_grant = false;
+  backend_switch_pending = false;
+  backend_any_request_pending = false;
+  backend_switch_target_mode = BackendServiceMode::None;
 
   // Initialize IO outputs
   io.aw.awready = false;
@@ -94,6 +101,8 @@ void SimDDR::init() {
 // Phase 1: Output signals (run BEFORE cpu.cycle())
 // Sets: arready, rvalid, rdata, bvalid, bresp
 void SimDDR::comb_outputs() {
+  select_read_transaction();
+  update_backend_arbitration();
   // Read channel outputs (rvalid, rdata, arready)
   comb_read_channel();
   // Write channel outputs (awready, wready, bvalid, bresp)
@@ -166,6 +175,87 @@ int SimDDR::find_next_ready_transaction() {
   }
 
   return -1; // No ready transactions
+}
+
+uint32_t SimDDR::turnaround_cycles(BackendServiceMode from,
+                                   BackendServiceMode to) const {
+  if (from == BackendServiceMode::Read && to == BackendServiceMode::Write) {
+    return SIM_DDR_READ_TO_WRITE_TURNAROUND;
+  }
+  if (from == BackendServiceMode::Write && to == BackendServiceMode::Read) {
+    return SIM_DDR_WRITE_TO_READ_TURNAROUND;
+  }
+  return 0;
+}
+
+void SimDDR::select_read_transaction() {
+  r_selected_idx = -1;
+
+  if (r_active_idx >= 0 &&
+      r_active_idx < static_cast<int>(r_transactions.size())) {
+    const ReadTransaction &active =
+        r_transactions[static_cast<size_t>(r_active_idx)];
+    if (active.in_data_phase && !active.complete) {
+      r_selected_idx = r_active_idx;
+    }
+  }
+
+  if (r_selected_idx < 0) {
+    r_selected_idx = find_next_ready_transaction();
+  }
+}
+
+void SimDDR::update_backend_arbitration() {
+  backend_read_grant = false;
+  backend_write_grant = false;
+  backend_switch_pending = false;
+  backend_any_request_pending = false;
+  backend_switch_target_mode = BackendServiceMode::None;
+
+  const bool read_ready = r_selected_idx >= 0;
+  const bool read_burst_active =
+      read_ready && r_active_idx >= 0 && r_selected_idx == r_active_idx;
+  const bool write_ready = w_drain_mode && !w_data_fifo.empty() &&
+                           w_drain_cooldown == 0 &&
+                           find_write_drain_target() >= 0;
+  backend_any_request_pending = read_ready || write_ready;
+
+  if (!backend_any_request_pending || backend_turnaround_cooldown != 0) {
+    return;
+  }
+
+  BackendServiceMode desired = BackendServiceMode::None;
+  if (backend_last_service_mode == BackendServiceMode::Write && write_ready &&
+      should_keep_write_drain_mode()) {
+    desired = BackendServiceMode::Write;
+  } else if (read_burst_active) {
+    desired = BackendServiceMode::Read;
+  } else if (backend_last_service_mode == BackendServiceMode::Read &&
+             read_ready) {
+    desired = BackendServiceMode::Read;
+  } else if (read_ready) {
+    desired = BackendServiceMode::Read;
+  } else if (write_ready) {
+    desired = BackendServiceMode::Write;
+  }
+
+  if (desired == BackendServiceMode::None) {
+    return;
+  }
+
+  if (backend_last_service_mode != BackendServiceMode::None &&
+      desired != backend_last_service_mode) {
+    const uint32_t turnaround =
+        turnaround_cycles(backend_last_service_mode, desired);
+    if (turnaround != 0) {
+      backend_switch_pending = true;
+      backend_switch_target_mode = desired;
+      return;
+    }
+  }
+
+  backend_read_grant = desired == BackendServiceMode::Read;
+  backend_write_grant = desired == BackendServiceMode::Write;
 }
 
 int SimDDR::find_write_data_target() const {
@@ -246,28 +336,12 @@ void SimDDR::comb_read_channel() {
   io.r.rresp = AXI_RESP_OKAY;
   io.r.rlast = false;
 
-  // Reset selection unless an active burst is still eligible to drive.
-  r_selected_idx = -1;
-
   // --- AR Channel: Accept new read address if not full ---
   if (r_transactions.size() < SIM_DDR_MAX_OUTSTANDING) {
     io.ar.arready = true;
   }
 
-  // --- R Channel: Drain the active burst before rotating to the next ready one ---
-  if (r_active_idx >= 0 &&
-      r_active_idx < static_cast<int>(r_transactions.size())) {
-    const ReadTransaction &active = r_transactions[static_cast<size_t>(r_active_idx)];
-    if (active.in_data_phase && !active.complete) {
-      r_selected_idx = r_active_idx;
-    }
-  }
-
-  if (r_selected_idx < 0) {
-    r_selected_idx = find_next_ready_transaction();
-  }
-
-  if (r_selected_idx >= 0) {
+  if (backend_read_grant && r_selected_idx >= 0) {
     ReadTransaction &txn = r_transactions[r_selected_idx];
     uint32_t current_addr = txn.addr + (txn.beat_cnt << txn.size);
 
@@ -285,6 +359,9 @@ void SimDDR::comb_read_channel() {
 void SimDDR::seq() {
   // ========== Write Channel Sequential Logic ==========
 
+  if (backend_turnaround_cooldown > 0) {
+    backend_turnaround_cooldown--;
+  }
   if (w_accept_cooldown > 0) {
     w_accept_cooldown--;
   }
@@ -379,7 +456,8 @@ void SimDDR::seq() {
   // Drain at most one buffered W beat per cycle into backing memory while the
   // controller is in write-drain mode. This creates bursty W backpressure
   // instead of reopening WREADY immediately after a single beat drains.
-  if (w_drain_mode && !w_data_fifo.empty() && w_drain_cooldown == 0) {
+  if (backend_write_grant && w_drain_mode && !w_data_fifo.empty() &&
+      w_drain_cooldown == 0) {
     const int target_idx = find_write_drain_target();
     if (target_idx >= 0) {
       const WriteBeatPending beat = w_data_fifo.front();
@@ -418,7 +496,7 @@ void SimDDR::seq() {
   }
 
   // R handshake: Advance data beat on selected transaction
-  if (io.r.rvalid && io.r.rready && r_selected_idx >= 0) {
+  if (backend_read_grant && io.r.rvalid && io.r.rready && r_selected_idx >= 0) {
     ReadTransaction &txn = r_transactions[r_selected_idx];
     txn.beat_cnt++;
 
@@ -465,6 +543,18 @@ void SimDDR::seq() {
   }
   if (r_active_idx >= static_cast<int>(r_transactions.size())) {
     r_active_idx = -1;
+  }
+
+  if (!backend_any_request_pending && backend_turnaround_cooldown == 0) {
+    backend_last_service_mode = BackendServiceMode::None;
+  } else if (backend_switch_pending) {
+    backend_turnaround_cooldown =
+        turnaround_cycles(backend_last_service_mode, backend_switch_target_mode);
+    backend_last_service_mode = BackendServiceMode::None;
+  } else if (backend_read_grant) {
+    backend_last_service_mode = BackendServiceMode::Read;
+  } else if (backend_write_grant) {
+    backend_last_service_mode = BackendServiceMode::Write;
   }
 }
 
@@ -536,6 +626,13 @@ void SimDDR::print_state() {
          static_cast<unsigned>(SIM_DDR_WRITE_DRAIN_LOW_WATERMARK));
   printf("[SimDDR] Read: txn_count=%zu rr_index=%zu active_idx=%d\n",
          r_transactions.size(), r_rr_index, r_active_idx);
+  printf("[SimDDR] Backend: last_mode=%u turnaround_cd=%u read_grant=%d write_grant=%d switch_pending=%d target=%u\n",
+         static_cast<unsigned>(backend_last_service_mode),
+         static_cast<unsigned>(backend_turnaround_cooldown),
+         static_cast<int>(backend_read_grant),
+         static_cast<int>(backend_write_grant),
+         static_cast<int>(backend_switch_pending),
+         static_cast<unsigned>(backend_switch_target_mode));
   for (size_t i = 0; i < r_transactions.size(); ++i) {
     const auto &txn = r_transactions[i];
     printf("[SimDDR] ReadTxn[%zu]: addr=0x%08x id=%u len=%u size=%u beat=%u lat=%u in_data=%d complete=%d\n",

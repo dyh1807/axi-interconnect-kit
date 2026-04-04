@@ -145,6 +145,46 @@ if(AXI_KIT_BUILD_TESTS)
     add_test(NAME ${target_name} COMMAND ${target_name})
   endfunction()
 
+  function(add_axi_kit_read_write_turnaround_test target_name beat_bytes)
+    add_library(${target_name}_lib STATIC
+        ${AXI_KIT_AXI4_SOURCES}
+    )
+    target_include_directories(${target_name}_lib PUBLIC ${AXI_KIT_INCLUDE_DIRS})
+    target_compile_features(${target_name}_lib PUBLIC cxx_std_20)
+    target_compile_definitions(${target_name}_lib PUBLIC
+        AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
+        AXI_KIT_SIM_DDR_BEAT_BYTES=${beat_bytes}
+        AXI_KIT_SIM_DDR_READ_LATENCY=2
+        AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH=4
+        AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP=0
+        AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH=4
+        AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP=0
+        AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK=4
+        AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK=0
+        AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND=2
+        AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND=2
+    )
+    target_compile_definitions(${target_name}_lib PRIVATE
+        ${AXI_KIT_MMIO_TEST_DEFS}
+    )
+
+    add_executable(${target_name}
+        sim_ddr/sim_ddr_read_write_turnaround_test.cpp
+    )
+    target_compile_definitions(${target_name} PRIVATE
+        ${AXI_KIT_MMIO_TEST_DEFS}
+        SIM_DDR_RW_TA_TEST_QUEUE_DEPTH=4
+        SIM_DDR_RW_TA_TEST_DATA_FIFO_DEPTH=4
+        SIM_DDR_RW_TA_TEST_HIGH_WM=4
+        SIM_DDR_RW_TA_TEST_LOW_WM=0
+        SIM_DDR_RW_TA_TEST_READ_LATENCY=2
+        SIM_DDR_RW_TA_TEST_R2W=2
+        SIM_DDR_RW_TA_TEST_W2R=2
+    )
+    target_link_libraries(${target_name} PRIVATE ${target_name}_lib)
+    add_test(NAME ${target_name} COMMAND ${target_name})
+  endfunction()
+
   add_library(axi_kit_axi4_test STATIC
       ${AXI_KIT_AXI4_SOURCES}
   )
@@ -195,6 +235,8 @@ if(AXI_KIT_BUILD_TESTS)
   add_axi_kit_write_queue_test(sim_ddr_write_queue_32b_test 32)
   add_axi_kit_write_drain_mode_test(sim_ddr_write_drain_mode_test 4)
   add_axi_kit_write_drain_mode_test(sim_ddr_write_drain_mode_32b_test 32)
+  add_axi_kit_read_write_turnaround_test(sim_ddr_read_write_turnaround_test 4)
+  add_axi_kit_read_write_turnaround_test(sim_ddr_read_write_turnaround_32b_test 32)
 
   add_executable(axi_interconnect_test
       axi_interconnect/axi_interconnect_test.cpp

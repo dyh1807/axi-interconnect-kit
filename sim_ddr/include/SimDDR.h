@@ -11,6 +11,7 @@
  * - Configurable memory latency
  * - Outstanding transaction support (multiple in-flight transactions)
  * - Burst-drain read service with burst-to-burst round-robin fairness
+ * - Shared read/write backend service with configurable turnaround
  * - INCR burst mode support
  * - Uses external p_memory for storage (shared with main simulator)
  */
@@ -86,6 +87,16 @@ constexpr uint32_t SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK =
 constexpr uint32_t SIM_DDR_WRITE_DRAIN_LOW_WATERMARK =
     AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK;
 
+// Direction-switch turnaround is modeled between read-burst service windows
+// and write-drain windows. Reads and writes can still queue addresses while the
+// opposite direction owns the backend, but data service itself switches only
+// after these cooldowns expire.
+constexpr uint32_t SIM_DDR_READ_TO_WRITE_TURNAROUND =
+    AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND;
+
+constexpr uint32_t SIM_DDR_WRITE_TO_READ_TURNAROUND =
+    AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND;
+
 // ============================================================================
 // Transaction Structures for Outstanding Support
 // ============================================================================
@@ -154,6 +165,8 @@ public:
   void print_state();
 
 private:
+  enum class BackendServiceMode : uint8_t { None = 0, Read = 1, Write = 2 };
+
   // ========== Write Channel ==========
   // Write address commands queue independently from write data buffering.
   bool w_active;
@@ -180,7 +193,18 @@ private:
   // Active transaction whose burst is being drained.
   int r_active_idx;
 
+  // Shared read/write backend arbitration state.
+  BackendServiceMode backend_last_service_mode = BackendServiceMode::None;
+  uint32_t backend_turnaround_cooldown = 0;
+  bool backend_read_grant = false;
+  bool backend_write_grant = false;
+  bool backend_switch_pending = false;
+  bool backend_any_request_pending = false;
+  BackendServiceMode backend_switch_target_mode = BackendServiceMode::None;
+
   // ========== Combinational Logic Functions ==========
+  void select_read_transaction();
+  void update_backend_arbitration();
   void comb_write_channel();
   void comb_read_channel();
 
@@ -188,6 +212,8 @@ private:
   void do_memory_write(uint32_t addr, axi_data_t data, axi_strb_t wstrb);
   axi_data_t do_memory_read(uint32_t addr);
 
+  uint32_t turnaround_cycles(BackendServiceMode from,
+                             BackendServiceMode to) const;
   int find_write_data_target() const;
   int find_write_drain_target() const;
   void retire_completed_writes();

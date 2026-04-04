@@ -380,6 +380,12 @@ static_assert(sizeof(wire<256>) == 32,
 #ifndef CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP
 #error "simulator config.h must define CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP"
 #endif
+#ifndef CONFIG_AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND
+#error "simulator config.h must define CONFIG_AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND"
+#endif
+#ifndef CONFIG_AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND
+#error "simulator config.h must define CONFIG_AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND"
+#endif
 #ifndef CONFIG_AXI_KIT_AXI_ID_WIDTH
 #error "simulator config.h must define CONFIG_AXI_KIT_AXI_ID_WIDTH"
 #endif
@@ -456,6 +462,24 @@ static_assert(sizeof(wire<256>) == 32,
   CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP
 #else
 #define AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP 0
+#endif
+#endif
+
+#ifndef AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND
+#ifdef CONFIG_AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND
+#define AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND \
+  CONFIG_AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND
+#else
+#define AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND 0
+#endif
+#endif
+
+#ifndef AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND
+#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND
+#define AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND \
+  CONFIG_AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND
+#else
+#define AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND 0
 #endif
 #endif
 
@@ -600,6 +624,10 @@ static_assert(AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK <=
 static_assert(AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK <
                   AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK,
               "AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK must stay below the high watermark");
+static_assert(AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND >= 0,
+              "AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND must be non-negative");
+static_assert(AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND >= 0,
+              "AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND must be non-negative");
 static_assert(AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER <= AXI_KIT_MAX_OUTSTANDING,
               "AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER exceeds total outstanding budget");
 static_assert(AXI_KIT_MAX_WRITE_OUTSTANDING <= (1u << AXI_KIT_AXI_ID_WIDTH),
@@ -641,6 +669,14 @@ static_assert(AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH ==
 static_assert(AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP ==
                   CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP,
               "parent simulator SimDDR write drain gap must come from config.h");
+static_assert(
+    AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND ==
+        CONFIG_AXI_KIT_SIM_DDR_READ_TO_WRITE_TURNAROUND,
+    "parent simulator SimDDR read-to-write turnaround must come from config.h");
+static_assert(
+    AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND ==
+        CONFIG_AXI_KIT_SIM_DDR_WRITE_TO_READ_TURNAROUND,
+    "parent simulator SimDDR write-to-read turnaround must come from config.h");
 static_assert(
     AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK ==
         CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK,

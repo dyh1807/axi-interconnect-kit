@@ -151,7 +151,7 @@ bool test_b_visible_after_expected_cycles(sim_ddr::SimDDR &ddr) {
   const sim_ddr::axi_data_t data = make_test_pattern(kSeed);
   const sim_ddr::axi_strb_t strobe = make_full_strobe();
   const int expected_visible_cycles =
-      static_cast<int>(sim_ddr::SIM_DDR_WRITE_RESP_LATENCY) + 1;
+      static_cast<int>(sim_ddr::SIM_DDR_WRITE_RESP_LATENCY) + 2;
 
   if (!issue_single_write(ddr, kId, kAddr, data, strobe)) {
     return false;
@@ -195,7 +195,7 @@ bool test_bready_stall_preserves_visible_response(sim_ddr::SimDDR &ddr) {
   const sim_ddr::axi_data_t data = make_test_pattern(kSeed);
   const sim_ddr::axi_strb_t strobe = make_full_strobe();
   const int expected_visible_cycles =
-      static_cast<int>(sim_ddr::SIM_DDR_WRITE_RESP_LATENCY) + 1;
+      static_cast<int>(sim_ddr::SIM_DDR_WRITE_RESP_LATENCY) + 2;
 
   if (!issue_single_write(ddr, kId, kAddr, data, strobe)) {
     return false;
