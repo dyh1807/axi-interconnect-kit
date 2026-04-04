@@ -76,6 +76,16 @@ constexpr uint32_t SIM_DDR_WRITE_DATA_FIFO_DEPTH =
 constexpr uint32_t SIM_DDR_WRITE_DRAIN_GAP =
     AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP;
 
+// When buffered W beats reach the high watermark, the controller enters a
+// drain window and can keep WREADY low until occupancy falls back below the
+// low watermark. This yields bursty write backpressure instead of a uniform
+// per-beat throttle.
+constexpr uint32_t SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK =
+    AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK;
+
+constexpr uint32_t SIM_DDR_WRITE_DRAIN_LOW_WATERMARK =
+    AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK;
+
 // ============================================================================
 // Transaction Structures for Outstanding Support
 // ============================================================================
@@ -152,6 +162,7 @@ private:
   std::deque<WriteBeatPending> w_data_fifo;
   uint32_t w_accept_cooldown;
   uint32_t w_drain_cooldown;
+  bool w_drain_mode;
 
   // Pending write responses (in latency)
   std::queue<WriteRespPending> w_resp_queue;
@@ -180,6 +191,9 @@ private:
   int find_write_data_target() const;
   int find_write_drain_target() const;
   void retire_completed_writes();
+  bool head_write_needs_drain() const;
+  bool should_enter_write_drain_mode() const;
+  bool should_keep_write_drain_mode() const;
 
   // Find next ready transaction using round-robin once the current burst finishes
   int find_next_ready_transaction();

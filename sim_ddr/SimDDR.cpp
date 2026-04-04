@@ -61,6 +61,7 @@ void SimDDR::init() {
   w_data_fifo.clear();
   w_accept_cooldown = 0;
   w_drain_cooldown = 0;
+  w_drain_mode = false;
 
   // Clear queues
   while (!w_resp_queue.empty())
@@ -130,7 +131,7 @@ void SimDDR::comb_write_channel() {
   // the FIFO faster than the backend drain loop can consume them.
   if (find_write_data_target() >= 0 &&
       w_data_fifo.size() < SIM_DDR_WRITE_DATA_FIFO_DEPTH &&
-      w_accept_cooldown == 0) {
+      w_accept_cooldown == 0 && !w_drain_mode) {
     io.w.wready = true;
   }
 
@@ -183,6 +184,32 @@ int SimDDR::find_write_drain_target() const {
     }
   }
   return -1;
+}
+
+bool SimDDR::head_write_needs_drain() const {
+  if (w_pending.empty()) {
+    return false;
+  }
+  const WriteTransaction &head = w_pending.front();
+  return head.data_done && head.beats_drained < head.beats_accepted;
+}
+
+bool SimDDR::should_enter_write_drain_mode() const {
+  if (w_data_fifo.empty()) {
+    return false;
+  }
+  return head_write_needs_drain() ||
+         w_data_fifo.size() >= SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK;
+}
+
+bool SimDDR::should_keep_write_drain_mode() const {
+  if (w_data_fifo.empty()) {
+    return false;
+  }
+  if (head_write_needs_drain()) {
+    return true;
+  }
+  return w_data_fifo.size() > SIM_DDR_WRITE_DRAIN_LOW_WATERMARK;
 }
 
 void SimDDR::retire_completed_writes() {
@@ -345,8 +372,14 @@ void SimDDR::seq() {
     }
   }
 
-  // Drain at most one buffered W beat per cycle into backing memory.
-  if (!w_data_fifo.empty() && w_drain_cooldown == 0) {
+  if (!w_drain_mode && should_enter_write_drain_mode()) {
+    w_drain_mode = true;
+  }
+
+  // Drain at most one buffered W beat per cycle into backing memory while the
+  // controller is in write-drain mode. This creates bursty W backpressure
+  // instead of reopening WREADY immediately after a single beat drains.
+  if (w_drain_mode && !w_data_fifo.empty() && w_drain_cooldown == 0) {
     const int target_idx = find_write_drain_target();
     if (target_idx >= 0) {
       const WriteBeatPending beat = w_data_fifo.front();
@@ -359,6 +392,10 @@ void SimDDR::seq() {
   }
 
   retire_completed_writes();
+
+  if (w_drain_mode && !should_keep_write_drain_mode()) {
+    w_drain_mode = false;
+  }
 
   w_active = !w_pending.empty() || !w_data_fifo.empty();
   w_current = !w_pending.empty() ? w_pending.front() : WriteTransaction{};
@@ -491,10 +528,12 @@ axi_data_t SimDDR::do_memory_read(uint32_t addr) {
 // Debug
 // ============================================================================
 void SimDDR::print_state() {
-  printf("[SimDDR] Write: active=%d cmd_q=%zu data_fifo=%zu resp_pending=%zu accept_cd=%u drain_cd=%u\n",
+  printf("[SimDDR] Write: active=%d cmd_q=%zu data_fifo=%zu resp_pending=%zu accept_cd=%u drain_cd=%u drain_mode=%d high_wm=%u low_wm=%u\n",
          w_active, w_pending.size(), w_data_fifo.size(), w_resp_queue.size(),
          static_cast<unsigned>(w_accept_cooldown),
-         static_cast<unsigned>(w_drain_cooldown));
+         static_cast<unsigned>(w_drain_cooldown), static_cast<int>(w_drain_mode),
+         static_cast<unsigned>(SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK),
+         static_cast<unsigned>(SIM_DDR_WRITE_DRAIN_LOW_WATERMARK));
   printf("[SimDDR] Read: txn_count=%zu rr_index=%zu active_idx=%d\n",
          r_transactions.size(), r_rr_index, r_active_idx);
   for (size_t i = 0; i < r_transactions.size(); ++i) {

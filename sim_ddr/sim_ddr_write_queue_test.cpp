@@ -24,6 +24,14 @@ namespace {
 #error "SIM_DDR_WRITE_QUEUE_TEST_DRAIN_GAP must be defined"
 #endif
 
+#ifndef SIM_DDR_WRITE_QUEUE_TEST_DRAIN_HIGH_WATERMARK
+#error "SIM_DDR_WRITE_QUEUE_TEST_DRAIN_HIGH_WATERMARK must be defined"
+#endif
+
+#ifndef SIM_DDR_WRITE_QUEUE_TEST_DRAIN_LOW_WATERMARK
+#error "SIM_DDR_WRITE_QUEUE_TEST_DRAIN_LOW_WATERMARK must be defined"
+#endif
+
 static_assert(sim_ddr::SIM_DDR_WRITE_QUEUE_DEPTH ==
                   SIM_DDR_WRITE_QUEUE_TEST_QUEUE_DEPTH,
               "test binary must use the intended write queue depth override");
@@ -36,6 +44,14 @@ static_assert(sim_ddr::SIM_DDR_WRITE_DATA_FIFO_DEPTH ==
 static_assert(sim_ddr::SIM_DDR_WRITE_DRAIN_GAP ==
                   SIM_DDR_WRITE_QUEUE_TEST_DRAIN_GAP,
               "test binary must use the intended write drain gap override");
+static_assert(
+    sim_ddr::SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK ==
+        SIM_DDR_WRITE_QUEUE_TEST_DRAIN_HIGH_WATERMARK,
+    "test binary must use the intended write drain high watermark override");
+static_assert(
+    sim_ddr::SIM_DDR_WRITE_DRAIN_LOW_WATERMARK ==
+        SIM_DDR_WRITE_QUEUE_TEST_DRAIN_LOW_WATERMARK,
+    "test binary must use the intended write drain low watermark override");
 
 constexpr uint32_t kTestMemWords = 0x100000;
 constexpr int kHandshakeTimeout = 40;

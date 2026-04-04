@@ -459,6 +459,25 @@ static_assert(sizeof(wire<256>) == 32,
 #endif
 #endif
 
+#ifndef AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK
+#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK
+#define AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK \
+  CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK
+#else
+#define AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK \
+  AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH
+#endif
+#endif
+
+#ifndef AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK
+#ifdef CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK
+#define AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK \
+  CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK
+#else
+#define AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK 0
+#endif
+#endif
+
 #ifndef AXI_KIT_AXI_ID_WIDTH
 #ifdef CONFIG_AXI_KIT_AXI_ID_WIDTH
 #define AXI_KIT_AXI_ID_WIDTH CONFIG_AXI_KIT_AXI_ID_WIDTH
@@ -573,6 +592,14 @@ static_assert(AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH > 0,
               "AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH must be positive");
 static_assert(AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH > 0,
               "AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH must be positive");
+static_assert(AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK > 0,
+              "AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK must be positive");
+static_assert(AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK <=
+                  AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH,
+              "AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK exceeds the write data FIFO depth");
+static_assert(AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK <
+                  AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK,
+              "AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK must stay below the high watermark");
 static_assert(AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER <= AXI_KIT_MAX_OUTSTANDING,
               "AXI_KIT_MAX_READ_OUTSTANDING_PER_MASTER exceeds total outstanding budget");
 static_assert(AXI_KIT_MAX_WRITE_OUTSTANDING <= (1u << AXI_KIT_AXI_ID_WIDTH),
@@ -614,6 +641,14 @@ static_assert(AXI_KIT_SIM_DDR_WRITE_DATA_FIFO_DEPTH ==
 static_assert(AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP ==
                   CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_GAP,
               "parent simulator SimDDR write drain gap must come from config.h");
+static_assert(
+    AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK ==
+        CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_HIGH_WATERMARK,
+    "parent simulator SimDDR write drain high watermark must come from config.h");
+static_assert(
+    AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK ==
+        CONFIG_AXI_KIT_SIM_DDR_WRITE_DRAIN_LOW_WATERMARK,
+    "parent simulator SimDDR write drain low watermark must come from config.h");
 static_assert(AXI_KIT_AXI_ID_WIDTH == CONFIG_AXI_KIT_AXI_ID_WIDTH,
               "parent simulator AXI ID width must come from config.h");
 static_assert(AXI_KIT_UART_BASE == CONFIG_AXI_KIT_UART_BASE,
