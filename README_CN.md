@@ -94,7 +94,7 @@ router 负责 AXI 侧地址译码。
   - 调用方应持续保持请求，直到观察到 `invalidate_all_accepted`
   - `invalidate_all` pending 期间，已捕获的 clean LLC 路径请求可继续排空
   - 一旦接受，会通过 epoch 丢弃 stale clean refill install
-  - 外部表当前采用 meta-only reset：只清 valid/tag/flags，不清 data/repl
+  - 外部表当前采用独立 `valid` 表 reset：只清有效位，不清 data/meta/repl
   - 不会静默丢弃 dirty resident 数据
 - interconnect 还带有 submodule 原型用运行时控制输入：
   - `mode=1`：LLC_ON

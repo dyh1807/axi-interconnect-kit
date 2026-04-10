@@ -79,6 +79,8 @@ Contract:
      same-cycle upstream write accept/capture hazards
 4. After `invalidate_all` is accepted, stale clean refill installs from an
    older epoch are dropped instead of being re-installed into the LLC.
+5. In the current prototype, effective line validity comes from a dedicated
+   `valid` table; `meta.flags.VALID` remains only as a shadow/debug-compat bit.
 
 ### 1.6 Submodule Runtime Mode Controls
 

@@ -258,7 +258,34 @@ uint32_t decode_repl_way(const AXI_LLC_Bytes_t &payload) {
 
 bool llc_table_write_busy(const AXI_LLC_TableOut_t &table_out) {
   return table_out.data.enable || table_out.meta.enable ||
-         table_out.repl.enable;
+         table_out.valid.enable || table_out.repl.enable;
+}
+
+bool decode_valid_bit(const AXI_LLC_Bytes_t &payload, uint32_t way,
+                      bool fallback_valid) {
+  const size_t byte_idx = static_cast<size_t>(way >> 3);
+  const uint8_t bit_idx = static_cast<uint8_t>(way & 0x7u);
+  if (byte_idx >= payload.size()) {
+    return fallback_valid;
+  }
+  return ((payload.data()[byte_idx] >> bit_idx) & 0x1u) != 0;
+}
+
+void encode_valid_bit_payload(uint32_t ways, uint32_t way, bool valid,
+                              AXI_LLC_Bytes_t &payload,
+                              std::vector<uint8_t> &byte_enable) {
+  const size_t row_bytes = (static_cast<size_t>(ways) + 7u) / 8u;
+  payload.resize(row_bytes);
+  byte_enable.assign(row_bytes, 0);
+  const size_t byte_idx = static_cast<size_t>(way >> 3);
+  const uint8_t bit_idx = static_cast<uint8_t>(way & 0x7u);
+  if (byte_idx >= row_bytes) {
+    return;
+  }
+  if (valid) {
+    payload.data()[byte_idx] = static_cast<uint8_t>(1u << bit_idx);
+  }
+  byte_enable[byte_idx] = 1;
 }
 
 } // namespace
@@ -715,6 +742,10 @@ uint32_t AXI_LLC::tag_of(const AXI_LLCConfig &config, uint32_t addr) {
   return (addr / config.line_bytes) / config.set_count();
 }
 
+uint32_t AXI_LLC::valid_row_bytes(const AXI_LLCConfig &config) {
+  return (config.ways + 7u) / 8u;
+}
+
 AXI_LLCMetaEntry_t AXI_LLC::decode_meta(const AXI_LLC_Bytes_t &payload,
                                         uint32_t way) {
   AXI_LLCMetaEntry_t entry{};
@@ -722,16 +753,41 @@ AXI_LLCMetaEntry_t AXI_LLC::decode_meta(const AXI_LLC_Bytes_t &payload,
   if (offset + AXI_LLC_META_ENTRY_BYTES > payload.size()) {
     return entry;
   }
-  entry.tag = read_u32_le(payload.data() + offset);
-  entry.flags = payload.data()[offset + 4];
+  const uint32_t packed = read_u32_le(payload.data() + offset);
+  entry.tag = packed & 0x1fffffffu;
+  entry.flags = 0;
+  if ((packed >> 29) & 0x1u) {
+    entry.flags |= AXI_LLC_META_VALID;
+  }
+  if ((packed >> 30) & 0x1u) {
+    entry.flags |= AXI_LLC_META_DIRTY;
+  }
+  if ((packed >> 31) & 0x1u) {
+    entry.flags |= AXI_LLC_META_PREFETCH;
+  }
   return entry;
 }
 
 void AXI_LLC::encode_meta(const AXI_LLCMetaEntry_t &entry,
                           AXI_LLC_Bytes_t &payload) {
   payload.resize(AXI_LLC_META_ENTRY_BYTES);
-  write_u32_le(payload.data(), entry.tag);
-  payload.data()[4] = entry.flags;
+  if ((entry.tag & 0xe0000000u) != 0) {
+    std::fprintf(stderr,
+                 "[AXI-LLC] packed meta tag overflow tag=0x%08x\n",
+                 entry.tag);
+    std::abort();
+  }
+  uint32_t packed = entry.tag & 0x1fffffffu;
+  if ((entry.flags & AXI_LLC_META_VALID) != 0) {
+    packed |= (1u << 29);
+  }
+  if ((entry.flags & AXI_LLC_META_DIRTY) != 0) {
+    packed |= (1u << 30);
+  }
+  if ((entry.flags & AXI_LLC_META_PREFETCH) != 0) {
+    packed |= (1u << 31);
+  }
+  write_u32_le(payload.data(), packed);
 }
 
 void AXI_LLC::set_config(const AXI_LLCConfig &config) {
@@ -1013,7 +1069,9 @@ bool AXI_LLC::can_allocate_prefetch_mshr(const AXI_LLC_Regs_t &regs) const {
   return true;
 }
 
-bool AXI_LLC::line_has_valid_meta(const AXI_LLC_Bytes_t &meta_payload, uint32_t tag,
+bool AXI_LLC::line_has_valid_meta(const AXI_LLC_Bytes_t &valid_payload,
+                                  const AXI_LLC_Bytes_t &meta_payload,
+                                  uint32_t tag,
                                   int *hit_way, int *first_invalid_way,
                                   AXI_LLCMetaEntry_t *hit_meta) const {
   *hit_way = -1;
@@ -1023,7 +1081,8 @@ bool AXI_LLC::line_has_valid_meta(const AXI_LLC_Bytes_t &meta_payload, uint32_t 
   }
   for (uint32_t way = 0; way < config_.ways; ++way) {
     const auto meta = decode_meta(meta_payload, way);
-    const bool valid = (meta.flags & AXI_LLC_META_VALID) != 0;
+    const bool valid_shadow = (meta.flags & AXI_LLC_META_VALID) != 0;
+    const bool valid = decode_valid_bit(valid_payload, way, valid_shadow);
     if (!valid && *first_invalid_way < 0) {
       *first_invalid_way = static_cast<int>(way);
     }
@@ -1187,6 +1246,12 @@ void AXI_LLC::drive_write_path() {
     io.table_out.meta.way = ctx.way;
     encode_meta(meta, io.table_out.meta.payload);
     io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
+
+    io.table_out.valid.enable = true;
+    io.table_out.valid.write = true;
+    io.table_out.valid.index = ctx.set;
+    encode_valid_bit_payload(config_.ways, ctx.way, true, io.table_out.valid.payload,
+                             io.table_out.valid.byte_enable);
 
     io.table_out.repl.enable = true;
     io.table_out.repl.write = true;
@@ -1611,6 +1676,7 @@ void AXI_LLC::drive_lookup_request() {
     return;
   }
   if (io.table_out.data.enable || io.table_out.meta.enable ||
+      io.table_out.valid.enable ||
       io.table_out.repl.enable) {
     return;
   }
@@ -1628,9 +1694,11 @@ void AXI_LLC::drive_lookup_request() {
   const uint32_t index = set_index(config_, io.reg_write.lookup_addr_r);
   io.table_out.data.enable = true;
   io.table_out.meta.enable = true;
+  io.table_out.valid.enable = true;
   io.table_out.repl.enable = true;
   io.table_out.data.index = index;
   io.table_out.meta.index = index;
+  io.table_out.valid.index = index;
   io.table_out.repl.index = index;
   io.reg_write.lookup_issued_r = true;
   io.reg_write.state = AXI_LLCState::kLookup;
@@ -1647,11 +1715,13 @@ void AXI_LLC::drive_lookup_request() {
         static_cast<int>(io.reg_write.lookup_is_invalidate_r));
     std::printf(
         "[AXI-LLC][LOOKUP-ISSUE-STATE] cyc=%lld table_out={d=%d/%d idx=%u "
-        "m=%d/%d idx=%u r=%d/%d idx=%u}\n",
+        "m=%d/%d idx=%u v=%d/%d idx=%u r=%d/%d idx=%u}\n",
         sim_time, static_cast<int>(io.table_out.data.enable),
         static_cast<int>(io.table_out.data.write), io.table_out.data.index,
         static_cast<int>(io.table_out.meta.enable),
         static_cast<int>(io.table_out.meta.write), io.table_out.meta.index,
+        static_cast<int>(io.table_out.valid.enable),
+        static_cast<int>(io.table_out.valid.write), io.table_out.valid.index,
         static_cast<int>(io.table_out.repl.enable),
         static_cast<int>(io.table_out.repl.write), io.table_out.repl.index);
     std::fflush(stdout);
@@ -1667,8 +1737,10 @@ void AXI_LLC::drive_lookup_request() {
 }
 
 bool AXI_LLC::try_complete_lookup() {
+  const bool valid_table_ready =
+      io.lookup_in.valid_valid || io.lookup_in.valid.size() == 0;
   if (!io.regs.lookup_valid_r || !io.regs.lookup_issued_r ||
-      !io.lookup_in.data_valid || !io.lookup_in.meta_valid ||
+      !io.lookup_in.data_valid || !io.lookup_in.meta_valid || !valid_table_ready ||
       !io.lookup_in.repl_valid) {
     return false;
   }
@@ -1713,7 +1785,8 @@ bool AXI_LLC::try_complete_lookup() {
   int hit_way = -1;
   int first_invalid_way = -1;
   AXI_LLCMetaEntry_t hit_meta{};
-  (void)line_has_valid_meta(io.lookup_in.meta, tag, &hit_way, &first_invalid_way,
+  (void)line_has_valid_meta(io.lookup_in.valid, io.lookup_in.meta,
+                            tag, &hit_way, &first_invalid_way,
                             &hit_meta);
 
   if (hit_way >= 0) {
@@ -1785,6 +1858,12 @@ bool AXI_LLC::try_complete_lookup() {
       io.table_out.meta.way = static_cast<uint32_t>(hit_way);
       encode_meta(meta, io.table_out.meta.payload);
       io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
+      io.table_out.valid.enable = true;
+      io.table_out.valid.write = true;
+      io.table_out.valid.index = set;
+      encode_valid_bit_payload(config_.ways, static_cast<uint32_t>(hit_way), true,
+                               io.table_out.valid.payload,
+                               io.table_out.valid.byte_enable);
       io.table_out.repl.enable = true;
       io.table_out.repl.write = true;
       io.table_out.repl.index = set;
@@ -1817,6 +1896,12 @@ bool AXI_LLC::try_complete_lookup() {
       io.table_out.meta.way = static_cast<uint32_t>(hit_way);
       encode_meta(meta, io.table_out.meta.payload);
       io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
+      io.table_out.valid.enable = true;
+      io.table_out.valid.write = true;
+      io.table_out.valid.index = set;
+      encode_valid_bit_payload(config_.ways, static_cast<uint32_t>(hit_way), false,
+                               io.table_out.valid.payload,
+                               io.table_out.valid.byte_enable);
       io.reg_write.lookup_valid_r = false;
       io.reg_write.lookup_issued_r = false;
       io.reg_write.lookup_is_prefetch_r = false;
@@ -1988,7 +2073,9 @@ bool AXI_LLC::try_complete_lookup() {
     const uint8_t victim_way = static_cast<uint8_t>(victim_way_idx);
     const auto victim_meta =
         decode_meta(io.lookup_in.meta, static_cast<uint32_t>(victim_way));
-    const bool victim_valid = (victim_meta.flags & AXI_LLC_META_VALID) != 0;
+    const bool victim_valid =
+        decode_valid_bit(io.lookup_in.valid, victim_way,
+                         (victim_meta.flags & AXI_LLC_META_VALID) != 0);
     const bool victim_dirty = victim_valid &&
                               ((victim_meta.flags & AXI_LLC_META_DIRTY) != 0);
     const bool full_line_write =
@@ -2123,6 +2210,12 @@ bool AXI_LLC::try_complete_lookup() {
       io.table_out.meta.way = victim_way;
       encode_meta(meta, io.table_out.meta.payload);
       io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
+      io.table_out.valid.enable = true;
+      io.table_out.valid.write = true;
+      io.table_out.valid.index = set;
+      encode_valid_bit_payload(config_.ways, victim_way, true,
+                               io.table_out.valid.payload,
+                               io.table_out.valid.byte_enable);
       io.table_out.repl.enable = true;
       io.table_out.repl.write = true;
       io.table_out.repl.index = set;
@@ -2274,7 +2367,9 @@ bool AXI_LLC::try_complete_lookup() {
   entry.epoch = io.regs.invalidate_epoch_r;
   const auto victim_meta =
       decode_meta(io.lookup_in.meta, static_cast<uint32_t>(victim_way));
-  const bool victim_valid = (victim_meta.flags & AXI_LLC_META_VALID) != 0;
+  const bool victim_valid =
+      decode_valid_bit(io.lookup_in.valid, victim_way,
+                       (victim_meta.flags & AXI_LLC_META_VALID) != 0);
   entry.victim_dirty =
       victim_valid && ((victim_meta.flags & AXI_LLC_META_DIRTY) != 0);
   entry.victim_writeback_done = !entry.victim_dirty;
@@ -2591,6 +2686,13 @@ void AXI_LLC::drive_mem_read_path() {
     io.table_out.meta.way = entry.way;
     encode_meta(meta, io.table_out.meta.payload);
     io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
+
+    io.table_out.valid.enable = true;
+    io.table_out.valid.write = true;
+    io.table_out.valid.index = entry.set;
+    encode_valid_bit_payload(config_.ways, entry.way, true,
+                             io.table_out.valid.payload,
+                             io.table_out.valid.byte_enable);
 
     io.table_out.repl.enable = true;
     io.table_out.repl.write = true;
