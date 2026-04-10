@@ -267,6 +267,14 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
   - dirty victim writeback
   - write-side hazard
 
+当前实现不是逐行扫描失效，而是：
+
+- LLC 内部在 accept 当拍产生 `table_out.invalidate_all`
+- 外部表实现收到该脉冲后，直接对 `data/meta/repl` 三张表执行整体 `reset()`
+- 同时 LLC 递增一个 `invalidate_epoch`
+
+因此当前原型的失效粒度是“整块 LLC 全清”，不是只清某个映射窗口。
+
 ### 9.3 stale refill 保护
 
 `invalidate_all` 被接受后会推进一个 epoch。
@@ -277,6 +285,41 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
 
 - `set_llc_invalidate_all(bool)`
 - `llc_invalidate_all_accepted()`
+
+### 9.4 submodule mode / offset 运行时控制
+
+当前 `AXI_Interconnect` 增加了一组 submodule 运行时控制输入：
+
+- `mode[1:0]`
+- `llc_mapped_offset[31:0]`
+
+其语义如下：
+
+- `mode=1`
+  - 正常 LLC_ON
+  - 请求仍按原有 cacheable / bypass 语义进入共享 LLC datapath
+- `mode=2`
+  - 地址映射模式
+  - `[llc_mapped_offset, llc_mapped_offset + 4MB)` 内请求被当作 LLC 管理的
+    cacheable 物理地址空间
+  - 窗口外请求被强制转换为 `bypass`
+- `mode=0/3`
+  - LLC_OFF
+  - 仍复用同一条 LLC datapath，但所有请求都被强制为 `bypass`
+  - 不再向 LLC 新分配 line
+
+当前 mode 切换采用“先 flush、后切换”的合同：
+
+- 当 `mode` 改变，或 `mode=2` 下 `llc_mapped_offset` 改变时，interconnect 会先
+  请求一次 `invalidate_all`
+- 在 `invalidate_all_accepted` 之前，不接受新的上游请求
+- 只有 flush 被接受后，新的运行时配置才真正生效
+
+这个做法的目的不是追求最省硬件，而是先保证：
+
+- 旧模式下 resident 的 line 不会带入新模式
+- 旧 epoch 返回的 refill 不会在 flush 之后把 stale line 重新装回 LLC
+- mode `0/3`、`1`、`2` 都能复用同一条已验证过的 LLC datapath
 
 ## 10. corner cases 与当前已覆盖点
 

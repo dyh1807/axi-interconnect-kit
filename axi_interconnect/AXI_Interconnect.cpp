@@ -9,7 +9,9 @@
 
 #include "AXI_Interconnect.h"
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 extern long long sim_time;
@@ -170,12 +172,113 @@ inline bool write_size_supported(uint8_t total_size) {
          MAX_WRITE_TRANSACTION_BYTES;
 }
 constexpr uint8_t kInvalidAxiWriteId = 0xFF;
+
+bool read_env_u64(const char *name, uint64_t &value_out) {
+  const char *raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return false;
+  }
+  errno = 0;
+  char *end = nullptr;
+  const unsigned long long parsed = std::strtoull(raw, &end, 0);
+  if (errno != 0 || end == raw || (end != nullptr && *end != '\0')) {
+    std::printf("[AXI-SUBMODULE][WARN] ignore invalid %s=%s\n", name, raw);
+    return false;
+  }
+  value_out = static_cast<uint64_t>(parsed);
+  return true;
+}
 } // namespace
 
 // ============================================================================
 // Initialization
 // ============================================================================
+bool AXI_Interconnect::llc_enabled() const {
+  return llc_config.enable && llc_config.valid();
+}
+
+void AXI_Interconnect::sample_runtime_controls() {
+  uint64_t env_value = 0;
+  if (read_env_u64("AXI_SUBMODULE_MODE", env_value)) {
+    mode = static_cast<uint8_t>(env_value & 0x3u);
+  }
+  if (read_env_u64("AXI_SUBMODULE_OFFSET", env_value)) {
+    llc_mapped_offset = static_cast<uint32_t>(env_value);
+  }
+
+  runtime_mode_ = requested_mode();
+  llc_mapped_offset_ = requested_llc_mapped_offset();
+
+  if ((runtime_mode_ == 1u || runtime_mode_ == 2u) && !llc_config.enable) {
+    std::printf(
+        "[AXI-SUBMODULE][WARN] mode=%u requests LLC runtime, but "
+        "llc_config.enable=0\n",
+        static_cast<unsigned>(runtime_mode_));
+  }
+  if (runtime_mode_ == 2u && llc_config.size_bytes < kMappedLlcWindowBytes) {
+    std::printf(
+        "[AXI-SUBMODULE][WARN] mode=2 maps 0x%08x bytes, but LLC size is only "
+        "0x%llx bytes\n",
+        static_cast<unsigned>(kMappedLlcWindowBytes),
+        static_cast<unsigned long long>(llc_config.size_bytes));
+  }
+
+  std::printf(
+      "[AXI-SUBMODULE] mode=%u mapped_offset=0x%08x mapped_size=0x%08x "
+      "llc_enable=%u llc_size=0x%llx\n",
+      static_cast<unsigned>(runtime_mode_),
+      static_cast<unsigned>(llc_mapped_offset_),
+      static_cast<unsigned>(kMappedLlcWindowBytes),
+      static_cast<unsigned>(llc_config.enable ? 1u : 0u),
+      static_cast<unsigned long long>(llc_config.size_bytes));
+}
+
+uint8_t AXI_Interconnect::requested_mode() const {
+  return static_cast<uint8_t>(mode) & 0x3u;
+}
+
+uint32_t AXI_Interconnect::requested_llc_mapped_offset() const {
+  return static_cast<uint32_t>(llc_mapped_offset);
+}
+
+bool AXI_Interconnect::mode_transition_needs_flush() const {
+  const uint8_t req_mode = requested_mode();
+  return req_mode != runtime_mode_ ||
+         (req_mode == 2u && requested_llc_mapped_offset() != llc_mapped_offset_);
+}
+
+bool AXI_Interconnect::invalidate_all_requested() const {
+  return llc_invalidate_all_req_ || mode_transition_needs_flush();
+}
+
+bool AXI_Interconnect::request_in_mapped_window(uint32_t addr,
+                                                uint8_t total_size) const {
+  if (runtime_mode_ != 2u) {
+    return false;
+  }
+  const uint64_t start = static_cast<uint64_t>(addr);
+  const uint64_t end = start + static_cast<uint64_t>(total_size) + 1u;
+  const uint64_t base = static_cast<uint64_t>(llc_mapped_offset_);
+  const uint64_t limit = base + static_cast<uint64_t>(kMappedLlcWindowBytes);
+  return start >= base && end <= limit;
+}
+
+bool AXI_Interconnect::effective_llc_bypass(uint32_t addr, uint8_t total_size,
+                                            bool upstream_bypass) const {
+  if (runtime_mode_ == 2u) {
+    return !request_in_mapped_window(addr, total_size);
+  }
+  if (runtime_mode_ == 0u || runtime_mode_ == 3u) {
+    return true;
+  }
+  if (runtime_mode_ == 1u) {
+    return upstream_bypass;
+  }
+  return true;
+}
+
 void AXI_Interconnect::init() {
+  sample_runtime_controls();
   llc.set_config(llc_config);
   llc.reset();
   r_arb_rr_idx = 0;
@@ -507,11 +610,11 @@ bool AXI_Interconnect::can_issue_llc_read_req() const {
 void AXI_Interconnect::prepare_llc_inputs() {
   llc.io.ext_in = {};
 
-  if (!llc_enabled()) {
+  if (!llc_enabled() && !mode_transition_needs_flush()) {
     return;
   }
 
-  llc.io.ext_in.mem.invalidate_all = llc_invalidate_all_req_;
+  llc.io.ext_in.mem.invalidate_all = invalidate_all_requested();
   const uint32_t invalidate_line_addr =
       AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
   const bool line_hazard =
@@ -596,7 +699,9 @@ void AXI_Interconnect::comb_outputs() {
     const bool llc_slot_busy =
         llc_enabled() && llc_upstream_req[i].valid && !ar_latched.valid;
     read_ports[i].req.ready =
-        req_ready_r[i] && !llc_slot_busy && !(llc_enabled() && llc_invalidate_all_req_);
+        req_ready_r[i] && !llc_slot_busy &&
+        !(llc_enabled() && invalidate_all_requested()) &&
+        !mode_transition_needs_flush();
     read_ports[i].req.accepted = read_req_accepted[i];
     read_ports[i].req.accepted_id = read_req_accepted_id[i];
   }
@@ -618,12 +723,12 @@ void AXI_Interconnect::comb_outputs() {
           AXI_LLC::line_addr(llc_config, write_ports[i].req.addr) ==
               AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
       write_ports[i].req.ready =
-          !llc_invalidate_all_req_ &&
+          !invalidate_all_requested() &&
           !blocked_by_line_invalidate &&
           (w_req_ready_r[i] ||
            (!llc_slot_busy && llc.io.ext_out.upstream.write_req[i].ready));
     } else {
-      write_ports[i].req.ready = w_req_ready_r[i];
+      write_ports[i].req.ready = w_req_ready_r[i] && !mode_transition_needs_flush();
     }
   }
   if (llc_enabled()) {
@@ -723,7 +828,7 @@ void AXI_Interconnect::comb_read_arbiter() {
     }
     for (int master = 0; master < NUM_READ_MASTERS; ++master) {
       if (llc_upstream_req[master].valid || !read_ports[master].req.valid ||
-          llc_invalidate_all_req_) {
+          invalidate_all_requested() || mode_transition_needs_flush()) {
         continue;
       }
       if (has_read_id_conflict(static_cast<uint8_t>(master),
@@ -735,16 +840,23 @@ void AXI_Interconnect::comb_read_arbiter() {
         read_ports[master].req.ready = true;
         llc_upstream_accept_c[master] = true;
         llc_upstream_capture_c[master].valid = true;
-        llc_upstream_capture_c[master].addr = read_ports[master].req.addr;
-        llc_upstream_capture_c[master].total_size =
-            read_ports[master].req.total_size;
-        llc_upstream_capture_c[master].id = read_ports[master].req.id;
-        llc_upstream_capture_c[master].bypass = read_ports[master].req.bypass;
-        continue;
+      llc_upstream_capture_c[master].addr = read_ports[master].req.addr;
+      llc_upstream_capture_c[master].total_size =
+          read_ports[master].req.total_size;
+      llc_upstream_capture_c[master].id = read_ports[master].req.id;
+      llc_upstream_capture_c[master].bypass = effective_llc_bypass(
+          static_cast<uint32_t>(read_ports[master].req.addr),
+          static_cast<uint8_t>(read_ports[master].req.total_size),
+          static_cast<bool>(read_ports[master].req.bypass));
+      continue;
       }
       req_ready_r[master] = true;
       read_ports[master].req.ready = true;
     }
+    return;
+  }
+
+  if (mode_transition_needs_flush()) {
     return;
   }
 
@@ -926,7 +1038,8 @@ void AXI_Interconnect::comb_write_request() {
 
     const bool llc_write_queue_has_space =
         count_llc_write_pending() < MAX_WRITE_OUTSTANDING;
-    if (llc_write_queue_has_space && !llc_invalidate_all_req_) {
+    if (llc_write_queue_has_space && !invalidate_all_requested() &&
+        !mode_transition_needs_flush()) {
       for (int k = 0; k < NUM_WRITE_MASTERS; ++k) {
         const int idx = (w_arb_rr_idx + k) % NUM_WRITE_MASTERS;
         if (!write_ports[idx].req.valid) {
@@ -949,7 +1062,10 @@ void AXI_Interconnect::comb_write_request() {
           llc_upstream_write_capture_c[idx].id = write_ports[idx].req.id;
           llc_upstream_write_capture_c[idx].wdata = write_ports[idx].req.wdata;
           llc_upstream_write_capture_c[idx].wstrb = write_ports[idx].req.wstrb;
-          llc_upstream_write_capture_c[idx].bypass = write_ports[idx].req.bypass;
+          llc_upstream_write_capture_c[idx].bypass = effective_llc_bypass(
+              static_cast<uint32_t>(write_ports[idx].req.addr),
+              static_cast<uint8_t>(write_ports[idx].req.total_size),
+              static_cast<bool>(write_ports[idx].req.bypass));
           break;
         }
         w_req_ready_r[idx] = true;
@@ -980,8 +1096,8 @@ void AXI_Interconnect::comb_write_request() {
   } else {
     axi_io.aw.awvalid = false;
 
-    // If a write master saw ready in previous cycle and keeps valid,
-    // prioritize issuing its AW now.
+    // Let already-accepted write transactions drain even while a mode-2
+    // transition flush is pending. Only block acceptance of new upstream work.
     if (!any_w_resp_valid) {
       const int aw_idx = find_next_aw_pending();
       if (aw_idx >= 0) {
@@ -995,27 +1111,29 @@ void AXI_Interconnect::comb_write_request() {
       }
     }
 
-    // Ready-first handshake: raise req.ready one cycle before accepting.
-    if (can_accept_write_now() && !any_w_resp_valid) {
-      for (int k = 0; k < NUM_WRITE_MASTERS; k++) {
-        int idx = (w_arb_rr_idx + k) % NUM_WRITE_MASTERS;
-        if (!write_ports[idx].req.valid) {
-          continue;
-        }
-        if (!write_size_supported(write_ports[idx].req.total_size)) {
-          printf("[axi] write size too large total_size=%u master=%d\n",
-                 static_cast<unsigned>(write_ports[idx].req.total_size), idx);
-          continue;
-        }
-        if (w_req_ready_curr[idx]) {
-          write_ports[idx].req.ready = true;
-          write_req_fire_c[idx] = true;
+    if (!mode_transition_needs_flush()) {
+      // Ready-first handshake: raise req.ready one cycle before accepting.
+      if (can_accept_write_now() && !any_w_resp_valid) {
+        for (int k = 0; k < NUM_WRITE_MASTERS; k++) {
+          int idx = (w_arb_rr_idx + k) % NUM_WRITE_MASTERS;
+          if (!write_ports[idx].req.valid) {
+            continue;
+          }
+          if (!write_size_supported(write_ports[idx].req.total_size)) {
+            printf("[axi] write size too large total_size=%u master=%d\n",
+                   static_cast<unsigned>(write_ports[idx].req.total_size), idx);
+            continue;
+          }
+          if (w_req_ready_curr[idx]) {
+            write_ports[idx].req.ready = true;
+            write_req_fire_c[idx] = true;
+            break;
+          } else {
+            w_req_ready_r[idx] = true;
+            write_ports[idx].req.ready = true;
+          }
           break;
-        } else {
-          w_req_ready_r[idx] = true;
-          write_ports[idx].req.ready = true;
         }
-        break;
       }
     }
   }
@@ -1069,6 +1187,23 @@ void AXI_Interconnect::seq() {
     llc_upstream_write_req_valid_prev[i] = llc_upstream_write_req[i].valid;
   }
   const bool llc_mem_write_resp_valid_prev = llc_mem_write_resp_valid_;
+  auto non_llc_path_quiescent = [this]() {
+    if (ar_latched.valid || !r_pending.empty() || aw_latched.valid || w_active ||
+        !w_pending.empty()) {
+      return false;
+    }
+    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+      if (req_ready_r[i] || read_req_hold[i].valid) {
+        return false;
+      }
+    }
+    for (int i = 0; i < NUM_WRITE_MASTERS; ++i) {
+      if (w_req_ready_r[i] || write_ports[i].req.ready) {
+        return false;
+      }
+    }
+    return true;
+  };
   auto assert_llc_consumed_reads = [&]() {
     if (!llc_enabled()) {
       return;
@@ -1573,6 +1708,15 @@ read_handshake_done:
     }
 
     llc.seq();
+    if (mode_transition_needs_flush() &&
+        llc.io.ext_out.mem.invalidate_all_accepted) {
+      runtime_mode_ = requested_mode();
+      llc_mapped_offset_ = requested_llc_mapped_offset();
+    } else if (!mode_transition_needs_flush() &&
+               requested_mode() != runtime_mode_) {
+      runtime_mode_ = requested_mode();
+      llc_mapped_offset_ = requested_llc_mapped_offset();
+    }
     assert_llc_consumed_reads();
     return;
   }
@@ -1731,11 +1875,23 @@ read_handshake_done:
   refresh_non_llc_w_active();
 
   llc.seq();
+  if (mode_transition_needs_flush() &&
+      llc.io.ext_out.mem.invalidate_all_accepted &&
+      non_llc_path_quiescent()) {
+    runtime_mode_ = requested_mode();
+    llc_mapped_offset_ = requested_llc_mapped_offset();
+  } else if (!mode_transition_needs_flush() &&
+             requested_mode() != runtime_mode_) {
+    runtime_mode_ = requested_mode();
+    llc_mapped_offset_ = requested_llc_mapped_offset();
+  }
   assert_llc_consumed_reads();
 }
 
 void AXI_Interconnect::debug_print() {
-  printf("  interconnect: ar_latched=%d r_pending=%zu w_active=%d\n",
+  printf("  interconnect: mode=%u mapped_offset=0x%08x ar_latched=%d "
+         "r_pending=%zu w_active=%d\n",
+         static_cast<unsigned>(runtime_mode_), llc_mapped_offset_,
          ar_latched.valid, r_pending.size(), w_active);
   if (ar_latched.valid) {
     printf("    ar_latched: master=%u addr=0x%08x len=%u id=0x%02x\n",

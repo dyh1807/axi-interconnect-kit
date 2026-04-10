@@ -80,6 +80,48 @@ Contract:
 4. After `invalidate_all` is accepted, stale clean refill installs from an
    older epoch are dropped instead of being re-installed into the LLC.
 
+### 1.6 Submodule Runtime Mode Controls
+
+`AXI_Interconnect` currently also exposes a small runtime control surface for
+the submodule prototype:
+
+- `mode[1:0]`
+- `llc_mapped_offset[31:0]`
+
+Current behavior:
+
+1. `mode=1`
+   - LLC_ON mode
+   - requests keep using the shared LLC datapath
+   - the original upstream `bypass` semantics are preserved
+2. `mode=2`
+   - mapped-address mode
+   - requests inside
+     `[llc_mapped_offset, llc_mapped_offset + 4MB)` are treated as cacheable
+     LLC requests
+   - requests outside that window are forced to `bypass` and continue through
+     the DDR/MMIO downstream path
+3. `mode=0/3`
+   - LLC_OFF mode
+   - the same LLC datapath is still reused, but every upstream request is
+     forced to `bypass`
+   - no new LLC line allocation happens in this mode
+
+Current transition contract:
+
+1. A change in `mode` or `llc_mapped_offset` first triggers `invalidate_all`
+2. Before `invalidate_all` is accepted:
+   - no new upstream requests are accepted
+   - already captured clean LLC-path work may still drain
+3. The new runtime `mode/offset` becomes active only after
+   `invalidate_all_accepted`
+
+Implementation note:
+
+- The local simulator harness may seed these inputs at `init()` time through
+  `AXI_SUBMODULE_MODE` / `AXI_SUBMODULE_OFFSET`. That is only a simulation
+  bring-up path; the datapath semantics still follow the live inputs.
+
 ## 2) AXI4 Channel Signals
 
 Defined in `sim_ddr/include/SimDDR_IO.h`.

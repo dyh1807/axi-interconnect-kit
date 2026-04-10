@@ -115,13 +115,21 @@ class AXI_Interconnect {
 public:
   AXI_Interconnect() : write_port(write_ports[MASTER_DCACHE_W]) {}
 
+  // Runtime control inputs for the shared AXI submodule.
+  // For simulator-only bring-up, init() may seed these inputs from env vars,
+  // but the active mode/offset seen by the datapath remains hardware-like:
+  // the module observes these inputs at runtime and performs a flush when a
+  // mode transition involving mode=2 is requested.
+  wire<2> mode = 1;
+  wire<32> llc_mapped_offset = 0;
+
   void init();
   void set_llc_config(const AXI_LLCConfig &config) {
     llc_config = config;
     llc.set_config(llc_config);
   }
   const AXI_LLCConfig &get_llc_config() const { return llc_config; }
-  bool llc_enabled() const { return llc_config.enable && llc_config.valid(); }
+  bool llc_enabled() const;
   void set_llc_lookup_in(const AXI_LLC_LookupIn_t &lookup_in) {
     llc.io.lookup_in = lookup_in;
   }
@@ -217,6 +225,14 @@ private:
 
   uint8_t calc_burst_len(uint8_t total_size);
   uint8_t alloc_read_axi_id() const;
+  void sample_runtime_controls();
+  uint8_t requested_mode() const;
+  uint32_t requested_llc_mapped_offset() const;
+  bool mode_transition_needs_flush() const;
+  bool invalidate_all_requested() const;
+  bool request_in_mapped_window(uint32_t addr, uint8_t total_size) const;
+  bool effective_llc_bypass(uint32_t addr, uint8_t total_size,
+                            bool upstream_bypass) const;
 
   AXI_LLCConfig llc_config{};
   AXI_LLC llc{};
@@ -238,6 +254,9 @@ private:
   uint8_t ar_llc_mem_id_c = 0;
   int ar_master_c = -1;
   uint8_t ar_orig_id_c = 0;
+  uint8_t runtime_mode_ = 1;
+  uint32_t llc_mapped_offset_ = 0;
+  static constexpr uint32_t kMappedLlcWindowBytes = 4u << 20;
 };
 
 } // namespace axi_interconnect

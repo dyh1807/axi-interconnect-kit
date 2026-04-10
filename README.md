@@ -98,6 +98,13 @@ Current behavior:
     pending
   - it drops stale clean refill installs by epoch once accepted
   - it does not silently discard dirty resident data
+- The interconnect also carries prototype runtime controls for the submodule:
+  - `mode=1`: LLC_ON
+  - `mode=2`: treat `[offset, offset + 4MB)` as an LLC-managed physical window
+    while forcing accesses outside the window to `bypass`
+  - `mode=0/3`: LLC_OFF by forcing every request to `bypass`
+  - mode/offset changes first trigger `invalidate_all`, and the new
+    configuration becomes active only after acceptance
 
 ### AXI4 Write Concurrency
 

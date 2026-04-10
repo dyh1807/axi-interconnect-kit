@@ -95,6 +95,12 @@ router 负责 AXI 侧地址译码。
   - `invalidate_all` pending 期间，已捕获的 clean LLC 路径请求可继续排空
   - 一旦接受，会通过 epoch 丢弃 stale clean refill install
   - 不会静默丢弃 dirty resident 数据
+- interconnect 还带有 submodule 原型用运行时控制输入：
+  - `mode=1`：LLC_ON
+  - `mode=2`：`[offset, offset + 4MB)` 映射为 LLC 管理的物理地址窗口，其它地址强制
+    `bypass`
+  - `mode=0/3`：LLC_OFF，所有请求强制 `bypass`
+  - `mode` / `offset` 变化会先触发一次 `invalidate_all`，接受后才切换到新配置
 
 ### AXI4 写并发
 
