@@ -97,6 +97,8 @@ Current behavior:
   - already captured clean LLC-path work may drain while `invalidate_all` is
     pending
   - it drops stale clean refill installs by epoch once accepted
+  - the external table runtime currently performs a meta-only reset: valid/tag/
+    flags are cleared while stale data/repl contents may remain
   - it does not silently discard dirty resident data
 - The interconnect also carries prototype runtime controls for the submodule:
   - `mode=1`: LLC_ON

@@ -270,10 +270,15 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
 当前实现不是逐行扫描失效，而是：
 
 - LLC 内部在 accept 当拍产生 `table_out.invalidate_all`
-- 外部表实现收到该脉冲后，直接对 `data/meta/repl` 三张表执行整体 `reset()`
+- 外部表实现收到该脉冲后，当前只对 `meta` 表执行整体 `reset()`
 - 同时 LLC 递增一个 `invalidate_epoch`
 
-因此当前原型的失效粒度是“整块 LLC 全清”，不是只清某个映射窗口。
+其中 `valid` 位当前仍然位于 meta flags 中，因此 reset `meta` 就足以让所有
+resident line 失效；`data/repl` 内容允许保留为 stale 值，因为后续不会被 invalid
+meta 引用。
+
+因此当前原型的失效粒度仍然是“整块 LLC 全清”，只是实现上采用了
+“meta-only reset”，而不是把 `data/repl` 也一并清空。
 
 ### 9.3 stale refill 保护
 
@@ -320,6 +325,10 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
 - 旧模式下 resident 的 line 不会带入新模式
 - 旧 epoch 返回的 refill 不会在 flush 之后把 stale line 重新装回 LLC
 - mode `0/3`、`1`、`2` 都能复用同一条已验证过的 LLC datapath
+
+后续如果综合约束进一步收紧，更自然的方向会是把 `valid` 从 meta 中拆成独立表；
+当前阶段先采用 meta-only reset，以最小改动把失效动作从“清 data/meta/repl”
+收敛成“只清有效性”。
 
 ## 10. corner cases 与当前已覆盖点
 
