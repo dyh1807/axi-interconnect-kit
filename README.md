@@ -97,16 +97,21 @@ Current behavior:
   - already captured clean LLC-path work may drain while `invalidate_all` is
     pending
   - it drops stale clean refill installs by epoch once accepted
-  - the external table runtime currently resets a dedicated `valid` table only;
-    stale data/meta/repl contents may remain unreachable
+  - the external table runtime now hosts a dedicated `valid` table as a
+    regfile-style bit array; `invalidate_all` resets that table only, so stale
+    data/meta/repl contents may remain physically present but unreachable
   - it does not silently discard dirty resident data
 - The interconnect also carries prototype runtime controls for the submodule:
   - `mode=1`: LLC_ON
-  - `mode=2`: treat `[offset, offset + 4MB)` as an LLC-managed physical window
-    while forcing accesses outside the window to `bypass`
+  - `mode=2`: treat `[offset, offset + 4MB)` as a direct-mapped local LLC
+    storage window; accesses inside the window stay local and do not allocate
+    MSHRs or refill from DDR, while accesses outside the window are forced to
+    `bypass`
   - `mode=0/3`: LLC_OFF by forcing every request to `bypass`
-  - mode/offset changes first trigger `invalidate_all`, and the new
-    configuration becomes active only after acceptance
+  - mode/offset changes follow a `drain -> invalidate_all -> activate`
+    contract: no new upstream requests are accepted during reconfiguration, the
+    old in-flight LLC/AXI work drains first, and the new configuration becomes
+    active only after `invalidate_all_accepted`
 
 ### AXI4 Write Concurrency
 

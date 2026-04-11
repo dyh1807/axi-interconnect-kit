@@ -98,9 +98,10 @@ Current behavior:
    - the original upstream `bypass` semantics are preserved
 2. `mode=2`
    - mapped-address mode
-   - requests inside
-     `[llc_mapped_offset, llc_mapped_offset + 4MB)` are treated as cacheable
-     LLC requests
+   - requests inside `[llc_mapped_offset, llc_mapped_offset + 4MB)` are
+     translated onto a direct-mapped local LLC storage window
+   - those window accesses stay local: no tag compare, no replacement, no MSHR
+     allocation, and no DDR refill
    - requests outside that window are forced to `bypass` and continue through
      the DDR/MMIO downstream path
 3. `mode=0/3`
@@ -111,11 +112,12 @@ Current behavior:
 
 Current transition contract:
 
-1. A change in `mode` or `llc_mapped_offset` first triggers `invalidate_all`
-2. Before `invalidate_all` is accepted:
+1. A change in `mode` or `llc_mapped_offset` enters a reconfiguration phase
+2. During reconfiguration:
    - no new upstream requests are accepted
-   - already captured clean LLC-path work may still drain
-3. The new runtime `mode/offset` becomes active only after
+   - the old LLC/AXI in-flight work drains to a quiescent point first
+3. Only after that quiescent point does interconnect request `invalidate_all`
+4. The new runtime `mode/offset` becomes active only after
    `invalidate_all_accepted`
 
 Implementation note:

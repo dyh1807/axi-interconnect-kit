@@ -94,14 +94,17 @@ router 负责 AXI 侧地址译码。
   - 调用方应持续保持请求，直到观察到 `invalidate_all_accepted`
   - `invalidate_all` pending 期间，已捕获的 clean LLC 路径请求可继续排空
   - 一旦接受，会通过 epoch 丢弃 stale clean refill install
-  - 外部表当前采用独立 `valid` 表 reset：只清有效位，不清 data/meta/repl
+  - 外部表当前把独立 `valid` 表建模为 regfile 风格 bit-array；
+    `invalidate_all` 只清这张 `valid` 表，不清 data/meta/repl
   - 不会静默丢弃 dirty resident 数据
 - interconnect 还带有 submodule 原型用运行时控制输入：
   - `mode=1`：LLC_ON
-  - `mode=2`：`[offset, offset + 4MB)` 映射为 LLC 管理的物理地址窗口，其它地址强制
-    `bypass`
+  - `mode=2`：`[offset, offset + 4MB)` 映射为 direct-mapped 的本地 LLC 存储窗口；
+    窗口内访问不分配 MSHR、也不会从 DDR refill，窗口外访问强制 `bypass`
   - `mode=0/3`：LLC_OFF，所有请求强制 `bypass`
-  - `mode` / `offset` 变化会先触发一次 `invalidate_all`，接受后才切换到新配置
+  - `mode` / `offset` 变化遵循 `drain -> invalidate_all -> activate`：
+    切换期间不再接收新的上游请求，旧模式下已在途的 LLC/AXI 工作先排空，
+    只有在 `invalidate_all_accepted` 之后才切换到新配置
 
 ### AXI4 写并发
 

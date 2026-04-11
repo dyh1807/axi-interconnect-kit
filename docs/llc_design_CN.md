@@ -84,8 +84,9 @@ upstream read/write masters
 
 其中：
 
-- 命中/失效语义上的“真实有效性”以独立 `valid` 表为准
-- `meta.flags.VALID` 当前只作为 shadow / 调试兼容位保留
+- 命中/失效语义上的“真实有效性”只以独立 `valid` 表为准
+- `meta.flags.VALID` 当前只作为兼容位保留，不再参与 hit / victim valid 判定
+- 外部 `valid` 宿主当前采用 regfile 风格 bit-array，并按 `way` 做 bit update
 - 当前 `meta` 已从原型早期的较宽表示压缩到 `4B/line`
 
 ### 3.3 寻址方式
@@ -300,6 +301,9 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
 - `set_llc_invalidate_all(bool)`
 - `llc_invalidate_all_accepted()`
 
+mode 切换现在首先依赖 `drain -> invalidate_all -> activate` 合同来保证边界干净；
+这里的 epoch 仍然作为 stale clean refill 的附加保护网保留。
+
 ### 9.4 submodule mode / offset 运行时控制
 
 当前 `AXI_Interconnect` 增加了一组 submodule 运行时控制输入：
@@ -314,29 +318,29 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
   - 请求仍按原有 cacheable / bypass 语义进入共享 LLC datapath
 - `mode=2`
   - 地址映射模式
-  - `[llc_mapped_offset, llc_mapped_offset + 4MB)` 内请求被当作 LLC 管理的
-    cacheable 物理地址空间
+  - `[llc_mapped_offset, llc_mapped_offset + 4MB)` 内请求被翻译到
+    direct-mapped 的本地 LLC 存储窗口
+  - 窗口内访问不做 tag compare / replacement，不分配 MSHR，也不会从 DDR refill
   - 窗口外请求被强制转换为 `bypass`
 - `mode=0/3`
   - LLC_OFF
   - 仍复用同一条 LLC datapath，但所有请求都被强制为 `bypass`
   - 不再向 LLC 新分配 line
 
-当前 mode 切换采用“先 flush、后切换”的合同：
+当前 mode 切换采用 `drain -> invalidate_all -> activate` 合同：
 
-- 当 `mode` 改变，或 `mode=2` 下 `llc_mapped_offset` 改变时，interconnect 会先
-  请求一次 `invalidate_all`
-- 在 `invalidate_all_accepted` 之前，不接受新的上游请求
+- 当 `mode` 改变，或 `mode=2` 下 `llc_mapped_offset` 改变时，interconnect 先
+  停止接收新的上游请求
+- 旧模式下已捕获的 LLC/AXI 工作先排空到 quiescent point
+- 只有到达 quiescent point 后，interconnect 才会请求一次 `invalidate_all`
 - 只有 flush 被接受后，新的运行时配置才真正生效
 
 这个做法的目的不是追求最省硬件，而是先保证：
 
 - 旧模式下 resident 的 line 不会带入新模式
-- 旧 epoch 返回的 refill 不会在 flush 之后把 stale line 重新装回 LLC
-- mode `0/3`、`1`、`2` 都能复用同一条已验证过的 LLC datapath
-
-当前阶段已经采用独立 `valid` 表，把失效动作收敛成“只清有效性”。
-后续如果还要继续硬件化，可以再考虑是否彻底移除 `meta.flags.VALID` 这个 shadow 位。
+- 旧模式下的 inflight LLC/AXI 工作不会穿越模式边界
+- 旧 epoch 返回的 refill 即使晚到，也不会在 flush 之后把 stale line 重新装回 LLC
+- mode `0/3`、`1`、`2` 都能复用同一条已验证过的共享 datapath
 
 ## 10. corner cases 与当前已覆盖点
 
