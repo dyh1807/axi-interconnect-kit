@@ -14,6 +14,17 @@ namespace {
 using namespace axi_interconnect;
 using namespace axi_test;
 
+AXI_LLCConfig make_mode2_llc_config() {
+  AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 8ull << 20;
+  cfg.line_bytes = 64;
+  cfg.ways = 16;
+  cfg.mshr_num = 8;
+  cfg.prefetch_enable = false;
+  return cfg;
+}
+
 bool test_cross_master_write_then_read_latest() {
   std::printf("=== AXI4 LLC Integration Test 1: cross-master latest value ===\n");
 
@@ -500,6 +511,113 @@ bool test_bypass_write_hit_updates_resident_line() {
   }
   if (!env.ar_events.empty()) {
     std::printf("FAIL: cacheable read after bypass write-hit should not issue DDR AR, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_mode2_direct_mapped_local_window_stays_off_ddr() {
+  std::printf("=== AXI4 LLC Integration Test 6c: mode2 mapped window stays local ===\n");
+
+  Axi4LlcTestEnv env;
+  env.interconnect.mode = 2;
+  env.interconnect.llc_mapped_offset = 0x1000;
+  init_env(env, make_mode2_llc_config());
+
+  const uint32_t mapped_line = 0x1000 + 0x200;
+  const uint32_t mapped_addr = mapped_line + 8;
+  write_memory_line(mapped_line, 0x9000);
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_ICACHE, mapped_addr, 15, 0x34, false) ||
+      !wait_read_resp(env, MASTER_ICACHE, 0x34, 0x0, 0x0)) {
+    std::printf("FAIL: mode2 cold read did not return zeroed local contents\n");
+    return false;
+  }
+  cycle_outputs(env);
+  cycle_inputs(env);
+  if (!env.ar_events.empty()) {
+    std::printf("FAIL: mode2 cold read should not issue DDR AR, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+  if (read_mem_word(mapped_addr) != 0x9002) {
+    std::printf("FAIL: mode2 cold read should not touch backing memory got=0x%08x\n",
+                read_mem_word(mapped_addr));
+    return false;
+  }
+
+  WideWriteData_t wdata;
+  wdata.clear();
+  for (uint32_t i = 0; i < 16; ++i) {
+    wdata[i] = 0xD000 + i;
+  }
+  WideWriteStrb_t wstrb;
+  wstrb.clear();
+  for (uint32_t i = 0; i < 64; ++i) {
+    wstrb.set(i, true);
+  }
+
+  env.ar_events.clear();
+  env.aw_events.clear();
+  if (!issue_write(env, MASTER_DCACHE_W, mapped_line, wdata, wstrb, 63, 0x35,
+                   false) ||
+      !wait_write_resp(env, MASTER_DCACHE_W, 0x35)) {
+    std::printf("FAIL: mode2 local write failed\n");
+    return false;
+  }
+  cycle_outputs(env);
+  cycle_inputs(env);
+  if (!env.ar_events.empty() || !env.aw_events.empty()) {
+    std::printf("FAIL: mode2 local write should not issue DDR traffic ar=%zu aw=%zu\n",
+                env.ar_events.size(), env.aw_events.size());
+    return false;
+  }
+  if (read_mem_word(mapped_line) != 0x9000 || read_mem_word(mapped_addr) != 0x9002) {
+    std::printf("FAIL: mode2 local write should not modify backing memory w0=0x%08x w2=0x%08x\n",
+                read_mem_word(mapped_line), read_mem_word(mapped_addr));
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, mapped_addr, 15, 0x36, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x36, 0xD002, 0xD003)) {
+    std::printf("FAIL: mode2 reread did not observe local write data\n");
+    return false;
+  }
+  if (!env.ar_events.empty()) {
+    std::printf("FAIL: mode2 reread should still stay off DDR, got %zu ARs\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_mode2_window_outside_still_uses_ddr() {
+  std::printf("=== AXI4 LLC Integration Test 6d: mode2 outside-window read still uses DDR ===\n");
+
+  Axi4LlcTestEnv env;
+  env.interconnect.mode = 2;
+  env.interconnect.llc_mapped_offset = 0x1000;
+  init_env(env, make_mode2_llc_config());
+
+  const uint32_t outside_line = 0x400;
+  const uint32_t outside_addr = outside_line + 8;
+  write_memory_line(outside_line, 0xA200);
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_UNCORE_LSU_R, outside_addr, 15, 0x37, false) ||
+      !wait_read_resp(env, MASTER_UNCORE_LSU_R, 0x37, 0xA202, 0xA203)) {
+    std::printf("FAIL: mode2 outside-window read failed\n");
+    return false;
+  }
+  if (env.ar_events.size() != 1) {
+    std::printf("FAIL: mode2 outside-window read should issue one DDR AR, got %zu\n",
                 env.ar_events.size());
     return false;
   }
@@ -1960,6 +2078,18 @@ int main() {
   }
 
   if (test_bypass_write_hit_updates_resident_line()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_mode2_direct_mapped_local_window_stays_off_ddr()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_mode2_window_outside_still_uses_ddr()) {
     passed++;
   } else {
     failed++;

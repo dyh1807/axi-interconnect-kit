@@ -73,6 +73,7 @@ struct LlcUpstreamReqLatch {
   uint8_t total_size = 0;
   uint8_t id = 0;
   bool bypass = false;
+  bool direct_mapped = false;
 };
 
 struct ReadReqHoldLatch {
@@ -91,6 +92,7 @@ struct LlcUpstreamWriteReqLatch {
   WideWriteData_t wdata{};
   WideWriteStrb_t wstrb{};
   bool bypass = false;
+  bool direct_mapped = false;
 };
 
 struct WritePendingTxn {
@@ -231,6 +233,8 @@ private:
   bool mode_transition_needs_flush() const;
   bool invalidate_all_requested() const;
   bool request_in_mapped_window(uint32_t addr, uint8_t total_size) const;
+  bool request_uses_direct_mapped_llc(uint32_t addr, uint8_t total_size) const;
+  uint32_t translate_llc_addr(uint32_t addr, uint8_t total_size) const;
   bool effective_llc_bypass(uint32_t addr, uint8_t total_size,
                             bool upstream_bypass) const;
 

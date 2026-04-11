@@ -263,6 +263,20 @@ bool AXI_Interconnect::request_in_mapped_window(uint32_t addr,
   return start >= base && end <= limit;
 }
 
+bool AXI_Interconnect::request_uses_direct_mapped_llc(uint32_t addr,
+                                                      uint8_t total_size) const {
+  return runtime_mode_ == 2u && request_in_mapped_window(addr, total_size);
+}
+
+uint32_t AXI_Interconnect::translate_llc_addr(uint32_t addr,
+                                              uint8_t total_size) const {
+  if (!request_uses_direct_mapped_llc(addr, total_size)) {
+    return addr;
+  }
+  return static_cast<uint32_t>(
+      static_cast<uint64_t>(addr) - static_cast<uint64_t>(llc_mapped_offset_));
+}
+
 bool AXI_Interconnect::effective_llc_bypass(uint32_t addr, uint8_t total_size,
                                             bool upstream_bypass) const {
   if (runtime_mode_ == 2u) {
@@ -642,6 +656,8 @@ void AXI_Interconnect::prepare_llc_inputs() {
     llc.io.ext_in.upstream.read_req[master].id = llc_upstream_req[master].id;
     llc.io.ext_in.upstream.read_req[master].bypass =
         llc_upstream_req[master].bypass;
+    llc.io.ext_in.upstream.read_req[master].direct_mapped =
+        llc_upstream_req[master].direct_mapped;
     llc.io.ext_in.upstream.read_resp[master].ready = read_ports[master].resp.ready;
   }
 
@@ -656,6 +672,8 @@ void AXI_Interconnect::prepare_llc_inputs() {
     llc.io.ext_in.upstream.write_req[master].wstrb = llc_upstream_write_req[master].wstrb;
     llc.io.ext_in.upstream.write_req[master].bypass =
         llc_upstream_write_req[master].bypass;
+    llc.io.ext_in.upstream.write_req[master].direct_mapped =
+        llc_upstream_write_req[master].direct_mapped;
     llc.io.ext_in.upstream.write_resp[master].ready = write_ports[master].resp.ready;
   }
 
@@ -837,18 +855,23 @@ void AXI_Interconnect::comb_read_arbiter() {
       }
       const bool allow_same_cycle_accept = (master == MASTER_DCACHE_R);
       if (req_ready_curr[master] || allow_same_cycle_accept) {
+        const uint32_t req_addr =
+            static_cast<uint32_t>(read_ports[master].req.addr);
+        const uint8_t req_total_size =
+            static_cast<uint8_t>(read_ports[master].req.total_size);
         read_ports[master].req.ready = true;
         llc_upstream_accept_c[master] = true;
         llc_upstream_capture_c[master].valid = true;
-      llc_upstream_capture_c[master].addr = read_ports[master].req.addr;
-      llc_upstream_capture_c[master].total_size =
-          read_ports[master].req.total_size;
-      llc_upstream_capture_c[master].id = read_ports[master].req.id;
-      llc_upstream_capture_c[master].bypass = effective_llc_bypass(
-          static_cast<uint32_t>(read_ports[master].req.addr),
-          static_cast<uint8_t>(read_ports[master].req.total_size),
-          static_cast<bool>(read_ports[master].req.bypass));
-      continue;
+        llc_upstream_capture_c[master].addr =
+            translate_llc_addr(req_addr, req_total_size);
+        llc_upstream_capture_c[master].total_size = req_total_size;
+        llc_upstream_capture_c[master].id = read_ports[master].req.id;
+        llc_upstream_capture_c[master].bypass = effective_llc_bypass(
+            req_addr, req_total_size,
+            static_cast<bool>(read_ports[master].req.bypass));
+        llc_upstream_capture_c[master].direct_mapped =
+            request_uses_direct_mapped_llc(req_addr, req_total_size);
+        continue;
       }
       req_ready_r[master] = true;
       read_ports[master].req.ready = true;
@@ -1053,19 +1076,24 @@ void AXI_Interconnect::comb_write_request() {
           continue;
         }
         if (w_req_ready_curr[idx]) {
+          const uint32_t req_addr =
+              static_cast<uint32_t>(write_ports[idx].req.addr);
+          const uint8_t req_total_size =
+              static_cast<uint8_t>(write_ports[idx].req.total_size);
           write_ports[idx].req.ready = true;
           llc_upstream_write_accept_c[idx] = true;
           llc_upstream_write_capture_c[idx].valid = true;
-          llc_upstream_write_capture_c[idx].addr = write_ports[idx].req.addr;
-          llc_upstream_write_capture_c[idx].total_size =
-              write_ports[idx].req.total_size;
+          llc_upstream_write_capture_c[idx].addr =
+              translate_llc_addr(req_addr, req_total_size);
+          llc_upstream_write_capture_c[idx].total_size = req_total_size;
           llc_upstream_write_capture_c[idx].id = write_ports[idx].req.id;
           llc_upstream_write_capture_c[idx].wdata = write_ports[idx].req.wdata;
           llc_upstream_write_capture_c[idx].wstrb = write_ports[idx].req.wstrb;
           llc_upstream_write_capture_c[idx].bypass = effective_llc_bypass(
-              static_cast<uint32_t>(write_ports[idx].req.addr),
-              static_cast<uint8_t>(write_ports[idx].req.total_size),
+              req_addr, req_total_size,
               static_cast<bool>(write_ports[idx].req.bypass));
+          llc_upstream_write_capture_c[idx].direct_mapped =
+              request_uses_direct_mapped_llc(req_addr, req_total_size);
           break;
         }
         w_req_ready_r[idx] = true;

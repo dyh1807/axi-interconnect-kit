@@ -72,6 +72,7 @@ struct AXI_LLC_ReadReqIn_t {
   wire<8> total_size = 0;
   wire<4> id = 0;
   wire<1> bypass = false;
+  wire<1> direct_mapped = false;
 };
 
 struct AXI_LLC_ReadReqOut_t {
@@ -96,6 +97,7 @@ struct AXI_LLC_WriteReqIn_t {
   wire<8> total_size = 0;
   wire<4> id = 0;
   wire<1> bypass = false;
+  wire<1> direct_mapped = false;
 };
 
 struct AXI_LLC_WriteReqOut_t {
@@ -238,6 +240,7 @@ struct AXI_LLCPrefetchReq_t {
 struct AXI_LLCWritePendingReq_t {
   bool valid = false;
   bool bypass = false;
+  bool direct_mapped = false;
   uint8_t master = 0;
   uint8_t id = 0;
   uint8_t total_size = 0;
@@ -249,6 +252,7 @@ struct AXI_LLCWritePendingReq_t {
 struct AXI_LLCWriteCtx_t {
   bool valid = false;
   bool bypass = false;
+  bool direct_mapped = false;
   bool lookup_pending = false;
   bool mem_issued = false;
   bool mem_done = false;
@@ -295,6 +299,7 @@ struct AXI_LLC_Regs_t {
   bool lookup_is_invalidate_r = false;
   bool lookup_is_write_r = false;
   bool lookup_is_bypass_r = false;
+  bool lookup_is_direct_mapped_r = false;
   bool prefetch_stream_valid_r = false;
   uint32_t prefetch_last_miss_line_r = 0;
   uint8_t prefetch_quiet_cycles_r = 0;
@@ -421,6 +426,8 @@ private:
   bool can_accept_invalidate_line_now(uint32_t line_addr) const;
   bool has_dirty_or_write_hazard(const AXI_LLC_Regs_t &regs) const;
   bool can_accept_invalidate_all_now(const AXI_LLC_Regs_t &regs) const;
+  bool direct_mapped_coords(uint32_t addr, uint32_t *set,
+                            uint8_t *way) const;
   bool line_has_valid_meta(const AXI_LLC_Bytes_t &valid_payload,
                            const AXI_LLC_Bytes_t &meta_payload, uint32_t tag,
                            int *hit_way, int *first_invalid_way,
