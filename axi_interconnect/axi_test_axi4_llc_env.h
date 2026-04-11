@@ -372,6 +372,9 @@ inline bool wait_read_resp(Axi4LlcTestEnv &env, uint8_t master, uint8_t id,
       }
       resp.ready = true;
       cycle_inputs(env);
+      cycle_outputs(env);
+      env.interconnect.read_ports[master].resp.ready = true;
+      cycle_inputs(env);
       return true;
     }
     cycle_inputs(env);
@@ -391,6 +394,9 @@ inline bool wait_write_resp(Axi4LlcTestEnv &env, uint8_t master, uint8_t id) {
         return false;
       }
       resp.ready = true;
+      cycle_inputs(env);
+      cycle_outputs(env);
+      env.interconnect.write_ports[master].resp.ready = true;
       cycle_inputs(env);
       return true;
     }

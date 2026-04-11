@@ -208,6 +208,9 @@ void AXI_Interconnect::sample_runtime_controls() {
 
   runtime_mode_ = requested_mode();
   llc_mapped_offset_ = requested_llc_mapped_offset();
+  reconfig_pending_ = false;
+  reconfig_target_mode_ = runtime_mode_;
+  reconfig_target_offset_ = llc_mapped_offset_;
 
   if ((runtime_mode_ == 1u || runtime_mode_ == 2u) && !llc_config.enable) {
     std::printf(
@@ -241,14 +244,24 @@ uint32_t AXI_Interconnect::requested_llc_mapped_offset() const {
   return static_cast<uint32_t>(llc_mapped_offset);
 }
 
-bool AXI_Interconnect::mode_transition_needs_flush() const {
+bool AXI_Interconnect::requested_config_differs_from_active() const {
   const uint8_t req_mode = requested_mode();
+  const uint32_t req_offset = requested_llc_mapped_offset();
   return req_mode != runtime_mode_ ||
-         (req_mode == 2u && requested_llc_mapped_offset() != llc_mapped_offset_);
+         (req_mode == 2u && req_offset != llc_mapped_offset_);
+}
+
+bool AXI_Interconnect::mode_transition_needs_flush() const {
+  return reconfig_pending_ || requested_config_differs_from_active();
+}
+
+bool AXI_Interconnect::mode_transition_invalidate_requested() const {
+  return reconfig_pending_ && requested_config_differs_from_active() &&
+         reconfig_path_quiescent();
 }
 
 bool AXI_Interconnect::invalidate_all_requested() const {
-  return llc_invalidate_all_req_ || mode_transition_needs_flush();
+  return llc_invalidate_all_req_ || mode_transition_invalidate_requested();
 }
 
 bool AXI_Interconnect::request_in_mapped_window(uint32_t addr,
@@ -456,6 +469,75 @@ uint32_t AXI_Interconnect::count_llc_write_pending() const {
     count += static_cast<uint32_t>(llc_upstream_write_q[i].size());
   }
   return count;
+}
+
+bool AXI_Interconnect::non_llc_path_quiescent() const {
+  if (ar_latched.valid || !r_pending.empty() || aw_latched.valid || w_active ||
+      !w_pending.empty()) {
+    return false;
+  }
+  for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+    if (req_ready_r[i] || read_req_hold[i].valid) {
+      return false;
+    }
+  }
+  for (int i = 0; i < NUM_WRITE_MASTERS; ++i) {
+    if (w_req_ready_r[i] || write_ports[i].req.ready) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool AXI_Interconnect::llc_path_quiescent() const {
+  if (!llc_enabled()) {
+    return true;
+  }
+  if (ar_latched.valid && ar_latched.to_llc) {
+    return false;
+  }
+  if (w_active || aw_latched.valid || llc_mem_write_resp_valid_ ||
+      llc_mem_ignored_b_count_ != 0) {
+    return false;
+  }
+  for (const auto &txn : r_pending) {
+    if (txn.to_llc) {
+      return false;
+    }
+  }
+  for (int master = 0; master < NUM_READ_MASTERS; ++master) {
+    if (llc_upstream_req[master].valid || llc.io.regs.read_resp_valid_r[master] ||
+        llc.io.regs.read_resp_q_count_r[master] != 0) {
+      return false;
+    }
+  }
+  for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    if (llc_upstream_write_req[master].valid ||
+        !llc_upstream_write_q[master].empty()) {
+      return false;
+    }
+    if (llc.io.regs.write_ctx[master].valid ||
+        llc.io.regs.write_q_count_r[master] != 0 ||
+        llc.io.regs.write_resp_valid_r[master]) {
+      return false;
+    }
+  }
+  if (llc.io.regs.lookup_valid_r || llc.io.regs.victim_wb_valid_r ||
+      llc.io.regs.read_victim_wb_q_count_r != 0 ||
+      llc.io.ext_out.mem.read_req_valid || llc.io.ext_out.mem.write_req_valid) {
+    return false;
+  }
+  for (uint32_t slot = 0; slot < llc_config.mshr_num && slot < MAX_OUTSTANDING;
+       ++slot) {
+    if (llc.io.regs.mshr[slot].valid) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool AXI_Interconnect::reconfig_path_quiescent() const {
+  return llc_enabled() ? llc_path_quiescent() : non_llc_path_quiescent();
 }
 
 bool AXI_Interconnect::has_same_line_write_hazard(uint32_t line_addr) const {
@@ -1215,23 +1297,9 @@ void AXI_Interconnect::seq() {
     llc_upstream_write_req_valid_prev[i] = llc_upstream_write_req[i].valid;
   }
   const bool llc_mem_write_resp_valid_prev = llc_mem_write_resp_valid_;
-  auto non_llc_path_quiescent = [this]() {
-    if (ar_latched.valid || !r_pending.empty() || aw_latched.valid || w_active ||
-        !w_pending.empty()) {
-      return false;
-    }
-    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-      if (req_ready_r[i] || read_req_hold[i].valid) {
-        return false;
-      }
-    }
-    for (int i = 0; i < NUM_WRITE_MASTERS; ++i) {
-      if (w_req_ready_r[i] || write_ports[i].req.ready) {
-        return false;
-      }
-    }
-    return true;
-  };
+  const uint8_t req_mode = requested_mode();
+  const uint32_t req_offset = requested_llc_mapped_offset();
+  const bool requested_diff = requested_config_differs_from_active();
   auto assert_llc_consumed_reads = [&]() {
     if (!llc_enabled()) {
       return;
@@ -1736,14 +1804,21 @@ read_handshake_done:
     }
 
     llc.seq();
-    if (mode_transition_needs_flush() &&
-        llc.io.ext_out.mem.invalidate_all_accepted) {
-      runtime_mode_ = requested_mode();
-      llc_mapped_offset_ = requested_llc_mapped_offset();
-    } else if (!mode_transition_needs_flush() &&
-               requested_mode() != runtime_mode_) {
-      runtime_mode_ = requested_mode();
-      llc_mapped_offset_ = requested_llc_mapped_offset();
+    if (requested_diff) {
+      reconfig_pending_ = true;
+      reconfig_target_mode_ = req_mode;
+      reconfig_target_offset_ = req_offset;
+    } else if (reconfig_pending_) {
+      reconfig_pending_ = false;
+      reconfig_target_mode_ = runtime_mode_;
+      reconfig_target_offset_ = llc_mapped_offset_;
+    }
+    if (reconfig_pending_ && llc.io.ext_out.mem.invalidate_all_accepted) {
+      runtime_mode_ = reconfig_target_mode_;
+      llc_mapped_offset_ = reconfig_target_offset_;
+      reconfig_pending_ = false;
+      reconfig_target_mode_ = runtime_mode_;
+      reconfig_target_offset_ = llc_mapped_offset_;
     }
     assert_llc_consumed_reads();
     return;
@@ -1903,15 +1978,21 @@ read_handshake_done:
   refresh_non_llc_w_active();
 
   llc.seq();
-  if (mode_transition_needs_flush() &&
-      llc.io.ext_out.mem.invalidate_all_accepted &&
-      non_llc_path_quiescent()) {
-    runtime_mode_ = requested_mode();
-    llc_mapped_offset_ = requested_llc_mapped_offset();
-  } else if (!mode_transition_needs_flush() &&
-             requested_mode() != runtime_mode_) {
-    runtime_mode_ = requested_mode();
-    llc_mapped_offset_ = requested_llc_mapped_offset();
+  if (requested_diff) {
+    reconfig_pending_ = true;
+    reconfig_target_mode_ = req_mode;
+    reconfig_target_offset_ = req_offset;
+  } else if (reconfig_pending_) {
+    reconfig_pending_ = false;
+    reconfig_target_mode_ = runtime_mode_;
+    reconfig_target_offset_ = llc_mapped_offset_;
+  }
+  if (reconfig_pending_ && llc.io.ext_out.mem.invalidate_all_accepted) {
+    runtime_mode_ = reconfig_target_mode_;
+    llc_mapped_offset_ = reconfig_target_offset_;
+    reconfig_pending_ = false;
+    reconfig_target_mode_ = runtime_mode_;
+    reconfig_target_offset_ = llc_mapped_offset_;
   }
   assert_llc_consumed_reads();
 }

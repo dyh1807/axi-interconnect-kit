@@ -230,13 +230,18 @@ private:
   void sample_runtime_controls();
   uint8_t requested_mode() const;
   uint32_t requested_llc_mapped_offset() const;
+  bool requested_config_differs_from_active() const;
   bool mode_transition_needs_flush() const;
+  bool mode_transition_invalidate_requested() const;
   bool invalidate_all_requested() const;
   bool request_in_mapped_window(uint32_t addr, uint8_t total_size) const;
   bool request_uses_direct_mapped_llc(uint32_t addr, uint8_t total_size) const;
   uint32_t translate_llc_addr(uint32_t addr, uint8_t total_size) const;
   bool effective_llc_bypass(uint32_t addr, uint8_t total_size,
                             bool upstream_bypass) const;
+  bool non_llc_path_quiescent() const;
+  bool llc_path_quiescent() const;
+  bool reconfig_path_quiescent() const;
 
   AXI_LLCConfig llc_config{};
   AXI_LLC llc{};
@@ -260,6 +265,9 @@ private:
   uint8_t ar_orig_id_c = 0;
   uint8_t runtime_mode_ = 1;
   uint32_t llc_mapped_offset_ = 0;
+  bool reconfig_pending_ = false;
+  uint8_t reconfig_target_mode_ = 1;
+  uint32_t reconfig_target_offset_ = 0;
   static constexpr uint32_t kMappedLlcWindowBytes = 4u << 20;
 };
 
