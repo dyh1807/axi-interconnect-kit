@@ -111,6 +111,23 @@ struct FakeLlcTables {
     }
   }
 
+  static void write_valid_payload(AXI_LLC_Bytes_t &dst, uint32_t way,
+                                  const AXI_LLC_Bytes_t &payload) {
+    const size_t byte_idx = static_cast<size_t>(way >> 3);
+    const uint8_t bit_mask = static_cast<uint8_t>(1u << (way & 0x7u));
+    if (byte_idx >= dst.size()) {
+      return;
+    }
+    const bool set_valid =
+        byte_idx < payload.size() &&
+        ((payload.data()[byte_idx] & bit_mask) != 0);
+    if (set_valid) {
+      dst.data()[byte_idx] = static_cast<uint8_t>(dst.data()[byte_idx] | bit_mask);
+    } else {
+      dst.data()[byte_idx] = static_cast<uint8_t>(dst.data()[byte_idx] & ~bit_mask);
+    }
+  }
+
   void seq(const AXI_LLC_TableOut_t &table_out) {
     pending_data = pending_meta = pending_valid = pending_repl = false;
 
@@ -139,8 +156,8 @@ struct FakeLlcTables {
     }
 
     if (table_out.valid.write && table_out.valid.index < valid_sets.size()) {
-      write_plain_payload(valid_sets[table_out.valid.index], table_out.valid.payload,
-                          table_out.valid.byte_enable);
+      write_valid_payload(valid_sets[table_out.valid.index], table_out.valid.way,
+                          table_out.valid.payload);
     } else if (table_out.valid.enable && table_out.valid.index < valid_sets.size()) {
       pending_valid = true;
       pending_valid_index = table_out.valid.index;

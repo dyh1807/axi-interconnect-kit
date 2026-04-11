@@ -1098,8 +1098,7 @@ bool AXI_LLC::line_has_valid_meta(const AXI_LLC_Bytes_t &valid_payload,
   }
   for (uint32_t way = 0; way < config_.ways; ++way) {
     const auto meta = decode_meta(meta_payload, way);
-    const bool valid_shadow = (meta.flags & AXI_LLC_META_VALID) != 0;
-    const bool valid = decode_valid_bit(valid_payload, way, valid_shadow);
+    const bool valid = decode_valid_bit(valid_payload, way, false);
     if (!valid && *first_invalid_way < 0) {
       *first_invalid_way = static_cast<int>(way);
     }
@@ -1268,6 +1267,7 @@ void AXI_LLC::drive_write_path() {
     io.table_out.valid.enable = true;
     io.table_out.valid.write = true;
     io.table_out.valid.index = ctx.set;
+    io.table_out.valid.way = ctx.way;
     encode_valid_bit_payload(config_.ways, ctx.way, true, io.table_out.valid.payload,
                              io.table_out.valid.byte_enable);
 
@@ -1836,6 +1836,7 @@ bool AXI_LLC::try_complete_lookup() {
         io.table_out.valid.enable = true;
         io.table_out.valid.write = true;
         io.table_out.valid.index = direct_set;
+        io.table_out.valid.way = direct_way;
         encode_valid_bit_payload(config_.ways, direct_way, true,
                                  io.table_out.valid.payload,
                                  io.table_out.valid.byte_enable);
@@ -1957,6 +1958,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.table_out.valid.enable = true;
       io.table_out.valid.write = true;
       io.table_out.valid.index = set;
+      io.table_out.valid.way = static_cast<uint32_t>(hit_way);
       encode_valid_bit_payload(config_.ways, static_cast<uint32_t>(hit_way), true,
                                io.table_out.valid.payload,
                                io.table_out.valid.byte_enable);
@@ -1995,6 +1997,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.table_out.valid.enable = true;
       io.table_out.valid.write = true;
       io.table_out.valid.index = set;
+      io.table_out.valid.way = static_cast<uint32_t>(hit_way);
       encode_valid_bit_payload(config_.ways, static_cast<uint32_t>(hit_way), false,
                                io.table_out.valid.payload,
                                io.table_out.valid.byte_enable);
@@ -2170,8 +2173,7 @@ bool AXI_LLC::try_complete_lookup() {
     const auto victim_meta =
         decode_meta(io.lookup_in.meta, static_cast<uint32_t>(victim_way));
     const bool victim_valid =
-        decode_valid_bit(io.lookup_in.valid, victim_way,
-                         (victim_meta.flags & AXI_LLC_META_VALID) != 0);
+        decode_valid_bit(io.lookup_in.valid, victim_way, false);
     const bool victim_dirty = victim_valid &&
                               ((victim_meta.flags & AXI_LLC_META_DIRTY) != 0);
     const bool full_line_write =
@@ -2309,6 +2311,7 @@ bool AXI_LLC::try_complete_lookup() {
       io.table_out.valid.enable = true;
       io.table_out.valid.write = true;
       io.table_out.valid.index = set;
+      io.table_out.valid.way = victim_way;
       encode_valid_bit_payload(config_.ways, victim_way, true,
                                io.table_out.valid.payload,
                                io.table_out.valid.byte_enable);
@@ -2464,8 +2467,7 @@ bool AXI_LLC::try_complete_lookup() {
   const auto victim_meta =
       decode_meta(io.lookup_in.meta, static_cast<uint32_t>(victim_way));
   const bool victim_valid =
-      decode_valid_bit(io.lookup_in.valid, victim_way,
-                       (victim_meta.flags & AXI_LLC_META_VALID) != 0);
+      decode_valid_bit(io.lookup_in.valid, victim_way, false);
   entry.victim_dirty =
       victim_valid && ((victim_meta.flags & AXI_LLC_META_DIRTY) != 0);
   entry.victim_writeback_done = !entry.victim_dirty;
@@ -2786,6 +2788,7 @@ void AXI_LLC::drive_mem_read_path() {
     io.table_out.valid.enable = true;
     io.table_out.valid.write = true;
     io.table_out.valid.index = entry.set;
+    io.table_out.valid.way = entry.way;
     encode_valid_bit_payload(config_.ways, entry.way, true,
                              io.table_out.valid.payload,
                              io.table_out.valid.byte_enable);
