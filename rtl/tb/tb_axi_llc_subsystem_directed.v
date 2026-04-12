@@ -104,9 +104,19 @@ module tb_axi_llc_subsystem_directed;
     task wait_idle_mode;
         input [1:0] expect_mode;
         input [31:0] expect_offset;
+        integer guard;
         begin
-            while (reconfig_busy) begin
+            guard = 0;
+            while ((active_mode !== expect_mode) ||
+                   (active_offset !== expect_offset) ||
+                   reconfig_busy) begin
                 @(posedge clk);
+                guard = guard + 1;
+                if (guard > 128) begin
+                    $display("tb_axi_llc_subsystem_directed FAIL: timeout waiting mode=%0d offset=%h active_mode=%0d active_offset=%h busy=%b",
+                             expect_mode, expect_offset, active_mode, active_offset, reconfig_busy);
+                    $finish;
+                end
             end
             @(posedge clk);
             if (active_mode !== expect_mode || active_offset !== expect_offset) begin

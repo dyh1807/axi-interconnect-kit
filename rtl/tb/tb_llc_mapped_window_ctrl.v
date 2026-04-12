@@ -52,7 +52,6 @@ module tb_llc_mapped_window_ctrl;
         input [63:0] got;
         input [63:0] expected;
         begin
-            #1;
             if (got !== expected) begin
                 $display("tb_llc_mapped_window_ctrl FAIL: expected=%h got=%h", expected, got);
                 $finish;
@@ -79,15 +78,18 @@ module tb_llc_mapped_window_ctrl;
             $finish;
         end
 
+        #1;
         expect64(read_line_out, 64'h0000_0000_0000_0000);
 
         write_strb_in = 8'b0000_0011;
         write_data_in = 64'h0000_0000_0000_BBAA;
+        #1;
         expect64(merged_line_out, 64'h0000_0000_0000_BBAA);
 
         line_valid_in = 1'b1;
         write_strb_in = 8'b0000_0011;
         write_data_in = 64'h0000_0000_0000_BBAA;
+        #1;
         expect64(read_line_out, 64'h1122_3344_5566_7788);
         expect64(merged_line_out, 64'h1122_3344_5566_BBAA);
 

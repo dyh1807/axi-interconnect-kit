@@ -39,6 +39,22 @@ module tb_axi_reconfig_ctrl;
 
     always #5 clk = ~clk;
 
+    task wait_state;
+        input [1:0] expect_state;
+        integer guard;
+        begin
+            guard = 0;
+            while (state !== expect_state) begin
+                @(posedge clk);
+                guard = guard + 1;
+                if (guard > 32) begin
+                    $display("tb_axi_reconfig_ctrl FAIL: timeout waiting state=%0d current=%0d", expect_state, state);
+                    $finish;
+                end
+            end
+        end
+    endtask
+
     initial begin
         clk              = 1'b0;
         rst_n            = 1'b0;
@@ -55,7 +71,7 @@ module tb_axi_reconfig_ctrl;
         req_mode   <= 2'b10;
         req_offset <= 32'h0000_1000;
 
-        @(posedge clk);
+        wait_state(2'b01);
         if (state !== 2'b01 || !block_accepts || !busy) begin
             $display("tb_axi_reconfig_ctrl FAIL: expected DRAIN");
             $finish;
@@ -65,6 +81,7 @@ module tb_axi_reconfig_ctrl;
         req_offset <= 32'h0000_2000;
 
         @(posedge clk);
+        #1;
         if (target_mode !== 2'b01 || target_offset !== 32'h0000_2000) begin
             $display("tb_axi_reconfig_ctrl FAIL: target did not converge in DRAIN");
             $finish;
@@ -73,12 +90,15 @@ module tb_axi_reconfig_ctrl;
         global_quiescent <= 1'b1;
         @(posedge clk);
         global_quiescent <= 1'b0;
+        wait_state(2'b10);
         if (state !== 2'b10) begin
             $display("tb_axi_reconfig_ctrl FAIL: expected INV_SWEEP");
             $finish;
         end
 
-        @(posedge clk);
+        while (!sweep_start) begin
+            @(posedge clk);
+        end
         if (!sweep_start) begin
             $display("tb_axi_reconfig_ctrl FAIL: expected sweep_start pulse");
             $finish;
@@ -91,12 +111,13 @@ module tb_axi_reconfig_ctrl;
 
         @(posedge clk);
         sweep_done <= 1'b0;
+        wait_state(2'b11);
         if (state !== 2'b11) begin
             $display("tb_axi_reconfig_ctrl FAIL: expected ACTIVATE");
             $finish;
         end
 
-        @(posedge clk);
+        wait_state(2'b00);
         if (state !== 2'b00 || active_mode !== 2'b01 || active_offset !== 32'h0000_2000) begin
             $display("tb_axi_reconfig_ctrl FAIL: activate result mismatch");
             $finish;
