@@ -14,6 +14,7 @@ module llc_mapped_window_ctrl #(
     parameter WINDOW_WAYS      = `AXI_LLC_WINDOW_WAYS
 ) (
     input      [ADDR_BITS-1:0]  req_addr,
+    input      [7:0]            req_total_size,
     input      [ADDR_BITS-1:0]  window_offset,
     input      [WAY_COUNT*LINE_BITS-1:0] row_data_in,
     input      [WAY_COUNT-1:0]           valid_bits_in,
@@ -31,10 +32,10 @@ module llc_mapped_window_ctrl #(
     output reg                  next_valid_bit_out
 );
 
-    localparam integer LLC_SIZE_BYTES = SET_COUNT * WAY_COUNT * LINE_BYTES;
     localparam [ADDR_BITS-1:0] WINDOW_BYTES_C = WINDOW_BYTES;
 
     reg [SET_BITS + WAY_BITS - 1:0] line_idx;
+    reg [ADDR_BITS:0] req_end;
     integer byte_idx;
 
     always @(*) begin
@@ -42,9 +43,11 @@ module llc_mapped_window_ctrl #(
 
         if (req_addr >= window_offset) begin
             local_addr = req_addr - window_offset;
-            in_window  = ((req_addr - window_offset) < WINDOW_BYTES_C);
+            req_end = {1'b0, (req_addr - window_offset)} + { {(ADDR_BITS-7){1'b0}}, req_total_size } + 1'b1;
+            in_window  = (req_end <= {1'b0, WINDOW_BYTES_C});
         end else begin
             local_addr = {ADDR_BITS{1'b0}};
+            req_end = {(ADDR_BITS+1){1'b0}};
             in_window  = 1'b0;
         end
 

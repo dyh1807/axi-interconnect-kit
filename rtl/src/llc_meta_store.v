@@ -2,18 +2,19 @@
 `include "axi_llc_params.vh"
 
 module llc_meta_store #(
-    parameter SET_COUNT = `AXI_LLC_SET_COUNT,
-    parameter SET_BITS  = `AXI_LLC_SET_BITS,
-    parameter WAY_COUNT = `AXI_LLC_WAY_COUNT,
-    parameter META_BITS = `AXI_LLC_META_BITS,
-    parameter ROW_BITS  = WAY_COUNT * META_BITS
+    parameter SET_COUNT  = `AXI_LLC_SET_COUNT,
+    parameter SET_BITS   = `AXI_LLC_SET_BITS,
+    parameter WAY_COUNT  = `AXI_LLC_WAY_COUNT,
+    parameter META_BITS  = `AXI_LLC_META_BITS,
+    parameter ROW_BITS   = WAY_COUNT * META_BITS,
+    parameter USE_SMIC12 = 0
 ) (
     input                         clk,
     input                         rst_n,
     input                         rd_en,
     input      [SET_BITS-1:0]     rd_set,
-    output reg                    rd_valid,
-    output reg [ROW_BITS-1:0]     rd_row,
+    output                        rd_valid,
+    output     [ROW_BITS-1:0]     rd_row,
     input                         wr_en,
     input      [SET_BITS-1:0]     wr_set,
     input      [WAY_COUNT-1:0]    wr_way_mask,
@@ -21,46 +22,52 @@ module llc_meta_store #(
     output                        busy
 );
 
-    reg [ROW_BITS-1:0] row_mem [0:SET_COUNT-1];
-    reg                write_busy_r;
-    reg [SET_BITS-1:0] wr_set_r;
-    reg [WAY_COUNT-1:0] wr_way_mask_r;
-    reg [ROW_BITS-1:0] wr_row_r;
-    integer way_idx;
-
-    assign busy = write_busy_r;
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            rd_valid      <= 1'b0;
-            rd_row        <= {ROW_BITS{1'b0}};
-            write_busy_r  <= 1'b0;
-            wr_set_r      <= {SET_BITS{1'b0}};
-            wr_way_mask_r <= {WAY_COUNT{1'b0}};
-            wr_row_r      <= {ROW_BITS{1'b0}};
-        end else begin
-            rd_valid <= 1'b0;
-
-            if (!write_busy_r) begin
-                if (rd_en && !wr_en) begin
-                    rd_valid <= 1'b1;
-                    rd_row   <= row_mem[rd_set];
-                end else if (wr_en) begin
-                    write_busy_r  <= 1'b1;
-                    wr_set_r      <= wr_set;
-                    wr_way_mask_r <= wr_way_mask;
-                    wr_row_r      <= wr_row;
-                end
-            end else begin
-                write_busy_r <= 1'b0;
-                for (way_idx = 0; way_idx < WAY_COUNT; way_idx = way_idx + 1) begin
-                    if (wr_way_mask_r[way_idx]) begin
-                        row_mem[wr_set_r][(way_idx * META_BITS) +: META_BITS] <=
-                            wr_row_r[(way_idx * META_BITS) +: META_BITS];
-                    end
-                end
-            end
+    generate
+        if (USE_SMIC12 &&
+            (SET_COUNT == 8192) &&
+            (SET_BITS == 13) &&
+            (WAY_COUNT == 16) &&
+            (ROW_BITS == (WAY_COUNT * META_BITS))) begin : gen_smic12
+            llc_meta_store_smic12 #(
+                .SET_COUNT (SET_COUNT),
+                .SET_BITS  (SET_BITS),
+                .WAY_COUNT (WAY_COUNT),
+                .META_BITS (META_BITS),
+                .ROW_BITS  (ROW_BITS)
+            ) u_impl (
+                .clk         (clk),
+                .rst_n       (rst_n),
+                .rd_en       (rd_en),
+                .rd_set      (rd_set),
+                .rd_valid    (rd_valid),
+                .rd_row      (rd_row),
+                .wr_en       (wr_en),
+                .wr_set      (wr_set),
+                .wr_way_mask (wr_way_mask),
+                .wr_row      (wr_row),
+                .busy        (busy)
+            );
+        end else begin : gen_generic
+            llc_meta_store_generic #(
+                .SET_COUNT (SET_COUNT),
+                .SET_BITS  (SET_BITS),
+                .WAY_COUNT (WAY_COUNT),
+                .META_BITS (META_BITS),
+                .ROW_BITS  (ROW_BITS)
+            ) u_impl (
+                .clk         (clk),
+                .rst_n       (rst_n),
+                .rd_en       (rd_en),
+                .rd_set      (rd_set),
+                .rd_valid    (rd_valid),
+                .rd_row      (rd_row),
+                .wr_en       (wr_en),
+                .wr_set      (wr_set),
+                .wr_way_mask (wr_way_mask),
+                .wr_row      (wr_row),
+                .busy        (busy)
+            );
         end
-    end
+    endgenerate
 
 endmodule
