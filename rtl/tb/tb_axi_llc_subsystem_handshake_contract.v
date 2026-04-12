@@ -10,6 +10,7 @@ module tb_axi_llc_subsystem_handshake_contract;
     wire        up_req_ready;
     reg         up_req_write;
     reg  [31:0] up_req_addr;
+    reg  [7:0]  up_req_total_size;
     reg  [63:0] up_req_wdata;
     reg  [7:0]  up_req_wstrb;
     reg         up_req_bypass;
@@ -20,6 +21,7 @@ module tb_axi_llc_subsystem_handshake_contract;
     reg         cache_req_ready;
     wire        cache_req_write;
     wire [31:0] cache_req_addr;
+    wire [7:0]  cache_req_size;
     wire [63:0] cache_req_wdata;
     wire [7:0]  cache_req_wstrb;
     reg         cache_resp_valid;
@@ -29,6 +31,7 @@ module tb_axi_llc_subsystem_handshake_contract;
     reg         bypass_req_ready;
     wire        bypass_req_write;
     wire [31:0] bypass_req_addr;
+    wire [7:0]  bypass_req_size;
     wire [63:0] bypass_req_wdata;
     wire [7:0]  bypass_req_wstrb;
     reg         bypass_resp_valid;
@@ -39,6 +42,11 @@ module tb_axi_llc_subsystem_handshake_contract;
     wire        reconfig_busy;
     wire [1:0]  reconfig_state;
     wire        config_error;
+    reg         invalidate_line_valid;
+    reg  [31:0] invalidate_line_addr;
+    wire        invalidate_line_accepted;
+    reg         invalidate_all_valid;
+    wire        invalidate_all_accepted;
 
     integer cache_req_count;
     integer bypass_req_count;
@@ -76,6 +84,7 @@ module tb_axi_llc_subsystem_handshake_contract;
         .up_req_ready          (up_req_ready),
         .up_req_write          (up_req_write),
         .up_req_addr           (up_req_addr),
+        .up_req_total_size     (up_req_total_size),
         .up_req_wdata          (up_req_wdata),
         .up_req_wstrb          (up_req_wstrb),
         .up_req_bypass         (up_req_bypass),
@@ -86,6 +95,7 @@ module tb_axi_llc_subsystem_handshake_contract;
         .cache_req_ready       (cache_req_ready),
         .cache_req_write       (cache_req_write),
         .cache_req_addr        (cache_req_addr),
+        .cache_req_size        (cache_req_size),
         .cache_req_wdata       (cache_req_wdata),
         .cache_req_wstrb       (cache_req_wstrb),
         .cache_resp_valid      (cache_resp_valid),
@@ -95,11 +105,17 @@ module tb_axi_llc_subsystem_handshake_contract;
         .bypass_req_ready      (bypass_req_ready),
         .bypass_req_write      (bypass_req_write),
         .bypass_req_addr       (bypass_req_addr),
+        .bypass_req_size       (bypass_req_size),
         .bypass_req_wdata      (bypass_req_wdata),
         .bypass_req_wstrb      (bypass_req_wstrb),
         .bypass_resp_valid     (bypass_resp_valid),
         .bypass_resp_ready     (bypass_resp_ready),
         .bypass_resp_rdata     (bypass_resp_rdata),
+        .invalidate_line_valid (invalidate_line_valid),
+        .invalidate_line_addr  (invalidate_line_addr),
+        .invalidate_line_accepted(invalidate_line_accepted),
+        .invalidate_all_valid  (invalidate_all_valid),
+        .invalidate_all_accepted(invalidate_all_accepted),
         .active_mode           (active_mode),
         .active_offset         (active_offset),
         .reconfig_busy         (reconfig_busy),
@@ -144,6 +160,7 @@ module tb_axi_llc_subsystem_handshake_contract;
     task drive_request;
         input        is_write;
         input [31:0] addr;
+        input [7:0]  total_size;
         input [63:0] wdata;
         input [7:0]  wstrb;
         input        bypass;
@@ -152,6 +169,7 @@ module tb_axi_llc_subsystem_handshake_contract;
             up_req_valid  <= 1'b1;
             up_req_write  <= is_write;
             up_req_addr   <= addr;
+            up_req_total_size <= total_size;
             up_req_wdata  <= wdata;
             up_req_wstrb  <= wstrb;
             up_req_bypass <= bypass;
@@ -167,12 +185,14 @@ module tb_axi_llc_subsystem_handshake_contract;
 
             @(posedge clk);
             up_req_valid <= 1'b0;
+            up_req_total_size <= 8'd0;
         end
     endtask
 
     task hold_new_request_blocked;
         input        is_write;
         input [31:0] addr;
+        input [7:0]  total_size;
         input [63:0] wdata;
         input [7:0]  wstrb;
         input        bypass;
@@ -182,6 +202,7 @@ module tb_axi_llc_subsystem_handshake_contract;
             up_req_valid  <= 1'b1;
             up_req_write  <= is_write;
             up_req_addr   <= addr;
+            up_req_total_size <= total_size;
             up_req_wdata  <= wdata;
             up_req_wstrb  <= wstrb;
             up_req_bypass <= bypass;
@@ -194,6 +215,7 @@ module tb_axi_llc_subsystem_handshake_contract;
             end
 
             up_req_valid <= 1'b0;
+            up_req_total_size <= 8'd0;
         end
     endtask
 
@@ -448,9 +470,13 @@ module tb_axi_llc_subsystem_handshake_contract;
         up_req_valid          = 1'b0;
         up_req_write          = 1'b0;
         up_req_addr           = 32'h0;
+        up_req_total_size     = 8'd0;
         up_req_wdata          = 64'h0;
         up_req_wstrb          = 8'h0;
         up_req_bypass         = 1'b0;
+        invalidate_line_valid = 1'b0;
+        invalidate_line_addr  = 32'h0;
+        invalidate_all_valid  = 1'b0;
         up_resp_ready         = 1'b1;
         cache_req_ready       = 1'b1;
         cache_resp_valid      = 1'b0;
@@ -472,12 +498,12 @@ module tb_axi_llc_subsystem_handshake_contract;
         cache_before  = cache_req_count;
         bypass_before = bypass_req_count;
         bypass_req_ready <= 1'b0;
-        drive_request(1'b1, 32'h0000_0120, 64'h1122_3344_5566_7788, 8'h3c, 1'b0);
+        drive_request(1'b1, 32'h0000_0120, 8'd7, 64'h1122_3344_5566_7788, 8'h3c, 1'b0);
         wait_for_bypass_valid(32'h0000_0120, 1'b1,
                               64'h1122_3344_5566_7788, 8'h3c);
         hold_bypass_wait(32'h0000_0120, 1'b1,
                          64'h1122_3344_5566_7788, 8'h3c, 2);
-        hold_new_request_blocked(1'b0, 32'h0000_0130, 64'h0, 8'h00, 1'b0, 2);
+        hold_new_request_blocked(1'b0, 32'h0000_0130, 8'd7, 64'h0, 8'h00, 1'b0, 2);
 
         bypass_req_ready <= 1'b1;
         @(posedge clk);
@@ -508,7 +534,7 @@ module tb_axi_llc_subsystem_handshake_contract;
         cache_before  = cache_req_count;
         bypass_before = bypass_req_count;
         bypass_req_ready <= 1'b0;
-        drive_request(1'b1, 32'h0000_0188, 64'hABCD_EF01_0203_0405, 8'hf0, 1'b1);
+        drive_request(1'b1, 32'h0000_0188, 8'd7, 64'hABCD_EF01_0203_0405, 8'hf0, 1'b1);
         wait_for_bypass_valid(32'h0000_0188, 1'b1,
                               64'hABCD_EF01_0203_0405, 8'hf0);
         hold_bypass_wait(32'h0000_0188, 1'b1,
@@ -531,10 +557,10 @@ module tb_axi_llc_subsystem_handshake_contract;
         cache_before  = cache_req_count;
         bypass_before = bypass_req_count;
         cache_req_ready <= 1'b0;
-        drive_request(1'b0, 32'h0000_002c, 64'h0, 8'h00, 1'b0);
+        drive_request(1'b0, 32'h0000_002c, 8'd7, 64'h0, 8'h00, 1'b0);
         wait_for_cache_valid(32'h0000_0028, 1'b0);
         hold_cache_wait(32'h0000_0028, 1'b0, 2);
-        hold_new_request_blocked(1'b0, 32'h0000_0034, 64'h0, 8'h00, 1'b0, 2);
+        hold_new_request_blocked(1'b0, 32'h0000_0034, 8'd7, 64'h0, 8'h00, 1'b0, 2);
 
         cache_req_ready <= 1'b1;
         @(posedge clk);

@@ -37,6 +37,7 @@
 ### `tb_llc_mapped_window_ctrl.v`
 
 - window 内地址翻译
+- `addr + total_size` 整体判窗
 - direct set/way 计算
 - invalid read 返回 0
 - valid read 返回 resident line
@@ -94,10 +95,45 @@
 - partial write miss 先 refill 再 merge
 - dirty victim writeback + refill
 
+### `tb_axi_llc_subsystem_invalidate_line_contract.v`
+
+覆盖：
+
+- `mode=1` invalidate_line 后同地址重新 miss
+- `mode=2` invalidate_line 为 no-op，同地址 direct-window resident data 保持可见
+- LLC_OFF / window 外 no-op accept
+
+### `tb_axi_llc_subsystem_size_contract.v`
+
+覆盖：
+
+- mode2 只有整体落窗才 direct
+- 跨窗请求走 bypass
+- `bypass_req_size` 透传
+- `cache_req_size` 对 cache miss 为 line_bytes-1
+
+### `tb_axi_llc_subsystem_invalidate_all_contract.v`
+
+覆盖：
+
+- mode1 下外部 `invalidate_all` 握手后先 drain / dirty flush，再做 valid sweep
+- mode1 invalidate 后同地址重新 miss
+- mode2 下外部 `invalidate_all` 后 direct-window resident data 不再可见
+- mode 切换与 `invalidate_all` 同时出现时只做一轮维护流程
+
+### `tb_llc_smic12_store_contract.v`
+
+覆盖：
+
+- `USE_SMIC12=1` 下 data/meta shared store 的读写往返
+- 默认通用数组实现与 SMIC12 宏封装实现的接口合同一致
+- 显式带入外部 `.mv` 的功能仿真 smoke
+
 ## 当前限制
 
 - 当前 bench 仍以 directed contract 为主，`ready/valid` 背压与 mode1 cache 细节需要独立 bench 继续补强。
-- 还没有覆盖与 C++ 原型完全对齐的接口字段。
+- 新增的 `invalidate_all` 与 SMIC12 宏封装路径正在补独立 bench。
+- 还没有覆盖与 C++ 原型完全对齐的多 master / `id` 接口字段。
 - 当前已在 `eda-10` 上确认 VCS 可用，并实际跑通：
   - `tb_llc_data_store`
   - `tb_llc_meta_store`
@@ -109,3 +145,7 @@
   - `tb_axi_llc_subsystem_handshake_contract`
   - `tb_axi_llc_subsystem_mode_contract`
   - `tb_axi_llc_subsystem_cache_contract`
+  - `tb_axi_llc_subsystem_invalidate_line_contract`
+  - `tb_axi_llc_subsystem_size_contract`
+  - `tb_axi_llc_subsystem_invalidate_all_contract`
+  - `tb_llc_smic12_store_contract`

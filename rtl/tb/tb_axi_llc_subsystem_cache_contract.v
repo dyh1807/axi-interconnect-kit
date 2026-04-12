@@ -31,6 +31,7 @@ module tb_axi_llc_subsystem_cache_contract;
     wire                      up_req_ready;
     reg                       up_req_write;
     reg  [ADDR_BITS-1:0]      up_req_addr;
+    reg  [7:0]                up_req_total_size;
     reg  [LINE_BITS-1:0]      up_req_wdata;
     reg  [LINE_BYTES-1:0]     up_req_wstrb;
     reg                       up_req_bypass;
@@ -41,6 +42,7 @@ module tb_axi_llc_subsystem_cache_contract;
     reg                       cache_req_ready;
     wire                      cache_req_write;
     wire [ADDR_BITS-1:0]      cache_req_addr;
+    wire [7:0]                cache_req_size;
     wire [LINE_BITS-1:0]      cache_req_wdata;
     wire [LINE_BYTES-1:0]     cache_req_wstrb;
     reg                       cache_resp_valid;
@@ -50,6 +52,7 @@ module tb_axi_llc_subsystem_cache_contract;
     reg                       bypass_req_ready;
     wire                      bypass_req_write;
     wire [ADDR_BITS-1:0]      bypass_req_addr;
+    wire [7:0]                bypass_req_size;
     wire [LINE_BITS-1:0]      bypass_req_wdata;
     wire [LINE_BYTES-1:0]     bypass_req_wstrb;
     reg                       bypass_resp_valid;
@@ -60,6 +63,11 @@ module tb_axi_llc_subsystem_cache_contract;
     wire                      reconfig_busy;
     wire [1:0]                reconfig_state;
     wire                      config_error;
+    reg                       invalidate_line_valid;
+    reg  [ADDR_BITS-1:0]      invalidate_line_addr;
+    wire                      invalidate_line_accepted;
+    reg                       invalidate_all_valid;
+    wire                      invalidate_all_accepted;
 
     reg  [LINE_BITS-1:0]      mem_model [0:MEM_DEPTH-1];
     reg                       mem_resp_pending_r;
@@ -156,12 +164,14 @@ module tb_axi_llc_subsystem_cache_contract;
     task issue_request;
         input                      write_value;
         input [ADDR_BITS-1:0]      addr_value;
+        input [7:0]                total_size_value;
         input [LINE_BITS-1:0]      wdata_value;
         input [LINE_BYTES-1:0]     wstrb_value;
         integer timeout;
         begin
             up_req_write  = write_value;
             up_req_addr   = addr_value;
+            up_req_total_size = total_size_value;
             up_req_wdata  = wdata_value;
             up_req_wstrb  = wstrb_value;
             up_req_bypass = 1'b0;
@@ -182,6 +192,7 @@ module tb_axi_llc_subsystem_cache_contract;
             up_req_valid = 1'b0;
             up_req_write = 1'b0;
             up_req_addr  = {ADDR_BITS{1'b0}};
+            up_req_total_size = 8'd0;
             up_req_wdata = {LINE_BITS{1'b0}};
             up_req_wstrb = {LINE_BYTES{1'b0}};
         end
@@ -297,6 +308,7 @@ module tb_axi_llc_subsystem_cache_contract;
         .up_req_ready          (up_req_ready),
         .up_req_write          (up_req_write),
         .up_req_addr           (up_req_addr),
+        .up_req_total_size     (up_req_total_size),
         .up_req_wdata          (up_req_wdata),
         .up_req_wstrb          (up_req_wstrb),
         .up_req_bypass         (up_req_bypass),
@@ -307,6 +319,7 @@ module tb_axi_llc_subsystem_cache_contract;
         .cache_req_ready       (cache_req_ready),
         .cache_req_write       (cache_req_write),
         .cache_req_addr        (cache_req_addr),
+        .cache_req_size        (cache_req_size),
         .cache_req_wdata       (cache_req_wdata),
         .cache_req_wstrb       (cache_req_wstrb),
         .cache_resp_valid      (cache_resp_valid),
@@ -316,11 +329,17 @@ module tb_axi_llc_subsystem_cache_contract;
         .bypass_req_ready      (bypass_req_ready),
         .bypass_req_write      (bypass_req_write),
         .bypass_req_addr       (bypass_req_addr),
+        .bypass_req_size       (bypass_req_size),
         .bypass_req_wdata      (bypass_req_wdata),
         .bypass_req_wstrb      (bypass_req_wstrb),
         .bypass_resp_valid     (bypass_resp_valid),
         .bypass_resp_ready     (bypass_resp_ready),
         .bypass_resp_rdata     (bypass_resp_rdata),
+        .invalidate_line_valid (invalidate_line_valid),
+        .invalidate_line_addr  (invalidate_line_addr),
+        .invalidate_line_accepted(invalidate_line_accepted),
+        .invalidate_all_valid  (invalidate_all_valid),
+        .invalidate_all_accepted(invalidate_all_accepted),
         .active_mode           (active_mode),
         .active_offset         (active_offset),
         .reconfig_busy         (reconfig_busy),
@@ -336,9 +355,13 @@ module tb_axi_llc_subsystem_cache_contract;
         up_req_valid = 1'b0;
         up_req_write = 1'b0;
         up_req_addr = {ADDR_BITS{1'b0}};
+        up_req_total_size = 8'd0;
         up_req_wdata = {LINE_BITS{1'b0}};
         up_req_wstrb = {LINE_BYTES{1'b0}};
         up_req_bypass = 1'b0;
+        invalidate_line_valid = 1'b0;
+        invalidate_line_addr = {ADDR_BITS{1'b0}};
+        invalidate_all_valid = 1'b0;
         up_resp_ready = 1'b1;
         cache_req_ready = 1'b1;
         cache_resp_valid = 1'b0;
@@ -385,7 +408,7 @@ module tb_axi_llc_subsystem_cache_contract;
         log_base = req_log_count;
         read_base = mem_read_count;
         write_base = mem_write_count;
-        issue_request(1'b0, ADDR_A, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
+        issue_request(1'b0, ADDR_A, LINE_BYTES-1, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
         expect_read_response(line_a_init, "read miss refill response mismatch");
         if (req_log_count != (log_base + 1)) begin
             fail("read miss should emit exactly one external request");
@@ -408,7 +431,7 @@ module tb_axi_llc_subsystem_cache_contract;
         log_base = req_log_count;
         read_base = mem_read_count;
         write_base = mem_write_count;
-        issue_request(1'b0, ADDR_A, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
+        issue_request(1'b0, ADDR_A, LINE_BYTES-1, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
         expect_read_response(line_a_init, "second read hit response mismatch");
         if (req_log_count != log_base) begin
             fail("second read hit should not emit external request");
@@ -422,7 +445,7 @@ module tb_axi_llc_subsystem_cache_contract;
         log_base = req_log_count;
         read_base = mem_read_count;
         write_base = mem_write_count;
-        issue_request(1'b1, ADDR_A, make_line(8'hA0), strb_hit);
+        issue_request(1'b1, ADDR_A, LINE_BYTES-1, make_line(8'hA0), strb_hit);
         expect_write_response_zero("write hit response should be zero");
         if (req_log_count != log_base) begin
             fail("write hit should not emit external request");
@@ -434,7 +457,7 @@ module tb_axi_llc_subsystem_cache_contract;
         step_id = 4;
         $display("STEP 4 read back write-hit data");
         log_base = req_log_count;
-        issue_request(1'b0, ADDR_A, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
+        issue_request(1'b0, ADDR_A, LINE_BYTES-1, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
         expect_read_response(line_a_after_hit_write, "write hit data not resident");
         if (req_log_count != log_base) begin
             fail("post write-hit read should stay resident");
@@ -445,7 +468,7 @@ module tb_axi_llc_subsystem_cache_contract;
         log_base = req_log_count;
         read_base = mem_read_count;
         write_base = mem_write_count;
-        issue_request(1'b1, ADDR_B, line_b_write, {LINE_BYTES{1'b1}});
+        issue_request(1'b1, ADDR_B, LINE_BYTES-1, line_b_write, {LINE_BYTES{1'b1}});
         expect_write_response_zero("full-line write miss response should be zero");
         if (req_log_count != log_base) begin
             fail("full-line write miss should install without external refill");
@@ -457,7 +480,7 @@ module tb_axi_llc_subsystem_cache_contract;
         step_id = 6;
         $display("STEP 6 read back full-line write miss");
         log_base = req_log_count;
-        issue_request(1'b0, ADDR_B, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
+        issue_request(1'b0, ADDR_B, LINE_BYTES-1, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
         expect_read_response(line_b_write, "full-line write miss line not resident");
         if (req_log_count != log_base) begin
             fail("read after full-line write miss should be resident");
@@ -468,7 +491,7 @@ module tb_axi_llc_subsystem_cache_contract;
         log_base = req_log_count;
         read_base = mem_read_count;
         write_base = mem_write_count;
-        issue_request(1'b1, ADDR_E, line_e_write_patch, strb_partial_miss);
+        issue_request(1'b1, ADDR_E, 8'd3, line_e_write_patch, strb_partial_miss);
         expect_write_response_zero("partial write miss response should be zero");
         if (req_log_count != (log_base + 1)) begin
             fail("partial write miss should emit exactly one refill read");
@@ -489,7 +512,7 @@ module tb_axi_llc_subsystem_cache_contract;
         step_id = 8;
         $display("STEP 8 read back partial write miss");
         log_base = req_log_count;
-        issue_request(1'b0, ADDR_E, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
+        issue_request(1'b0, ADDR_E, LINE_BYTES-1, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
         expect_read_response(line_e_after_partial_miss,
                              "partial write miss merged data mismatch");
         if (req_log_count != log_base) begin
@@ -501,7 +524,7 @@ module tb_axi_llc_subsystem_cache_contract;
         log_base = req_log_count;
         read_base = mem_read_count;
         write_base = mem_write_count;
-        issue_request(1'b0, ADDR_C, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
+        issue_request(1'b0, ADDR_C, LINE_BYTES-1, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
         expect_read_response(line_c_init, "dirty victim refill response mismatch");
         if (req_log_count != (log_base + 2)) begin
             fail("dirty victim path should emit writeback then refill");

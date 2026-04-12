@@ -23,6 +23,10 @@
 - `tb_axi_llc_subsystem_handshake_contract.v`
 - `tb_axi_llc_subsystem_mode_contract.v`
 - `tb_axi_llc_subsystem_cache_contract.v`
+- `tb_axi_llc_subsystem_invalidate_line_contract.v`
+- `tb_axi_llc_subsystem_size_contract.v`
+- `tb_axi_llc_subsystem_invalidate_all_contract.v`
+- `tb_llc_smic12_store_contract.v`
 
 ## 运行方式
 

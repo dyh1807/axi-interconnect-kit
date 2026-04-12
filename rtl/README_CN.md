@@ -17,13 +17,17 @@
 - `include/axi_llc_params.vh`
   - 第一阶段默认参数
 - `src/axi_reconfig_ctrl.v`
-  - 模式切换控制 FSM
+  - 模式切换 + `invalidate_all` 维护控制 FSM
 - `src/llc_data_store.v`
   - `mode=1/2` 共享的 resident data set-row 存储
-  - 当前行为模型已按同步单端口读语义实现
+  - 当前已支持两种实现：
+    - 默认通用数组实现
+    - `USE_SMIC12_STORES=1` 时的 SMIC12 宏封装实现
 - `src/llc_meta_store.v`
   - 预留给 `mode=1` cache 语义使用的 resident meta set-row 存储
-  - 当前行为模型已按同步单端口读 + 写侧 busy 语义实现
+  - 当前已支持两种实现：
+    - 默认通用数组实现
+    - `USE_SMIC12_STORES=1` 时的 SMIC12 宏封装实现
 - `src/llc_valid_ram.v`
   - 独立 valid bit-array
 - `src/llc_repl_ram.v`
@@ -41,14 +45,16 @@
     - `mode=1` 进入内建 `llc_cache_ctrl`
     - `cache_*` 口现在承载 line-memory miss/refill/writeback
     - `mode=0/3` 与 mode2 窗口外通过 `bypass_*` 口下发
+    - 当前已接入 `up_req_total_size`、`cache_req_size`、`bypass_req_size`
+    - 当前已接入 `invalidate_line` / `invalidate_line_accepted`
+    - 当前已接入 `invalidate_all_valid` / `invalidate_all_accepted`
 
 ## 当前未落地内容
 
 - 与 C++ 子模块边界完全对齐的最终接口
-- 多读/多写 master、`id`、`total_size` 等完整字段
-- `invalidate_line` 维护接口
-- 固定几何的 SMIC12 SRAM wrapper 正式接入
+- 多读/多写 master、`id` 等完整字段
 - 真正面向父仓库的最终 wrapper / 系统级 AXI4 接口对接
+- 带 timing-check 的外部宏模型直连时序隔离
 
 ## 文档
 
@@ -70,6 +76,10 @@
 - `tb/tb_axi_llc_subsystem_handshake_contract.v`
 - `tb/tb_axi_llc_subsystem_mode_contract.v`
 - `tb/tb_axi_llc_subsystem_cache_contract.v`
+- `tb/tb_axi_llc_subsystem_invalidate_line_contract.v`
+- `tb/tb_axi_llc_subsystem_size_contract.v`
+- `tb/tb_axi_llc_subsystem_invalidate_all_contract.v`
+- `tb/tb_llc_smic12_store_contract.v`
 - `flist/*.f`
 
 ## 说明
@@ -80,8 +90,17 @@
 - `valid` 不再放回 `meta`。
 - `mode=1` 与 `mode=2` 共享 `data + valid`；其中 `mode=1` 额外使用 `meta + repl`，
   `mode=2` 只把固定 way-slice 当作 direct-mapped 本地映射窗口使用，不访问 `meta/repl`。
+- `active_offset` 只在目标模式为 `mode=2` 时参与重配置；`mode=0/1/3` 下单独改变
+  offset 不会触发无意义的 sweep。
+- 请求接口当前已经带 `total_size`，并参与 mode2 整体判窗与下游 `*_size` 发射。
 - `data/meta` 当前都采用同步单端口行为模型，因此 `mode=2` 写路径已经改成“先读
   row，再 merge，再写回”的顺序语义。
-- `invalidate_all` 不做 whole-array reset，而是通过 `llc_invalidate_sweep` 顺序清
-  `valid`。
+- `invalidate_all` 当前已经接入顶层，不做 whole-array reset，而是通过
+  `llc_invalidate_sweep` 顺序清 `valid`。
+- `invalidate_line` 当前已经接入：
+  - `mode=1` 通过 `llc_cache_ctrl` 查表并清对应 valid
+  - `mode=0/2/3` 接受为 no-op，不改变 direct-window resident data
+- 共享 `data/meta` 当前支持 `USE_SMIC12_STORES=1` 的宏封装实现；在真实外部宏模型
+  上做功能仿真时，当前建议关闭 timing check（例如 `+notimingcheck`），因为零延迟
+  RTL 直接连接详细 timing model 还会触发 hold 违例。
 - 当前已在 `eda-10 + bash_eda10 + VCS` 跑通 store/mode/reconfig/top-level contract bench。

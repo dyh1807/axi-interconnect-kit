@@ -3,6 +3,7 @@
 module tb_llc_mapped_window_ctrl;
 
     reg  [31:0] req_addr;
+    reg  [7:0]  req_total_size;
     reg  [31:0] window_offset;
     reg  [255:0] row_data_in;
     reg  [3:0]   valid_bits_in;
@@ -33,6 +34,7 @@ module tb_llc_mapped_window_ctrl;
         .WINDOW_WAYS      (2)
     ) dut (
         .req_addr           (req_addr),
+        .req_total_size     (req_total_size),
         .window_offset      (window_offset),
         .row_data_in        (row_data_in),
         .valid_bits_in      (valid_bits_in),
@@ -69,6 +71,7 @@ module tb_llc_mapped_window_ctrl;
         write_strb_in = 8'h00;
         valid_bits_in = 4'b0000;
         req_addr      = 32'h0000_1008;
+        req_total_size = 8'd7;
 
         #1;
         if (!in_window || !offset_aligned || !mapped_way_legal || !next_valid_bit_out || line_valid_out) begin

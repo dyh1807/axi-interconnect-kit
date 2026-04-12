@@ -1,0 +1,3 @@
+-f flist/rtl.f
+-top tb_axi_llc_subsystem_invalidate_all_contract
+tb/tb_axi_llc_subsystem_invalidate_all_contract.v
