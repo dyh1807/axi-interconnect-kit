@@ -1,22 +1,28 @@
 # RTL Testbench 说明
 
-本目录存放第一阶段 RTL 的最小 directed testbench。
+本目录存放当前 RTL 的 directed / contract testbench。
 
-当前目标不是跑完整系统，而是把 GPT-Pro 评审要求优先冻结的语义先独立验证：
+当前目标不是跑完整系统，而是先把已经落地的语义边界独立验证：
 
+- 同步 `data/meta` store 合同
 - `valid` 表掩码更新
+- `invalidate_sweep`
 - mode2 direct-window 地址翻译与 zero-merge
 - reconfiguration FSM
-- 顶层第一阶段 wrapper 的路由与 invalidate 行为
+- 顶层 mode 路由、mode2 可见性、mode 切换失效
 
 ## 当前提供
 
 - `tb_llc_data_store.v`
 - `tb_llc_meta_store.v`
 - `tb_llc_valid_ram.v`
+- `tb_llc_invalidate_sweep.v`
 - `tb_llc_mapped_window_ctrl.v`
 - `tb_axi_reconfig_ctrl.v`
 - `tb_axi_llc_subsystem_directed.v`
+- `tb_axi_llc_subsystem_handshake_contract.v`
+- `tb_axi_llc_subsystem_mode_contract.v`
+- `tb_axi_llc_subsystem_cache_contract.v`
 
 ## 运行方式
 
@@ -33,8 +39,5 @@ vcs -full64 -f flist/tb_axi_reconfig_ctrl.f -o simv_reconfig
 iverilog -f flist/tb_axi_reconfig_ctrl.f -o simv_reconfig
 vvp simv_reconfig
 ```
-
-当前工作机上的 HDL 工具链可用性尚未确认完成，因此这些 testbench 先作为源码与
-filelist 一并进入仓库。
 
 目前已在 `eda-10` 上通过 `bash_eda10 + VCS` 跑通当前这些 testbench。

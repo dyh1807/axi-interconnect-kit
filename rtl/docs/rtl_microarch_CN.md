@@ -1,13 +1,13 @@
-# RTL 微架构说明（第一阶段）
+# RTL 微架构说明（第二阶段进行中）
 
 ## 总体结构
 
 第一阶段 RTL 采用“控制分离、存储共享”的组织方式：
 
 - `mode=1`
-  - 未来进入 `cache` 子路径
-  - 使用共享 `data + valid`
-  - 额外需要 `meta/repl/MSHR/refill`
+  - 进入内建 `llc_cache_ctrl`
+  - 使用共享 `data + meta + valid + repl`
+  - 通过 `cache_*` 口下发 line-memory read/write
 - `mode=2`
   - 进入 direct-mapped 本地 window 子路径
   - 使用同一套共享 `data + valid`
@@ -15,8 +15,7 @@
 - `mode=0/3`
   - 全 bypass
 
-本阶段先把 `mode=2 + reconfig/invalidate` 独立落地，`mode=1` 只保留抽象子路径端
-口，不在当前阶段实现完整 cache 控制器。
+本阶段已经把 `mode=2 + reconfig/invalidate + mode=1 最小 cache 控制` 落地。
 
 ## 模块
 
@@ -43,7 +42,15 @@
 - `valid[set][way]`
 - 单读口 + 单写口
 - 只支持掩码写
-- 不提供 whole-array reset
+- reset 后清零
+
+### `llc_repl_ram`
+
+独立 replacement 表：
+
+- `repl[set] = next victim way`
+- 组合读 + 同步写
+- 当前采用 round-robin next-way 语义
 
 ### `llc_invalidate_sweep`
 
@@ -60,7 +67,11 @@
 - 按 `set-row` 组织
 - 一行包含所有 `way` 的 line 数据
 - `mode=1` 和 `mode=2` 共用
-- 第一阶段先由行为模型实现
+- 当前行为模型采用**同步单端口读**：
+  - `rd_en` 当拍发起
+  - 下一拍 `rd_valid` 返回 `rd_row`
+  - `wr_en` 同步按 `way mask` 更新
+- 这一步是为后续绑定 `1024x128 CM4` 宏阵列做接口对齐
 
 ### `llc_meta_store`
 
@@ -69,7 +80,10 @@
 - 按 `set-row` 组织
 - 当前只为 `mode=1` 预留
 - `mode=2` 明确不访问
-- 第一阶段先由行为模型实现
+- 当前行为模型采用：
+  - 同步单端口读
+  - 写侧 `busy` 语义
+  - 这对应后续宏阵列实现里按 `way` 做 RMW 的最小合同
 
 ### `llc_mapped_window_ctrl`
 
@@ -80,6 +94,20 @@
 - 从共享 `data_store` row 中选择 direct line
 - invalid read 返回 0
 - invalid partial write 以 0 line 做 merge
+- 因为 `data_store` 是同步单端口读，mode2 write 现在必须先读 row，再下一阶段写回
+
+### `llc_cache_ctrl`
+
+当前 `mode=1` 最小 cache 控制器：
+
+- resident lookup 使用 `data/meta/valid/repl`
+- read hit 直接返回 resident line
+- read miss 发起下游 line read，refill 后安装并返回
+- write hit 按 byte mask merge，并置 dirty
+- full-line write miss 直接安装 dirty line
+- partial write miss 先 refill，再 merge 安装 dirty line
+- victim dirty line 先 writeback，再覆盖安装
+- reconfig 期间若存在 dirty resident line，会先顺序 flush 再允许 valid sweep
 
 ## 存储边界
 
@@ -88,11 +116,12 @@
 - `data`
 - `valid`
 
-### 暂缓到 cache path 阶段
+### 当前仍未落地
 
-- `meta`
-- `repl`
-- `MSHR`
+- 与 C++ 原型同等级的多请求并发状态
+- `invalidate_line`
+- `id/total_size` 与更完整的上游/下游接口
+- 固定几何 SRAM wrapper
 
 ## 参数约束
 
@@ -123,10 +152,10 @@
 - `data` 推荐宏：`1024x128 CM4`
 - `meta` 推荐宏：`1024x128 CM4`
 
-第一阶段先把共享存储接口定型成：
+当前先把共享存储接口定型成：
 
-- `data_store`: `set-row` 读 + `way mask` 写
-- `meta_store`: `set-row` 读 + `way mask` 写
+- `data_store`: 同步 `set-row` 读 + `way mask` 写
+- `meta_store`: 同步 `set-row` 读 + `way mask` 写 + 写侧 `busy`
 
 后续再把这两类接口绑定到固定几何的 SMIC12 SRAM 宏阵列。
 

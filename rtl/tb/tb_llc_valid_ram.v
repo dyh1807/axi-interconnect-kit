@@ -3,6 +3,7 @@
 module tb_llc_valid_ram;
 
     reg clk;
+    reg rst_n;
     reg rd_en;
     reg [1:0] rd_set;
     wire [3:0] rd_bits;
@@ -17,6 +18,7 @@ module tb_llc_valid_ram;
         .WAY_COUNT (4)
     ) dut (
         .clk     (clk),
+        .rst_n   (rst_n),
         .rd_en   (rd_en),
         .rd_set  (rd_set),
         .rd_bits (rd_bits),
@@ -41,12 +43,19 @@ module tb_llc_valid_ram;
 
     initial begin
         clk    = 1'b0;
+        rst_n  = 1'b0;
         rd_en  = 1'b1;
         rd_set = 2'b00;
         wr_en  = 1'b0;
         wr_set = 2'b00;
         wr_mask = 4'b0000;
         wr_bits = 4'b0000;
+
+        @(posedge clk);
+        rst_n <= 1'b1;
+
+        @(posedge clk);
+        expect_bits(4'b0000);
 
         @(posedge clk);
         wr_en   <= 1'b1;
