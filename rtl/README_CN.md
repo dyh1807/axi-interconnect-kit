@@ -46,15 +46,20 @@
     - `cache_*` 口现在承载 line-memory miss/refill/writeback
     - `mode=0/3` 与 mode2 窗口外通过 `bypass_*` 口下发
     - 当前已接入 `up_req_total_size`、`cache_req_size`、`bypass_req_size`
+    - 当前已接入单平面 `id`：
+      - `up_req_id / up_resp_id`
+      - `cache_req_id / cache_resp_id`
+      - `bypass_req_id / bypass_resp_id`
     - 当前已接入 `invalidate_line` / `invalidate_line_accepted`
     - 当前已接入 `invalidate_all_valid` / `invalidate_all_accepted`
 
 ## 当前未落地内容
 
 - 与 C++ 子模块边界完全对齐的最终接口
-- 多读/多写 master、`id` 等完整字段
+- 多读/多写 master、与 C++ 一致的更完整 `id` / tag 平面
 - 真正面向父仓库的最终 wrapper / 系统级 AXI4 接口对接
 - 带 timing-check 的外部宏模型直连时序隔离
+- 重新验证后的 prefetch 控制面与预取状态机
 
 ## 文档
 
@@ -100,7 +105,17 @@
 - `invalidate_line` 当前已经接入：
   - `mode=1` 通过 `llc_cache_ctrl` 查表并清对应 valid
   - `mode=0/2/3` 接受为 no-op，不改变 direct-window resident data
+- 当前 `id` 采用单个 `4-bit` 平面：
+  - 直接路径返回捕获的 `up_req_id`
+  - bypass 路径向下传 `bypass_req_id`，响应需带回匹配 id
+  - cache 路径向下传 `cache_req_id`
+  - `mode=1` demand miss 触发的 writeback/refill 继承当前请求 id
+  - reconfig/flush 产生的维护写回固定使用维护 id `0`
 - 共享 `data/meta` 当前支持 `USE_SMIC12_STORES=1` 的宏封装实现；在真实外部宏模型
   上做功能仿真时，当前建议关闭 timing check（例如 `+notimingcheck`），因为零延迟
   RTL 直接连接详细 timing model 还会触发 hold 违例。
+- prefetch 当前仍未进入 RTL：
+  - C++ 原型里已有专门的 prefetch 单测与实现
+  - 但本轮没有在当前分支上完成一次干净、可复现的端到端重验证
+  - 因此 RTL 暂不引入 `prefetch` 状态机，只保留后续重新评估的空间
 - 当前已在 `eda-10 + bash_eda10 + VCS` 跑通 store/mode/reconfig/top-level contract bench。

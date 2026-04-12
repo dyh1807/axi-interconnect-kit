@@ -128,6 +128,12 @@
   - hit 时只清 valid；若该 line 为 dirty，同时更新 dirty 计数
 - `invalidate_all` 通过顶层维护控制面触发，不在 `llc_cache_ctrl` 内单独实现 whole-array
   reset
+- 当前已接入单平面 `id`：
+  - 上游 `req_id`
+  - 上游 `resp_id`
+  - 下游 `mem_req_id / mem_resp_id`
+  - 当前简化语义下，demand miss 触发的 writeback/refill 复用当前请求 id
+  - reconfig/flush 产生的维护写回固定使用维护 id `0`
 
 ## 存储边界
 
@@ -139,8 +145,47 @@
 ### 当前仍未落地
 
 - 与 C++ 原型同等级的多请求并发状态
-- `id` 与更完整的上游/下游接口
+- 与 C++ 原型完全对齐的更完整 `id` / tag / 多 outstanding 语义
 - 带 timing-check 的外部宏模型直连时序隔离
+- 重新验证后的 prefetch 控制面与预取状态机
+
+## `id` 合同
+
+当前 RTL 已有一套可运行的最小 `id` 平面，目的是先冻结接口边界并支撑后续独立
+contract bench：
+
+- `axi_llc_subsystem_top`
+  - `up_req_id / up_resp_id`
+  - `cache_req_id / cache_resp_id`
+  - `bypass_req_id / bypass_resp_id`
+- `mode=2`
+  - direct 路径不向外发请求
+  - 直接把捕获的 `up_req_id` 原样带回 `up_resp_id`
+- `mode=0/3`
+  - bypass 路径把 `up_req_id` 原样下传为 `bypass_req_id`
+  - 只有 `bypass_resp_id` 匹配挂起请求时才接受响应
+- `mode=1`
+  - hit 响应把当前请求 `req_id` 原样带回上游
+  - miss 路径把当前请求 `req_id` 下传为 `cache_req_id`
+  - partial/full miss 期间的 demand writeback/refill 都复用同一请求 id
+  - flush 写回为维护事务，不对应上游请求，固定使用维护 id `0`
+
+这套合同是单 outstanding 简化版，不等价于 C++ 里的完整多 master / MSHR mem-id 语义，
+但已经足够支撑后续独立的 `id contract bench`。
+
+## `prefetch` 状态
+
+当前 RTL 仍不实现 prefetch。原因不是接口难接，而是原型语义还没有重新冻结：
+
+- C++ 原型中确实存在 prefetch 实现与专门测试：
+  - stream prefetch table fill
+  - degree-two queue
+  - demand mem issue preempts prefetch
+- 但这些测试本轮没有在“当前分支 + 当前父仓库依赖”下完成一次干净、可复现的完整重跑
+- 因此本轮只补 `id` 与维护控制，不把 prefetch 状态机直接带进 RTL
+
+后续若要继续推进 prefetch，建议先单独完成 C++ 原型重验证，再决定 RTL 只补
+`prefetch_allow` 控制面还是直接补完整预取队列/状态机。
 
 ## 参数约束
 

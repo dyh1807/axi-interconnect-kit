@@ -83,6 +83,7 @@
 - cache 下游 `ready` 延迟
 - `mode=1 + up_req_bypass=1`
 - 读写属性透传
+- 现有 simple responder 对 `id` 端口做透传，不因新增 `id` 接口破坏原合同
 
 ### `tb_axi_llc_subsystem_cache_contract.v`
 
@@ -94,6 +95,7 @@
 - full-line write miss 直接安装 dirty line
 - partial write miss 先 refill 再 merge
 - dirty victim writeback + refill
+- simple memory model 回传 `cache_req_id`，避免新增 `id` 接口破坏 mode1 主路径
 
 ### `tb_axi_llc_subsystem_invalidate_line_contract.v`
 
@@ -111,6 +113,7 @@
 - 跨窗请求走 bypass
 - `bypass_req_size` 透传
 - `cache_req_size` 对 cache miss 为 line_bytes-1
+- simple responder 回传 `cache_req_id / bypass_req_id`
 
 ### `tb_axi_llc_subsystem_invalidate_all_contract.v`
 
@@ -120,6 +123,15 @@
 - mode1 invalidate 后同地址重新 miss
 - mode2 下外部 `invalidate_all` 后 direct-window resident data 不再可见
 - mode 切换与 `invalidate_all` 同时出现时只做一轮维护流程
+- dirty flush / reread 过程继续通过 `id` 接口回传响应
+
+### `tb_axi_llc_subsystem_id_contract.v`
+
+计划由独立验证所有权补充，目标覆盖：
+
+- cache / direct / bypass 三条路径的 request id 下传与 response id 回传
+- invalidate_all 期间不误接收新 id
+- mode1 lower-memory request id 的基本合同
 
 ### `tb_llc_smic12_store_contract.v`
 
@@ -133,7 +145,7 @@
 
 - 当前 bench 仍以 directed contract 为主，`ready/valid` 背压与 mode1 cache 细节需要独立 bench 继续补强。
 - 新增的 `invalidate_all` 与 SMIC12 宏封装路径正在补独立 bench。
-- 还没有覆盖与 C++ 原型完全对齐的多 master / `id` 接口字段。
+- 还没有覆盖独立的 `id contract`；当前只是把现有 bench 全部升级到带 `id` 端口的接口。
 - 当前已在 `eda-10` 上确认 VCS 可用，并实际跑通：
   - `tb_llc_data_store`
   - `tb_llc_meta_store`
