@@ -107,17 +107,11 @@ module tb_axi_llc_subsystem_axi_bypass_read_contract;
     reg  [AXI_ID_BITS-1:0]          seen_arid;
     reg  [31:0]                     expected_word;
 
-    function [ID_BITS-1:0] get_read_accept_id;
-        begin
-            get_read_accept_id = read_req_accepted_id[ID_BITS-1:0];
-        end
-    endfunction
+    wire [ID_BITS-1:0]             read_accept_id_w;
+    wire [ID_BITS-1:0]             read_resp_id_w;
 
-    function [ID_BITS-1:0] get_read_resp_id;
-        begin
-            get_read_resp_id = read_resp_id[ID_BITS-1:0];
-        end
-    endfunction
+    assign read_accept_id_w = read_req_accepted_id[ID_BITS-1:0];
+    assign read_resp_id_w = read_resp_id[ID_BITS-1:0];
 
     always #5 clk = ~clk;
 
@@ -283,7 +277,7 @@ module tb_axi_llc_subsystem_axi_bypass_read_contract;
             if (!read_req_accepted[0]) begin
                 fail_now("bypass read accepted pulse missing");
             end
-            if (get_read_accept_id() !== READ_ID) begin
+            if (read_accept_id_w !== READ_ID) begin
                 fail_now("bypass read accepted_id mismatch");
             end
             @(negedge clk);
@@ -360,7 +354,7 @@ module tb_axi_llc_subsystem_axi_bypass_read_contract;
             if (timeout == 0) begin
                 fail_now("bypass read response timeout");
             end
-            if (get_read_resp_id() !== READ_ID) begin
+            if (read_resp_id_w !== READ_ID) begin
                 fail_now("bypass read response id mismatch");
             end
             @(posedge clk);

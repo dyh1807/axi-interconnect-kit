@@ -122,23 +122,13 @@ module tb_axi_llc_subsystem_axi_cache_refill_contract;
         end
     endfunction
 
-    function [ID_BITS-1:0] get_read_accept_id;
-        begin
-            get_read_accept_id = read_req_accepted_id[ID_BITS-1:0];
-        end
-    endfunction
+    wire [ID_BITS-1:0]             read_accept_id_w;
+    wire [ID_BITS-1:0]             read_resp_id_w;
+    wire [LINE_BITS-1:0]           read_resp_data_w;
 
-    function [ID_BITS-1:0] get_read_resp_id;
-        begin
-            get_read_resp_id = read_resp_id[ID_BITS-1:0];
-        end
-    endfunction
-
-    function [LINE_BITS-1:0] get_read_resp_data;
-        begin
-            get_read_resp_data = read_resp_data[LINE_BITS-1:0];
-        end
-    endfunction
+    assign read_accept_id_w = read_req_accepted_id[ID_BITS-1:0];
+    assign read_resp_id_w = read_resp_id[ID_BITS-1:0];
+    assign read_resp_data_w = read_resp_data[LINE_BITS-1:0];
 
     always #5 clk = ~clk;
 
@@ -316,7 +306,7 @@ module tb_axi_llc_subsystem_axi_cache_refill_contract;
             if (!read_req_accepted[0]) begin
                 fail_now("cache read accepted pulse missing");
             end
-            if (get_read_accept_id() !== READ_ID) begin
+            if (read_accept_id_w !== READ_ID) begin
                 fail_now("cache read accepted_id mismatch");
             end
             @(negedge clk);
@@ -397,8 +387,8 @@ module tb_axi_llc_subsystem_axi_cache_refill_contract;
             if (timeout == 0) begin
                 fail_now("upstream read response timeout");
             end
-            read_line = get_read_resp_data();
-            if (get_read_resp_id() !== READ_ID) begin
+            read_line = read_resp_data_w;
+            if (read_resp_id_w !== READ_ID) begin
                 fail_now("upstream read response id mismatch");
             end
             if (read_line !== expected_line) begin

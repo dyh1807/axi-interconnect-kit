@@ -111,17 +111,11 @@ module tb_axi_llc_subsystem_axi_bypass_write_contract;
     reg  [AXI_DATA_BITS-1:0]        expected_axi_wdata;
     reg  [AXI_STRB_BITS-1:0]        expected_axi_wstrb;
 
-    function [ID_BITS-1:0] get_write_resp_id;
-        begin
-            get_write_resp_id = write_resp_id[ID_BITS-1:0];
-        end
-    endfunction
+    wire [ID_BITS-1:0]             write_resp_id_w;
+    wire [1:0]                     write_resp_code_w;
 
-    function [1:0] get_write_resp_code;
-        begin
-            get_write_resp_code = write_resp_code[1:0];
-        end
-    endfunction
+    assign write_resp_id_w = write_resp_id[ID_BITS-1:0];
+    assign write_resp_code_w = write_resp_code[1:0];
 
     always #5 clk = ~clk;
 
@@ -388,10 +382,10 @@ module tb_axi_llc_subsystem_axi_bypass_write_contract;
             if (timeout == 0) begin
                 fail_now("bypass write response timeout");
             end
-            if (get_write_resp_id() !== WRITE_ID) begin
+            if (write_resp_id_w !== WRITE_ID) begin
                 fail_now("bypass write response id mismatch");
             end
-            if (get_write_resp_code() !== AXI_RESP_OKAY) begin
+            if (write_resp_code_w !== AXI_RESP_OKAY) begin
                 fail_now("bypass write response code mismatch");
             end
             @(posedge clk);
