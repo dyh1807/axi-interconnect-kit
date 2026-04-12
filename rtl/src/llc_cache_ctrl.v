@@ -92,7 +92,9 @@ module llc_cache_ctrl #(
     localparam [3:0] ST_FLUSH_SCAN_WAIT = 4'd9;
     localparam [3:0] ST_FLUSH_WB_REQ    = 4'd10;
     localparam [3:0] ST_FLUSH_WB_WAIT   = 4'd11;
-    localparam [ID_BITS-1:0] FLUSH_MEM_ID = {ID_BITS{1'b0}};
+    localparam [ID_BITS-1:0] WRITEBACK_MEM_ID = {ID_BITS{1'b0}};
+    localparam [ID_BITS-1:0] DEMAND_MEM_ID =
+        {{(ID_BITS-1){1'b0}}, 1'b1};
     localparam integer META_TAG_BITS = (TAG_BITS < (META_BITS - 1)) ?
                                        TAG_BITS : (META_BITS - 1);
 
@@ -379,11 +381,13 @@ module llc_cache_ctrl #(
     assign mem_req_addr = (state_r == ST_MISS_WB_REQ) ? victim_addr_r :
                           (state_r == ST_FLUSH_WB_REQ) ? flush_wb_addr_r :
                           line_align_addr(req_addr_r);
-    assign mem_req_id = (state_r == ST_FLUSH_WB_REQ) ? FLUSH_MEM_ID : req_id_r;
+    assign mem_req_id = (state_r == ST_REFILL_REQ) ? DEMAND_MEM_ID
+                                                   : WRITEBACK_MEM_ID;
     assign mem_req_wdata = (state_r == ST_MISS_WB_REQ) ? victim_data_r : flush_wb_data_r;
     assign mem_req_wstrb = {LINE_BYTES{1'b1}};
     assign mem_req_size = LINE_BYTES[7:0] - 8'd1;
-    assign expected_mem_resp_id_w = (state_r == ST_FLUSH_WB_WAIT) ? FLUSH_MEM_ID : req_id_r;
+    assign expected_mem_resp_id_w = (state_r == ST_REFILL_WAIT) ? DEMAND_MEM_ID
+                                                                : WRITEBACK_MEM_ID;
     assign mem_resp_match_w = mem_resp_valid && (mem_resp_id == expected_mem_resp_id_w);
     assign mem_resp_ready = ((state_r == ST_MISS_WB_WAIT) ||
                              (state_r == ST_REFILL_WAIT) ||

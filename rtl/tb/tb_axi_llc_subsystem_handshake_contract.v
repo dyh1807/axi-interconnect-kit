@@ -60,6 +60,7 @@ module tb_axi_llc_subsystem_handshake_contract;
     integer bypass_req_count;
     reg [31:0] last_cache_addr;
     reg [31:0] last_bypass_addr;
+    reg [ID_BITS-1:0] last_cache_id;
     reg        last_cache_write;
     reg        last_bypass_write;
     reg [63:0] last_cache_wdata;
@@ -353,7 +354,7 @@ module tb_axi_llc_subsystem_handshake_contract;
 
             @(negedge clk);
             bypass_resp_rdata <= data;
-            bypass_resp_id    <= {ID_BITS{1'b0}};
+            bypass_resp_id    <= bypass_req_id;
             bypass_resp_valid <= 1'b1;
             @(posedge clk);
             @(negedge clk);
@@ -378,7 +379,7 @@ module tb_axi_llc_subsystem_handshake_contract;
 
             @(negedge clk);
             cache_resp_rdata <= data;
-            cache_resp_id    <= {ID_BITS{1'b0}};
+            cache_resp_id    <= last_cache_id;
             cache_resp_valid <= 1'b1;
             @(posedge clk);
             @(negedge clk);
@@ -427,6 +428,20 @@ module tb_axi_llc_subsystem_handshake_contract;
         end
     endtask
 
+    task wait_cache_resp_ready_match;
+        integer guard;
+        begin
+            guard = 0;
+            while (!cache_resp_ready) begin
+                @(posedge clk);
+                guard = guard + 1;
+                if (guard > 128) begin
+                    fail_now("timeout waiting cache_resp_ready with matching id");
+                end
+            end
+        end
+    endtask
+
     task wait_resp_clear;
         integer guard;
         begin
@@ -460,6 +475,7 @@ module tb_axi_llc_subsystem_handshake_contract;
             bypass_req_count  <= 0;
             last_cache_addr   <= 32'h0;
             last_bypass_addr  <= 32'h0;
+            last_cache_id     <= {ID_BITS{1'b0}};
             last_cache_write  <= 1'b0;
             last_bypass_write <= 1'b0;
             last_cache_wdata  <= 64'h0;
@@ -470,6 +486,7 @@ module tb_axi_llc_subsystem_handshake_contract;
             if (cache_req_valid && cache_req_ready) begin
                 cache_req_count  <= cache_req_count + 1;
                 last_cache_addr  <= cache_req_addr;
+                last_cache_id    <= cache_req_id;
                 last_cache_write <= cache_req_write;
                 last_cache_wdata <= cache_req_wdata;
                 last_cache_wstrb <= cache_req_wstrb;
@@ -597,9 +614,8 @@ module tb_axi_llc_subsystem_handshake_contract;
             fail_now("cache read handshake metadata mismatch");
         end
 
-        if (cache_resp_ready !== 1'b1) begin
-            fail_now("cache_resp_ready should be high while refill response is pending");
-        end
+        cache_resp_id <= last_cache_id;
+        wait_cache_resp_ready_match;
         if (up_req_ready !== 1'b0) begin
             fail_now("up_req_ready should stay low while cache miss is outstanding");
         end

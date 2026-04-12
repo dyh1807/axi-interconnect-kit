@@ -132,6 +132,7 @@
 - cache / direct / bypass 三条路径的 request id 下传与 response id 回传
 - invalidate_all 期间不误接收新 id
 - mode1 lower-memory request id 的基本合同
+  当前 cache miss 验证的是内部 line-memory mem-id，不要求等于上游 `up_req_id`
 
 ### `tb_llc_smic12_store_contract.v`
 

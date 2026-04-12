@@ -168,9 +168,10 @@ contract bench：
   - 只有 `bypass_resp_id` 匹配挂起请求时才接受响应
 - `mode=1`
   - hit 响应把当前请求 `req_id` 原样带回上游
-  - miss 路径把当前请求 `req_id` 下传为 `cache_req_id`
-  - partial/full miss 期间的 demand writeback/refill 都复用同一请求 id
-  - flush 写回为维护事务，不对应上游请求，固定使用维护 id `0`
+  - miss/refill 对下游 line-memory 使用内部读事务 id `1`
+  - cache miss 的 victim writeback 使用维护写 id `0`
+  - flush 写回同样使用维护 id `0`
+  - 上游 `up_resp_id` 仍保持原始请求 `req_id`
 
 这套合同是单 outstanding 简化版，不等价于 C++ 里的完整多 master / MSHR mem-id 语义，
 但已经足够支撑当前独立的 `id contract bench`。

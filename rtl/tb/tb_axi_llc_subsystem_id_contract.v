@@ -21,6 +21,7 @@ module tb_axi_llc_subsystem_id_contract;
     localparam [MODE_BITS-1:0] MODE_OFF    = 2'b00;
     localparam [MODE_BITS-1:0] MODE_CACHE  = 2'b01;
     localparam [MODE_BITS-1:0] MODE_MAPPED = 2'b10;
+    localparam [ID_BITS-1:0]   CACHE_MEM_ID = {{(ID_BITS-1){1'b0}}, 1'b1};
 
     localparam [ADDR_BITS-1:0] CACHE_ADDR  = 32'h0000_0000;
     localparam [ADDR_BITS-1:0] BYPASS_ADDR = 32'h0000_0120;
@@ -517,9 +518,9 @@ module tb_axi_llc_subsystem_id_contract;
         $display("STEP cache id contract");
         count_before = cache_req_count;
         issue_request(1'b0, CACHE_ADDR, 4'h3, 8'd7, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}}, 1'b0);
-        wait_for_cache_request(count_before, CACHE_ADDR, 4'h3);
+        wait_for_cache_request(count_before, CACHE_ADDR, CACHE_MEM_ID);
         hold_wrong_cache_response(4'h2, 64'hCAFE_F00D_CAFE_F00D, 2);
-        send_cache_response(4'h3, 64'h1122_3344_5566_7788);
+        send_cache_response(CACHE_MEM_ID, 64'h1122_3344_5566_7788);
         wait_for_upstream_response(4'h3, 64'h1122_3344_5566_7788);
 
         count_before = cache_req_count;
@@ -529,7 +530,7 @@ module tb_axi_llc_subsystem_id_contract;
             fail_now("cache hit should not create a new lower request");
         end
 
-        if (last_cache_req_id !== 4'h3) begin
+        if (last_cache_req_id !== CACHE_MEM_ID) begin
             fail_now("cache lower request id tracking mismatch");
         end
         if (last_bypass_req_id !== 4'h9) begin

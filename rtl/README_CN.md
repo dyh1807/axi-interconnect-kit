@@ -114,9 +114,9 @@
 - 当前 `id` 采用单个 `4-bit` 平面：
   - 直接路径返回捕获的 `up_req_id`
   - bypass 路径向下传 `bypass_req_id`，响应需带回匹配 id
-  - cache 路径向下传 `cache_req_id`
-  - `mode=1` demand miss 触发的 writeback/refill 继承当前请求 id
-  - reconfig/flush 产生的维护写回固定使用维护 id `0`
+  - cache 路径对上游仍返回原始 `up_req_id`
+  - `mode=1` demand refill 对下游 line-memory 使用内部读事务 id `1`
+  - cache miss 的 victim writeback 与 reconfig/flush 维护写回固定使用维护 id `0`
 - 共享 `data/meta` 当前支持 `USE_SMIC12_STORES=1` 的宏封装实现；在真实外部宏模型
   上做功能仿真时，当前建议关闭 timing check（例如 `+notimingcheck`），因为零延迟
   RTL 直接连接详细 timing model 还会触发 hold 违例。
