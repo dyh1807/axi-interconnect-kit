@@ -58,11 +58,22 @@
   - 多读/多写 master 兼容 wrapper
   - 补回 `accepted/accepted_id`、独立写响应槽位
   - 当前通过每 master 单深度队列把外部接口收敛到单流核心
+- `src/axi_llc_axi_bridge.v`
+  - 把内部 `cache_* / bypass_*` lower 请求统一转换成单组 AXI4 `AW/W/B/AR/R`
+  - 当前对齐 C++ 原型的下游打包合同：
+    - `len = ceil((total_size + 1) / beat_bytes) - 1`
+    - `size` 固定等于下游 AXI beat 宽度
+    - `burst` 固定为 `INCR`
+    - beat `data/strb` 按低地址连续切片
+- `src/axi_llc_subsystem.v`
+  - 当前推荐的最终 RTL 子模块顶层
+  - 上游保持 C++ 风格的多 read/write master 自定义接口
+  - 下游收敛成一组 AXI4 master 五通道
+  - 不在本层再分出独立 DDR/MMIO 两组 AXI；地址分流留给外部系统
 
 ## 当前未落地内容
 
 - 与 C++ interconnect 一样的多 outstanding / AXI remap table
-- 真正面向父仓库的系统级 AXI4 wrapper 对接
 - 带 timing-check 的外部宏模型直连时序隔离
 - 重新验证后的 prefetch 控制面与预取状态机
 
@@ -93,6 +104,9 @@
 - `tb/tb_axi_llc_subsystem_read_slice_contract.v`
 - `tb/tb_axi_llc_subsystem_bypass_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_contract.v`
+- `tb/tb_axi_llc_subsystem_axi_cache_refill_contract.v`
+- `tb/tb_axi_llc_subsystem_axi_bypass_read_contract.v`
+- `tb/tb_axi_llc_subsystem_axi_bypass_write_contract.v`
 - `tb/tb_llc_smic12_store_contract.v`
 - `flist/*.f`
 
@@ -131,6 +145,13 @@
   - read `accepted_id`
   - 独立 write response `id/code`
   - 但当前内部 lower-issue 仍由单流核心串行化，不等价于 C++ 的完整多 outstanding
+- 新增的 `axi_llc_subsystem` 已把最终对外边界收敛成：
+  - 上游 `read_masters[] / write_masters[]`
+  - 下游单组 AXI4 `AW/W/B/AR/R`
+  - `mode / offset / invalidate_line / invalidate_all`
+- 当前 AXI 顶层仍保持 C++ 原型的简化合同：
+  - 只使用 `addr/len/size/burst/id/data/strb/last/resp/ready/valid`
+  - 不引入 `axcache` 等当前 simulator 未使用的 AXI 扩展侧带
 - 共享 `data/meta` 当前支持 `USE_SMIC12_STORES=1` 的宏封装实现；在真实外部宏模型
   上做功能仿真时，当前建议关闭 timing check（例如 `+notimingcheck`），因为零延迟
   RTL 直接连接详细 timing model 还会触发 hold 违例。

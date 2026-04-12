@@ -21,6 +21,8 @@
 - filelist
 - 与 C++ 原型一致的关键语义文档
 - 面向 C++ 顶层接口的 compat wrapper
+- 面向当前 C++ submodule 边界的最终 RTL 顶层：
+  上游多 master 自定义接口 + 下游单组 AXI4
 
 ## 本阶段不包含
 
@@ -41,3 +43,4 @@
 - `invalidate_all_accepted` 与配置提交同拍可见
 - 单流核心已具备最小 `id` 接口，并有独立 contract bench
 - compat wrapper 已补回多 read/write master 的 `accepted/resp` 接口
+- 最终 RTL 顶层已补成单组 AXI4 master 接口，不在本层做 DDR/MMIO 二次拆分

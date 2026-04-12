@@ -167,6 +167,39 @@
 - 内部 lower-memory issue 仍由单流核心串行化
 - 还没有 C++ 那套 `orig_id / mem_id / axi_id` 三层 remap table
 
+### `axi_llc_axi_bridge`
+
+把内部 lower 抽象请求收敛成单组 AXI4 master 五通道：
+
+- 输入：
+  - `cache_req/cache_resp`
+  - `bypass_req/bypass_resp`
+- 输出：
+  - 单组 `AW/W/B/AR/R`
+- 当前合同对齐 C++ 原型：
+  - `len = ceil((total_size + 1) / beat_bytes) - 1`
+  - `size` 固定等于下游 AXI beat 宽度
+  - `burst` 固定 `INCR`
+  - 写 `data/strb` 按低地址连续切片
+  - 读 beat 也按低地址连续拼回 `LINE_BITS` 缓冲
+
+### `axi_llc_subsystem`
+
+当前推荐的最终 RTL 子模块顶层：
+
+- 上游：
+  - C++ 风格多 `read master / write master` 自定义接口
+- 下游：
+  - 单组 AXI4 master 接口
+- 控制面：
+  - `mode_req`
+  - `llc_mapped_offset_req`
+  - `invalidate_line`
+  - `invalidate_all`
+
+这里故意只保留一组 AXI，对齐当前 C++ `AXI_Interconnect` 的边界；
+DDR/MMIO 地址分流属于外部系统功能，不在本 RTL 顶层重复展开。
+
 ## 存储边界
 
 ### 保留
@@ -204,8 +237,8 @@ contract bench：
   - 上游 `up_resp_id` 仍保持原始请求 `req_id`
 
 这套合同在 `axi_llc_subsystem_top` 内仍是单流简化版；`axi_llc_subsystem_compat`
-已经把多 master 的 `accepted/resp` 接口补回，但还没有做到 C++ 的完整多 outstanding /
-AXI remap 语义。
+已经把多 master 的 `accepted/resp` 接口补回；`axi_llc_subsystem` 再把 lower 请求
+收敛成单组 AXI4。但它们还没有做到 C++ 的完整多 outstanding / AXI remap 语义。
 
 ## `prefetch` 状态
 

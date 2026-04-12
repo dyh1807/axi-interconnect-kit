@@ -3,6 +3,7 @@
 ## 目标
 
 当前验证优先覆盖已经落地的共享存储、mode 控制、mode2 直映窗口，以及 mode1 最小 cache 语义。
+在新增 AXI 顶层后，还需要覆盖“上游自定义接口 -> 单组 AXI4”的打包合同。
 
 ## P0 单元级
 
@@ -157,6 +158,34 @@
 
 - 该 bench 只验证 wrapper 暴露给上层的多 master 队列与 response 槽合同，不改 `src/`。
 - 对 cache lower response，只要求把观测到的 `cache_req_id` 原样回传，不额外约束 cache 内部 `mem_id` 编码。
+
+### `tb_axi_llc_subsystem_axi_cache_refill_contract.v`
+
+覆盖：
+
+- 最终顶层 `axi_llc_subsystem.v` 的 `mode=1` cache refill 只使用单组 AXI4 读通道
+- 64B refill 对应 `AR len=1 / size=5 / burst=INCR`
+- 两个 32B `R` beat 组回 1 个 64B line
+- cache refill 期间不得误触发 `AW/W/B`
+
+### `tb_axi_llc_subsystem_axi_bypass_read_contract.v`
+
+覆盖：
+
+- bypass 4B read 在最终顶层只发 single-beat `AR`
+- `arlen=0 / arsize=5 / arburst=INCR`
+- 只消费 1 个 `R` beat
+- 上游 `read_resp_id` 保持原始事务 `id`
+- `RDATA` 仍按单个 32B beat 返回，使用方只消费低几个字节
+
+### `tb_axi_llc_subsystem_axi_bypass_write_contract.v`
+
+覆盖：
+
+- bypass 4B write 必须经过单组 AXI 的 `AW/W/B`
+- `awlen=0 / awsize=5 / awburst=INCR`
+- `W` 数据与 `WSTRB` 采用低地址连续打包，不再按地址低位二次移位
+- `B` 回来后生成 write response
 
 ### `tb_axi_llc_subsystem_invalidate_all_contract.v`
 

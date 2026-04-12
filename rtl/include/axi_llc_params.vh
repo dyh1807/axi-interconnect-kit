@@ -17,5 +17,9 @@
 `define AXI_LLC_WINDOW_WAYS       8
 `define AXI_LLC_MMIO_BASE         32'h10000000
 `define AXI_LLC_MMIO_SIZE         32'h00001000
+`define AXI_LLC_AXI_ID_BITS       6
+`define AXI_LLC_AXI_DATA_BYTES    32
+`define AXI_LLC_AXI_DATA_BITS     256
+`define AXI_LLC_AXI_STRB_BITS     32
 
 `endif
