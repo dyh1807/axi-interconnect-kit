@@ -13,7 +13,9 @@
   - 使用同一套共享 `data + valid`
   - 不访问 `meta/repl/MSHR`
 - `mode=0/3`
-  - 全 bypass
+  - 请求仍进入 `llc_cache_ctrl`
+  - resident hit 直接返回 / shadow update
+  - miss 或 write-through 再走 `bypass_*` 下游端口
 
 本阶段已经把 `mode=2 + reconfig/invalidate + mode=1 最小 cache 控制` 落地。
 
@@ -120,6 +122,11 @@
 
 - resident lookup 使用 `data/meta/valid/repl`
 - 当前请求接口已带 `total_size`
+- `req_bypass=1` 时按 C++ bypass 语义处理：
+  - read hit 直接返回 resident 数据，不更新 `repl`
+  - read miss 只发 lower bypass read，不安装 resident
+  - write hit 做 resident shadow update，保留 dirty 位，并继续 lower bypass write-through
+  - write miss 只发 lower bypass write，不安装 resident
 - read hit 直接返回 resident line
 - read miss 发起下游 line read，refill 后安装并返回
 - write hit 按 byte mask merge，并置 dirty
@@ -140,8 +147,25 @@
   - 上游 `req_id`
   - 上游 `resp_id`
   - 下游 `mem_req_id / mem_resp_id`
-  - 当前简化语义下，demand miss 触发的 writeback/refill 复用当前请求 id
+  - bypass lower 请求当前仍复用上游 `req_id`
+  - demand miss 触发的 line-memory read 使用内部读事务 id `1`
   - reconfig/flush 产生的维护写回固定使用维护 id `0`
+
+### `axi_llc_subsystem_compat`
+
+新增的 compat wrapper 负责把当前单流核心包装成更接近 C++ 顶层的接口：
+
+- 多 read master / 多 write master
+- read `ready/accepted/accepted_id`
+- write `ready/accepted`
+- 独立 write response `id/code`
+- 每个 master 单深度请求队列 + 独立 response 槽位
+
+当前限制：
+
+- 该 wrapper 还不是 C++ interconnect 的完整等价物
+- 内部 lower-memory issue 仍由单流核心串行化
+- 还没有 C++ 那套 `orig_id / mem_id / axi_id` 三层 remap table
 
 ## 存储边界
 
@@ -170,8 +194,8 @@ contract bench：
   - direct 路径不向外发请求
   - 直接把捕获的 `up_req_id` 原样带回 `up_resp_id`
 - `mode=0/3`
-  - bypass 路径把 `up_req_id` 原样下传为 `bypass_req_id`
-  - 只有 `bypass_resp_id` 匹配挂起请求时才接受响应
+  - resident lookup 仍在 `llc_cache_ctrl` 内完成
+  - 只有 bypass miss / write-through 才会发 `bypass_req_*`
 - `mode=1`
   - hit 响应把当前请求 `req_id` 原样带回上游
   - miss/refill 对下游 line-memory 使用内部读事务 id `1`
@@ -179,8 +203,9 @@ contract bench：
   - flush 写回同样使用维护 id `0`
   - 上游 `up_resp_id` 仍保持原始请求 `req_id`
 
-这套合同是单 outstanding 简化版，不等价于 C++ 里的完整多 master / MSHR mem-id 语义，
-但已经足够支撑当前独立的 `id contract bench`。
+这套合同在 `axi_llc_subsystem_top` 内仍是单流简化版；`axi_llc_subsystem_compat`
+已经把多 master 的 `accepted/resp` 接口补回，但还没有做到 C++ 的完整多 outstanding /
+AXI remap 语义。
 
 ## `prefetch` 状态
 

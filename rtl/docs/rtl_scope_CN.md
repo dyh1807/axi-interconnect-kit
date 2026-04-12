@@ -11,7 +11,7 @@
 2. `drain -> valid-sweep invalidate -> activate`
 3. `valid` 独立于 `meta`
 4. 顶层把 `cache` 与 `direct-window` 的控制语义拆开
-5. 冻结最小 `id` 平面，为后续独立验证留出稳定接口
+5. 冻结最小 `id` 平面，并补回兼容 C++ 顶层的多 master wrapper
 
 ## 本阶段包含
 
@@ -20,11 +20,11 @@
 - 最小 directed testbench
 - filelist
 - 与 C++ 原型一致的关键语义文档
+- 面向 C++ 顶层接口的 compat wrapper
 
 ## 本阶段不包含
 
-- 与 C++ 子模块边界完全对齐的最终接口
-- 多读/多写 master，以及与 C++ 一致的更完整 `id` / tag / 多 outstanding 语义
+- 与 C++ interconnect 完整等价的多 outstanding / AXI remap 语义
 - parent simulator wrapper
 - 顶层 CMake/CTest 接入
 - 性能优化 / prefetch / debug counter
@@ -37,5 +37,7 @@
 - invalid partial write 采用 zero-merge，再置 `valid=1`
 - 模式切换通过统一 FSM 驱动 valid sweep
 - `mode=1` cache path 已具备最小 hit/miss/refill/writeback/dirty flush 语义
+- bypass hit/miss/write-through 语义与当前 C++ 原型一致
 - `invalidate_all_accepted` 与配置提交同拍可见
-- 顶层与 mode1 lower-memory 路径已具备最小 `id` 接口，并有独立 contract bench
+- 单流核心已具备最小 `id` 接口，并有独立 contract bench
+- compat wrapper 已补回多 read/write master 的 `accepted/resp` 接口

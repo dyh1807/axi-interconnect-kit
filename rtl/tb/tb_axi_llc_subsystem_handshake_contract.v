@@ -565,8 +565,8 @@ module tb_axi_llc_subsystem_handshake_contract;
 
         up_resp_ready <= 1'b0;
         pulse_bypass_resp(64'hBEEF_BEEF_0000_0001);
-        wait_up_resp(64'hBEEF_BEEF_0000_0001);
-        hold_up_resp_blocked(64'hBEEF_BEEF_0000_0001, 2);
+        wait_up_resp(64'h0000_0000_0000_0000);
+        hold_up_resp_blocked(64'h0000_0000_0000_0000, 2);
         up_resp_ready <= 1'b1;
         @(posedge clk);
         wait_resp_clear;
@@ -593,7 +593,7 @@ module tb_axi_llc_subsystem_handshake_contract;
             fail_now("mode1 bypass metadata mismatch");
         end
         pulse_bypass_resp(64'hCAFE_0000_0000_1111);
-        wait_up_resp(64'hCAFE_0000_0000_1111);
+        wait_up_resp(64'h0000_0000_0000_0000);
         @(posedge clk);
         wait_resp_clear;
 

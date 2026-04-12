@@ -126,6 +126,38 @@
 - `mode=2` unaligned partial write 在 line offset 处 merge，再按同一 word offset 回读
 - 上述场景不允许退化成“无条件回整条 line”
 
+### `tb_axi_llc_subsystem_bypass_contract.v`
+
+覆盖：
+
+- `mode=1 + up_req_bypass=1` 的 bypass read hit 不触发 lower bypass read，直接返回 resident 数据
+- bypass read miss 只触发 lower bypass read，且不安装 resident
+- bypass write hit 更新 resident shadow line、保持 clean、同时发 lower bypass write
+- bypass write miss 只发 lower bypass write，不安装 resident
+
+说明：
+
+- 该 bench 使用 generic store 的层次化预装载来制造 resident 命中场景，因此只用于 `USE_SMIC12_STORES=0` 的合同验证。
+- 这是对 bypass 合同的独立验证；如果 bypass 请求仍然被硬送到 lower bypass，或者 bypass write hit 不能完成 write-through 回包，该 bench 会直接报错。
+
+### `tb_axi_llc_subsystem_compat_contract.v`
+
+覆盖：
+
+- wrapper 的 read / write `accepted` 单拍脉冲
+- read `accepted_id` 与被接受请求 `id` 一致
+- 不同 read / write master 可先入队，再按各自 slot 收到 response
+- write response code 当前固定为 `OKAY`
+- wrapper 不破坏既有 lower 路由合同：
+  - `mode=1` cache miss 走 `cache_req`
+  - `mode=1` bypass 走 `bypass_req`
+  - `mode=2` direct-window 不触发 lower 请求
+
+说明：
+
+- 该 bench 只验证 wrapper 暴露给上层的多 master 队列与 response 槽合同，不改 `src/`。
+- 对 cache lower response，只要求把观测到的 `cache_req_id` 原样回传，不额外约束 cache 内部 `mem_id` 编码。
+
 ### `tb_axi_llc_subsystem_invalidate_all_contract.v`
 
 覆盖：
@@ -172,4 +204,5 @@
   - `tb_axi_llc_subsystem_size_contract`
   - `tb_axi_llc_subsystem_invalidate_all_contract`
   - `tb_axi_llc_subsystem_id_contract`
+  - `tb_axi_llc_subsystem_compat_contract`
   - `tb_llc_smic12_store_contract`

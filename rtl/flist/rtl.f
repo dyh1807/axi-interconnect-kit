@@ -14,3 +14,4 @@ src/llc_invalidate_sweep.v
 src/llc_mapped_window_ctrl.v
 src/llc_cache_ctrl.v
 src/axi_llc_subsystem_top.v
+src/axi_llc_subsystem_compat.v

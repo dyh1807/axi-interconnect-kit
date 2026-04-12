@@ -21,6 +21,7 @@ module llc_cache_ctrl #(
     input                       req_valid,
     output                      req_ready,
     input                       req_write,
+    input                       req_bypass,
     input      [ADDR_BITS-1:0]  req_addr,
     input      [ID_BITS-1:0]    req_id,
     input      [7:0]            req_total_size,
@@ -77,7 +78,19 @@ module llc_cache_ctrl #(
     input                       mem_resp_valid,
     output                      mem_resp_ready,
     input      [LINE_BITS-1:0]  mem_resp_rdata,
-    input      [ID_BITS-1:0]    mem_resp_id
+    input      [ID_BITS-1:0]    mem_resp_id,
+    output                      bypass_req_valid,
+    input                       bypass_req_ready,
+    output                      bypass_req_write,
+    output     [ADDR_BITS-1:0]  bypass_req_addr,
+    output     [ID_BITS-1:0]    bypass_req_id,
+    output     [7:0]            bypass_req_size,
+    output     [LINE_BITS-1:0]  bypass_req_wdata,
+    output     [LINE_BYTES-1:0] bypass_req_wstrb,
+    input                       bypass_resp_valid,
+    output                      bypass_resp_ready,
+    input      [LINE_BITS-1:0]  bypass_resp_rdata,
+    input      [ID_BITS-1:0]    bypass_resp_id
 );
 
     localparam [3:0] ST_IDLE            = 4'd0;
@@ -92,6 +105,8 @@ module llc_cache_ctrl #(
     localparam [3:0] ST_FLUSH_SCAN_WAIT = 4'd9;
     localparam [3:0] ST_FLUSH_WB_REQ    = 4'd10;
     localparam [3:0] ST_FLUSH_WB_WAIT   = 4'd11;
+    localparam [3:0] ST_BYPASS_REQ      = 4'd12;
+    localparam [3:0] ST_BYPASS_WAIT     = 4'd13;
     localparam [ID_BITS-1:0] WRITEBACK_MEM_ID = {ID_BITS{1'b0}};
     localparam [ID_BITS-1:0] DEMAND_MEM_ID =
         {{(ID_BITS-1){1'b0}}, 1'b1};
@@ -102,6 +117,7 @@ module llc_cache_ctrl #(
 
     reg [3:0] state_r;
     reg       req_write_r;
+    reg       req_bypass_r;
     reg [ADDR_BITS-1:0] req_addr_r;
     reg [ID_BITS-1:0] req_id_r;
     reg [7:0] req_total_size_r;
@@ -324,6 +340,8 @@ module llc_cache_ctrl #(
     wire [SET_BITS-1:0] invalidate_lookup_set_w;
     wire [ID_BITS-1:0] expected_mem_resp_id_w;
     wire                mem_resp_match_w;
+    wire                bypass_resp_match_w;
+    wire                hit_write_dirty_w;
 
     assign req_set_w = req_addr[LINE_OFFSET_BITS + SET_BITS - 1:LINE_OFFSET_BITS];
     assign req_tag_w = req_addr[ADDR_BITS-1:LINE_OFFSET_BITS + SET_BITS];
@@ -374,8 +392,10 @@ module llc_cache_ctrl #(
     assign meta_wr_set = req_set_r;
     assign meta_wr_way_mask = (state_r == ST_WRITE_HIT) ? way_onehot(hit_way_r)
                                                         : way_onehot(install_way_r);
+    assign hit_write_dirty_w = req_bypass_r ? hit_dirty_r : 1'b1;
     assign meta_wr_row = (state_r == ST_WRITE_HIT) ?
-                         place_meta_in_row(hit_way_r, make_meta(req_tag_r, 1'b1)) :
+                         place_meta_in_row(hit_way_r,
+                                           make_meta(req_tag_r, hit_write_dirty_w)) :
                          place_meta_in_row(install_way_r, make_meta(req_tag_r, install_dirty_r));
 
     assign valid_rd_set = active_valid_set_w;
@@ -384,17 +404,22 @@ module llc_cache_ctrl #(
                                       data_rd_valid &&
                                       meta_rd_valid &&
                                       lookup_hit_r;
-    assign valid_wr_en = (state_r == ST_INSTALL) || invalidate_valid_clear_w;
+    assign valid_wr_en = (state_r == ST_INSTALL) ||
+                         (state_r == ST_WRITE_HIT) ||
+                         invalidate_valid_clear_w;
     assign valid_wr_set = req_set_r;
-    assign valid_wr_mask = invalidate_valid_clear_w ? way_onehot(lookup_hit_way_r)
-                                                    : way_onehot(install_way_r);
-    assign valid_wr_bits = invalidate_valid_clear_w ? {WAY_COUNT{1'b0}}
-                                                    : way_onehot(install_way_r);
+    assign valid_wr_mask = invalidate_valid_clear_w ? way_onehot(lookup_hit_way_r) :
+                           (state_r == ST_WRITE_HIT) ? way_onehot(hit_way_r)
+                                                     : way_onehot(install_way_r);
+    assign valid_wr_bits = invalidate_valid_clear_w ? {WAY_COUNT{1'b0}} :
+                           (state_r == ST_WRITE_HIT) ? way_onehot(hit_way_r)
+                                                     : way_onehot(install_way_r);
 
     assign repl_rd_set = flush_busy ? flush_set_r : active_lookup_set_w;
-    assign repl_wr_en = (state_r == ST_INSTALL);
+    assign repl_wr_en = (state_r == ST_INSTALL) || (state_r == ST_WRITE_HIT);
     assign repl_wr_set = req_set_r;
-    assign repl_wr_way = next_way(install_way_r);
+    assign repl_wr_way = (state_r == ST_WRITE_HIT) ? next_way(hit_way_r)
+                                                   : next_way(install_way_r);
 
     assign resp_valid = resp_valid_r;
     assign resp_rdata = resp_rdata_r;
@@ -419,6 +444,16 @@ module llc_cache_ctrl #(
                              (state_r == ST_REFILL_WAIT) ||
                              (state_r == ST_FLUSH_WB_WAIT)) &&
                             (mem_resp_id == expected_mem_resp_id_w);
+    assign bypass_req_valid = (state_r == ST_BYPASS_REQ);
+    assign bypass_req_write = req_write_r;
+    assign bypass_req_addr = req_addr_r;
+    assign bypass_req_id = req_id_r;
+    assign bypass_req_size = req_total_size_r;
+    assign bypass_req_wdata = req_wdata_r;
+    assign bypass_req_wstrb = req_wstrb_r;
+    assign bypass_resp_match_w = bypass_resp_valid && (bypass_resp_id == req_id_r);
+    assign bypass_resp_ready = (state_r == ST_BYPASS_WAIT) &&
+                               (bypass_resp_id == req_id_r);
 
     always @(*) begin
         lookup_hit_r = 1'b0;
@@ -515,6 +550,7 @@ module llc_cache_ctrl #(
         if (!rst_n) begin
             state_r <= ST_IDLE;
             req_write_r <= 1'b0;
+            req_bypass_r <= 1'b0;
             req_addr_r <= {ADDR_BITS{1'b0}};
             req_id_r <= {ID_BITS{1'b0}};
             req_total_size_r <= 8'd0;
@@ -551,6 +587,7 @@ module llc_cache_ctrl #(
                         state_r <= ST_FLUSH_SCAN_REQ;
                     end else if (accept_invalidate_line_w) begin
                         req_write_r <= 1'b0;
+                        req_bypass_r <= 1'b0;
                         req_addr_r <= invalidate_line_addr;
                         req_id_r <= {ID_BITS{1'b0}};
                         req_total_size_r <= 8'd0;
@@ -564,6 +601,7 @@ module llc_cache_ctrl #(
                         state_r <= ST_LOOKUP_WAIT;
                     end else if (launch_lookup_w) begin
                         req_write_r <= req_write;
+                        req_bypass_r <= req_bypass;
                         req_addr_r <= req_addr;
                         req_id_r <= req_id;
                         req_total_size_r <= req_total_size;
@@ -593,6 +631,11 @@ module llc_cache_ctrl #(
                                                              req_wdata_r,
                                                              req_wstrb_r);
                                 state_r <= ST_WRITE_HIT;
+                            end else if (req_bypass_r) begin
+                                resp_valid_r <= 1'b1;
+                                resp_rdata_r <= extract_read_response(req_addr_r,
+                                                                      lookup_hit_line_r);
+                                state_r <= ST_IDLE;
                             end else begin
                                 resp_valid_r <= 1'b1;
                                 resp_rdata_r <= extract_read_response(req_addr_r,
@@ -605,7 +648,9 @@ module llc_cache_ctrl #(
                             victim_addr_r <= lookup_victim_addr_r;
                             victim_data_r <= lookup_victim_line_r;
 
-                            if (req_write_r && full_write_w) begin
+                            if (req_bypass_r) begin
+                                state_r <= ST_BYPASS_REQ;
+                            end else if (req_write_r && full_write_w) begin
                                 install_line_r <= req_wdata_r;
                                 install_dirty_r <= 1'b1;
                                 if (lookup_victim_dirty_r) begin
@@ -625,12 +670,16 @@ module llc_cache_ctrl #(
                 end
 
                 ST_WRITE_HIT: begin
-                    if (!hit_dirty_r) begin
+                    if (!req_bypass_r && !hit_dirty_r) begin
                         dirty_count_r <= dirty_count_r + 32'd1;
                     end
-                    resp_valid_r <= 1'b1;
-                    resp_rdata_r <= {LINE_BITS{1'b0}};
-                    state_r <= ST_IDLE;
+                    if (req_bypass_r) begin
+                        state_r <= ST_BYPASS_REQ;
+                    end else begin
+                        resp_valid_r <= 1'b1;
+                        resp_rdata_r <= {LINE_BITS{1'b0}};
+                        state_r <= ST_IDLE;
+                    end
                 end
 
                 ST_MISS_WB_REQ: begin
@@ -726,6 +775,24 @@ module llc_cache_ctrl #(
                         end else begin
                             state_r <= ST_FLUSH_SCAN_REQ;
                         end
+                    end
+                end
+
+                ST_BYPASS_REQ: begin
+                    if (bypass_req_valid && bypass_req_ready) begin
+                        state_r <= ST_BYPASS_WAIT;
+                    end
+                end
+
+                ST_BYPASS_WAIT: begin
+                    if (bypass_resp_match_w) begin
+                        resp_valid_r <= 1'b1;
+                        if (req_write_r) begin
+                            resp_rdata_r <= {LINE_BITS{1'b0}};
+                        end else begin
+                            resp_rdata_r <= bypass_resp_rdata;
+                        end
+                        state_r <= ST_IDLE;
                     end
                 end
 

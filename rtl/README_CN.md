@@ -7,7 +7,7 @@
 
 - `mode=1`：正常 LLC cache path
 - `mode=2`：direct-mapped 本地 LLC window
-- `mode=0/3`：全 bypass
+- `mode=0/3`：请求仍先进入 LLC resident lookup，但按 bypass 语义处理
 - 模式切换统一走 `block accepts -> drain -> valid-sweep invalidate -> activate`
 
 当前目录是**自包含**的，不接入根 CMake，也不影响现有 C++/CTest 构建。
@@ -43,9 +43,9 @@
 - `src/axi_llc_subsystem_top.v`
   - 顶层子模块：
     - 集成 reconfig + shared data/meta/valid/repl store
-    - `mode=1` 进入内建 `llc_cache_ctrl`
+    - `mode=1`、`mode=0/3`、以及 `mode=2` 窗口外都进入内建 `llc_cache_ctrl`
     - `cache_*` 口现在承载 line-memory miss/refill/writeback
-    - `mode=0/3` 与 mode2 窗口外通过 `bypass_*` 口下发
+    - `bypass_*` 口只承载 `llc_cache_ctrl` 发出的 lower bypass read/write
     - 当前已接入 `up_req_total_size`、`cache_req_size`、`bypass_req_size`
     - 当前已接入单平面 `id`：
       - `up_req_id / up_resp_id`
@@ -54,12 +54,15 @@
     - 当前已接入 `invalidate_line` / `invalidate_line_accepted`
     - 当前已接入 `invalidate_all_valid` / `invalidate_all_accepted`
     - `invalidate_all_accepted` 当前表示一次维护 sweep 已完成，并与配置提交同拍对外可见
+- `src/axi_llc_subsystem_compat.v`
+  - 多读/多写 master 兼容 wrapper
+  - 补回 `accepted/accepted_id`、独立写响应槽位
+  - 当前通过每 master 单深度队列把外部接口收敛到单流核心
 
 ## 当前未落地内容
 
-- 与 C++ 子模块边界完全对齐的最终接口
-- 多读/多写 master、与 C++ 一致的更完整 `id` / tag 平面
-- 真正面向父仓库的最终 wrapper / 系统级 AXI4 接口对接
+- 与 C++ interconnect 一样的多 outstanding / AXI remap table
+- 真正面向父仓库的系统级 AXI4 wrapper 对接
 - 带 timing-check 的外部宏模型直连时序隔离
 - 重新验证后的 prefetch 控制面与预取状态机
 
@@ -88,6 +91,8 @@
 - `tb/tb_axi_llc_subsystem_invalidate_all_contract.v`
 - `tb/tb_axi_llc_subsystem_id_contract.v`
 - `tb/tb_axi_llc_subsystem_read_slice_contract.v`
+- `tb/tb_axi_llc_subsystem_bypass_contract.v`
+- `tb/tb_axi_llc_subsystem_compat_contract.v`
 - `tb/tb_llc_smic12_store_contract.v`
 - `flist/*.f`
 
@@ -107,20 +112,25 @@
   地址的 32-bit word offset 提取返回数据，与 C++ 原型的 `extract_line_response()` 语义对齐。
 - `data/meta` 当前都采用同步单端口行为模型，因此 `mode=2` 写路径已经改成“先读
   row，再 merge，再写回”的顺序语义。
-- bypass 读响应当前仍假定由外部 lower-memory 路径直接按请求语义返回，顶层不再额外重排。
+- bypass 读命中当前直接从 resident 返回；只有 miss 才通过 `bypass_*` 口访问 lower memory。
 - `invalidate_all` 当前已经接入顶层，不做 whole-array reset，而是通过
   `llc_invalidate_sweep` 顺序清 `valid`。
 - `invalidate_all_accepted` 不再表示“请求已被 FSM 吸收”，而表示“本次维护 sweep 已完成；
   active 配置在同一拍提交”。
 - `invalidate_line` 当前已经接入：
-  - `mode=1` 通过 `llc_cache_ctrl` 查表并清对应 valid
-  - `mode=0/2/3` 接受为 no-op，不改变 direct-window resident data
+  - 所有非 direct-window 请求都通过 `llc_cache_ctrl` 复用 resident lookup 做 maintenance
+  - `mode=2` direct-window resident line 仍不复用这条 maintenance 语义
 - 当前 `id` 采用单个 `4-bit` 平面：
   - 直接路径返回捕获的 `up_req_id`
-  - bypass 路径向下传 `bypass_req_id`，响应需带回匹配 id
+  - bypass lower 路径当前仍向下传 `bypass_req_id`，响应需带回匹配 id
   - cache 路径对上游仍返回原始 `up_req_id`
   - `mode=1` demand refill 对下游 line-memory 使用内部读事务 id `1`
   - cache miss 的 victim writeback 与 reconfig/flush 维护写回固定使用维护 id `0`
+- 新增的 `axi_llc_subsystem_compat` 已补回：
+  - 多 read/write master 的 `ready/accepted`
+  - read `accepted_id`
+  - 独立 write response `id/code`
+  - 但当前内部 lower-issue 仍由单流核心串行化，不等价于 C++ 的完整多 outstanding
 - 共享 `data/meta` 当前支持 `USE_SMIC12_STORES=1` 的宏封装实现；在真实外部宏模型
   上做功能仿真时，当前建议关闭 timing check（例如 `+notimingcheck`），因为零延迟
   RTL 直接连接详细 timing model 还会触发 hold 违例。
