@@ -2,6 +2,8 @@
 
 module tb_axi_llc_subsystem_handshake_contract;
 
+    localparam ID_BITS = 4;
+
     reg         clk;
     reg         rst_n;
     reg  [1:0]  mode_req;
@@ -10,6 +12,7 @@ module tb_axi_llc_subsystem_handshake_contract;
     wire        up_req_ready;
     reg         up_req_write;
     reg  [31:0] up_req_addr;
+    reg  [ID_BITS-1:0] up_req_id;
     reg  [7:0]  up_req_total_size;
     reg  [63:0] up_req_wdata;
     reg  [7:0]  up_req_wstrb;
@@ -17,26 +20,31 @@ module tb_axi_llc_subsystem_handshake_contract;
     wire        up_resp_valid;
     reg         up_resp_ready;
     wire [63:0] up_resp_rdata;
+    wire [ID_BITS-1:0] up_resp_id;
     wire        cache_req_valid;
     reg         cache_req_ready;
     wire        cache_req_write;
     wire [31:0] cache_req_addr;
+    wire [ID_BITS-1:0] cache_req_id;
     wire [7:0]  cache_req_size;
     wire [63:0] cache_req_wdata;
     wire [7:0]  cache_req_wstrb;
     reg         cache_resp_valid;
     wire        cache_resp_ready;
     reg  [63:0] cache_resp_rdata;
+    reg  [ID_BITS-1:0] cache_resp_id;
     wire        bypass_req_valid;
     reg         bypass_req_ready;
     wire        bypass_req_write;
     wire [31:0] bypass_req_addr;
+    wire [ID_BITS-1:0] bypass_req_id;
     wire [7:0]  bypass_req_size;
     wire [63:0] bypass_req_wdata;
     wire [7:0]  bypass_req_wstrb;
     reg         bypass_resp_valid;
     wire        bypass_resp_ready;
     reg  [63:0] bypass_resp_rdata;
+    reg  [ID_BITS-1:0] bypass_resp_id;
     wire [1:0]  active_mode;
     wire [31:0] active_offset;
     wire        reconfig_busy;
@@ -84,6 +92,7 @@ module tb_axi_llc_subsystem_handshake_contract;
         .up_req_ready          (up_req_ready),
         .up_req_write          (up_req_write),
         .up_req_addr           (up_req_addr),
+        .up_req_id             (up_req_id),
         .up_req_total_size     (up_req_total_size),
         .up_req_wdata          (up_req_wdata),
         .up_req_wstrb          (up_req_wstrb),
@@ -91,26 +100,31 @@ module tb_axi_llc_subsystem_handshake_contract;
         .up_resp_valid         (up_resp_valid),
         .up_resp_ready         (up_resp_ready),
         .up_resp_rdata         (up_resp_rdata),
+        .up_resp_id            (up_resp_id),
         .cache_req_valid       (cache_req_valid),
         .cache_req_ready       (cache_req_ready),
         .cache_req_write       (cache_req_write),
         .cache_req_addr        (cache_req_addr),
+        .cache_req_id          (cache_req_id),
         .cache_req_size        (cache_req_size),
         .cache_req_wdata       (cache_req_wdata),
         .cache_req_wstrb       (cache_req_wstrb),
         .cache_resp_valid      (cache_resp_valid),
         .cache_resp_ready      (cache_resp_ready),
         .cache_resp_rdata      (cache_resp_rdata),
+        .cache_resp_id         (cache_resp_id),
         .bypass_req_valid      (bypass_req_valid),
         .bypass_req_ready      (bypass_req_ready),
         .bypass_req_write      (bypass_req_write),
         .bypass_req_addr       (bypass_req_addr),
+        .bypass_req_id         (bypass_req_id),
         .bypass_req_size       (bypass_req_size),
         .bypass_req_wdata      (bypass_req_wdata),
         .bypass_req_wstrb      (bypass_req_wstrb),
         .bypass_resp_valid     (bypass_resp_valid),
         .bypass_resp_ready     (bypass_resp_ready),
         .bypass_resp_rdata     (bypass_resp_rdata),
+        .bypass_resp_id        (bypass_resp_id),
         .invalidate_line_valid (invalidate_line_valid),
         .invalidate_line_addr  (invalidate_line_addr),
         .invalidate_line_accepted(invalidate_line_accepted),
@@ -169,6 +183,7 @@ module tb_axi_llc_subsystem_handshake_contract;
             up_req_valid  <= 1'b1;
             up_req_write  <= is_write;
             up_req_addr   <= addr;
+            up_req_id     <= {ID_BITS{1'b0}};
             up_req_total_size <= total_size;
             up_req_wdata  <= wdata;
             up_req_wstrb  <= wstrb;
@@ -185,6 +200,7 @@ module tb_axi_llc_subsystem_handshake_contract;
 
             @(posedge clk);
             up_req_valid <= 1'b0;
+            up_req_id    <= {ID_BITS{1'b0}};
             up_req_total_size <= 8'd0;
         end
     endtask
@@ -202,6 +218,7 @@ module tb_axi_llc_subsystem_handshake_contract;
             up_req_valid  <= 1'b1;
             up_req_write  <= is_write;
             up_req_addr   <= addr;
+            up_req_id     <= {ID_BITS{1'b0}};
             up_req_total_size <= total_size;
             up_req_wdata  <= wdata;
             up_req_wstrb  <= wstrb;
@@ -215,6 +232,7 @@ module tb_axi_llc_subsystem_handshake_contract;
             end
 
             up_req_valid <= 1'b0;
+            up_req_id    <= {ID_BITS{1'b0}};
             up_req_total_size <= 8'd0;
         end
     endtask
@@ -334,11 +352,13 @@ module tb_axi_llc_subsystem_handshake_contract;
 
             @(negedge clk);
             bypass_resp_rdata <= data;
+            bypass_resp_id    <= {ID_BITS{1'b0}};
             bypass_resp_valid <= 1'b1;
             @(posedge clk);
             @(negedge clk);
             bypass_resp_valid <= 1'b0;
             bypass_resp_rdata <= 64'h0;
+            bypass_resp_id    <= {ID_BITS{1'b0}};
         end
     endtask
 
@@ -357,11 +377,13 @@ module tb_axi_llc_subsystem_handshake_contract;
 
             @(negedge clk);
             cache_resp_rdata <= data;
+            cache_resp_id    <= {ID_BITS{1'b0}};
             cache_resp_valid <= 1'b1;
             @(posedge clk);
             @(negedge clk);
             cache_resp_valid <= 1'b0;
             cache_resp_rdata <= 64'h0;
+            cache_resp_id    <= {ID_BITS{1'b0}};
         end
     endtask
 
@@ -470,6 +492,7 @@ module tb_axi_llc_subsystem_handshake_contract;
         up_req_valid          = 1'b0;
         up_req_write          = 1'b0;
         up_req_addr           = 32'h0;
+        up_req_id             = {ID_BITS{1'b0}};
         up_req_total_size     = 8'd0;
         up_req_wdata          = 64'h0;
         up_req_wstrb          = 8'h0;
@@ -481,9 +504,11 @@ module tb_axi_llc_subsystem_handshake_contract;
         cache_req_ready       = 1'b1;
         cache_resp_valid      = 1'b0;
         cache_resp_rdata      = 64'h0;
+        cache_resp_id         = {ID_BITS{1'b0}};
         bypass_req_ready      = 1'b1;
         bypass_resp_valid     = 1'b0;
         bypass_resp_rdata     = 64'h0;
+        bypass_resp_id        = {ID_BITS{1'b0}};
         cache_before          = 0;
         bypass_before         = 0;
 
