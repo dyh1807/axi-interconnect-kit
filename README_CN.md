@@ -166,6 +166,7 @@ router 负责 AXI 侧地址译码。
 - [docs/interfaces.md](docs/interfaces.md)
 - [docs/interfaces_CN.md](docs/interfaces_CN.md)
 - [docs/llc_design_CN.md](docs/llc_design_CN.md)
+- [rtl/README_CN.md](rtl/README_CN.md)
 
 ## 主要文件
 
@@ -173,6 +174,7 @@ router 负责 AXI 侧地址译码。
 .
 ├── CMakeLists.txt
 ├── README.md / README_CN.md
+├── rtl/
 ├── axi_interconnect/
 │   ├── include/
 │   ├── AXI_Interconnect.cpp

@@ -11,3 +11,13 @@ Makefile
 *.d
 *.swp
 .DS_Store
+simv
+simv.daidir/
+csrc/
+ucli.key
+DVEfiles/
+obj_dir/
+AN.DB/
+*.vcd
+*.vpd
+*.fsdb

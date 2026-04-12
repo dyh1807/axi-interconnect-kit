@@ -178,6 +178,7 @@ Validated toolchains:
 - [docs/interfaces.md](docs/interfaces.md)
 - [docs/interfaces_CN.md](docs/interfaces_CN.md)
 - [docs/llc_design_CN.md](docs/llc_design_CN.md)
+- [rtl/README_CN.md](rtl/README_CN.md)
 
 ## Main Files
 
@@ -185,6 +186,7 @@ Validated toolchains:
 .
 ├── CMakeLists.txt
 ├── README.md / README_CN.md
+├── rtl/
 ├── axi_interconnect/
 │   ├── include/
 │   ├── AXI_Interconnect.cpp
