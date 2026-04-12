@@ -115,6 +115,17 @@
 - `cache_req_size` 对 cache miss 为 line_bytes-1
 - simple responder 回传 `cache_req_id / bypass_req_id`
 
+### `tb_axi_llc_subsystem_read_slice_contract.v`
+
+覆盖：
+
+- `mode=1` read miss 的 refill 响应按地址 word offset 切片
+- `mode=1` 同地址 read hit 继续按同一 word offset 切片
+- `mode=1` unaligned write hit 在 line offset 处 merge，再按同一 word offset 回读
+- `mode=2` direct-window resident read 按地址 word offset 切片
+- `mode=2` unaligned partial write 在 line offset 处 merge，再按同一 word offset 回读
+- 上述场景不允许退化成“无条件回整条 line”
+
 ### `tb_axi_llc_subsystem_invalidate_all_contract.v`
 
 覆盖：

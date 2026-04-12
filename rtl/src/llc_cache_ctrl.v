@@ -95,6 +95,8 @@ module llc_cache_ctrl #(
     localparam [ID_BITS-1:0] WRITEBACK_MEM_ID = {ID_BITS{1'b0}};
     localparam [ID_BITS-1:0] DEMAND_MEM_ID =
         {{(ID_BITS-1){1'b0}}, 1'b1};
+    localparam integer RESP_WORD_BITS = 32;
+    localparam integer RESP_WORDS = LINE_BITS / RESP_WORD_BITS;
     localparam integer META_TAG_BITS = (TAG_BITS < (META_BITS - 1)) ?
                                        TAG_BITS : (META_BITS - 1);
 
@@ -203,14 +205,19 @@ module llc_cache_ctrl #(
 
     function [LINE_BITS-1:0] merge_line;
         input [LINE_BITS-1:0] base_line;
+        input [ADDR_BITS-1:0] addr_value;
         input [LINE_BITS-1:0] write_data;
         input [LINE_BYTES-1:0] write_strb;
         integer idx;
+        integer line_off;
+        integer dst_idx;
         begin
             merge_line = base_line;
+            line_off = addr_value[LINE_OFFSET_BITS-1:0];
             for (idx = 0; idx < LINE_BYTES; idx = idx + 1) begin
-                if (write_strb[idx]) begin
-                    merge_line[(idx * 8) +: 8] = write_data[(idx * 8) +: 8];
+                dst_idx = line_off + idx;
+                if (write_strb[idx] && (dst_idx < LINE_BYTES)) begin
+                    merge_line[(dst_idx * 8) +: 8] = write_data[(idx * 8) +: 8];
                 end
             end
         end
@@ -281,6 +288,25 @@ module llc_cache_ctrl #(
         input [SET_BITS-1:0] set_value;
         begin
             build_line_addr = {tag_value, set_value, {LINE_OFFSET_BITS{1'b0}}};
+        end
+    endfunction
+
+    function [LINE_BITS-1:0] extract_read_response;
+        input [ADDR_BITS-1:0] addr_value;
+        input [LINE_BITS-1:0] line_value;
+        integer dst_idx;
+        integer src_idx;
+        integer start_word;
+        begin
+            extract_read_response = {LINE_BITS{1'b0}};
+            start_word = addr_value[LINE_OFFSET_BITS-1:2];
+            for (dst_idx = 0; dst_idx < RESP_WORDS; dst_idx = dst_idx + 1) begin
+                src_idx = start_word + dst_idx;
+                if (src_idx < RESP_WORDS) begin
+                    extract_read_response[(dst_idx * RESP_WORD_BITS) +: RESP_WORD_BITS] =
+                        line_value[(src_idx * RESP_WORD_BITS) +: RESP_WORD_BITS];
+                end
+            end
         end
     endfunction
 
@@ -563,12 +589,14 @@ module llc_cache_ctrl #(
                                 hit_way_r <= lookup_hit_way_r;
                                 hit_dirty_r <= lookup_hit_dirty_r;
                                 install_line_r <= merge_line(lookup_hit_line_r,
+                                                             req_addr_r,
                                                              req_wdata_r,
                                                              req_wstrb_r);
                                 state_r <= ST_WRITE_HIT;
                             end else begin
                                 resp_valid_r <= 1'b1;
-                                resp_rdata_r <= lookup_hit_line_r;
+                                resp_rdata_r <= extract_read_response(req_addr_r,
+                                                                      lookup_hit_line_r);
                                 state_r <= ST_IDLE;
                             end
                         end else begin
@@ -634,6 +662,7 @@ module llc_cache_ctrl #(
                     if (mem_resp_match_w) begin
                         if (req_write_r) begin
                             install_line_r <= merge_line(mem_resp_rdata,
+                                                         req_addr_r,
                                                          req_wdata_r,
                                                          req_wstrb_r);
                             install_dirty_r <= 1'b1;
@@ -653,7 +682,8 @@ module llc_cache_ctrl #(
                     if (req_write_r) begin
                         resp_rdata_r <= {LINE_BITS{1'b0}};
                     end else begin
-                        resp_rdata_r <= install_line_r;
+                        resp_rdata_r <= extract_read_response(req_addr_r,
+                                                              install_line_r);
                     end
                     state_r <= ST_IDLE;
                 end

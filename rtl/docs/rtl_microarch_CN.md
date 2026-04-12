@@ -110,6 +110,9 @@
 - invalid read 返回 0
 - invalid partial write 以 0 line 做 merge
 - 因为 `data_store` 是同步单端口读，mode2 write 现在必须先读 row，再下一阶段写回
+- mode2 write merge 当前按请求地址的 line offset 写入 resident line，不再默认从 byte 0 开始覆盖
+- direct-window 读响应在顶层再按请求地址的 32-bit word offset 做提取，不直接把 whole line
+  原样返回上游
 
 ### `llc_cache_ctrl`
 
@@ -122,6 +125,7 @@
 - write hit 按 byte mask merge，并置 dirty
 - full-line write miss 直接安装 dirty line
 - partial write miss 先 refill，再 merge 安装 dirty line
+- 上述 merge 当前都按请求地址的 line offset 写入 resident line，不再假定请求从 line 起始字节发起
 - victim dirty line 先 writeback，再覆盖安装
 - reconfig 期间若存在 dirty resident line，会先顺序 flush 再允许 valid sweep
 - `invalidate_line` 已接入：
@@ -130,6 +134,8 @@
   - hit 时只清 valid；若该 line 为 dirty，同时更新 dirty 计数
 - `invalidate_all` 通过顶层维护控制面触发，不在 `llc_cache_ctrl` 内单独实现 whole-array
   reset
+- read hit / refill response 当前都按请求地址的 32-bit word offset 做提取，对齐 C++
+  `extract_line_response()` 的打包语义
 - 当前已接入单平面 `id`：
   - 上游 `req_id`
   - 上游 `resp_id`

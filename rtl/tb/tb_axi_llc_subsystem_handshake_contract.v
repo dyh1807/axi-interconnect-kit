@@ -626,7 +626,7 @@ module tb_axi_llc_subsystem_handshake_contract;
         end
 
         pulse_cache_resp(64'h0123_4567_89ab_cdef);
-        wait_up_resp(64'h0123_4567_89ab_cdef);
+        wait_up_resp(64'h0000_0000_0123_4567);
         @(posedge clk);
         wait_resp_clear;
 

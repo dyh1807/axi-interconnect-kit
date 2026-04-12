@@ -87,6 +87,7 @@
 - `tb/tb_axi_llc_subsystem_size_contract.v`
 - `tb/tb_axi_llc_subsystem_invalidate_all_contract.v`
 - `tb/tb_axi_llc_subsystem_id_contract.v`
+- `tb/tb_axi_llc_subsystem_read_slice_contract.v`
 - `tb/tb_llc_smic12_store_contract.v`
 - `flist/*.f`
 
@@ -102,8 +103,11 @@
   offset 不会触发无意义的 sweep。
 - 顶层默认上电模式是 `mode=1`；bench 如果需要从其它模式起步，会显式覆盖 `RESET_MODE`。
 - 请求接口当前已经带 `total_size`，并参与 mode2 整体判窗与下游 `*_size` 发射。
+- `mode=1` resident hit/refill 读响应、以及 `mode=2` direct-window 读响应，当前都按请求
+  地址的 32-bit word offset 提取返回数据，与 C++ 原型的 `extract_line_response()` 语义对齐。
 - `data/meta` 当前都采用同步单端口行为模型，因此 `mode=2` 写路径已经改成“先读
   row，再 merge，再写回”的顺序语义。
+- bypass 读响应当前仍假定由外部 lower-memory 路径直接按请求语义返回，顶层不再额外重排。
 - `invalidate_all` 当前已经接入顶层，不做 whole-array reset，而是通过
   `llc_invalidate_sweep` 顺序清 `valid`。
 - `invalidate_all_accepted` 不再表示“请求已被 FSM 吸收”，而表示“本次维护 sweep 已完成；

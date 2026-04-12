@@ -222,6 +222,8 @@ module axi_llc_subsystem_top #(
     wire                      global_quiescent_w;
     wire [ADDR_BITS:0]        up_req_end_w;
     wire [ADDR_BITS:0]        mmio_limit_w;
+    localparam integer RESP_WORD_BITS = 32;
+    localparam integer RESP_WORDS = LINE_BITS / RESP_WORD_BITS;
 
     function [WAY_COUNT-1:0] way_onehot;
         input [WAY_BITS-1:0] way_idx;
@@ -245,6 +247,25 @@ module axi_llc_subsystem_top #(
             for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
                 if (way_idx == idx[WAY_BITS-1:0]) begin
                     place_line_in_row[(idx * LINE_BITS) +: LINE_BITS] = line_data;
+                end
+            end
+        end
+    endfunction
+
+    function [LINE_BITS-1:0] extract_read_response;
+        input [ADDR_BITS-1:0] addr_value;
+        input [LINE_BITS-1:0] line_value;
+        integer dst_idx;
+        integer src_idx;
+        integer start_word;
+        begin
+            extract_read_response = {LINE_BITS{1'b0}};
+            start_word = addr_value[LINE_OFFSET_BITS-1:2];
+            for (dst_idx = 0; dst_idx < RESP_WORDS; dst_idx = dst_idx + 1) begin
+                src_idx = start_word + dst_idx;
+                if (src_idx < RESP_WORDS) begin
+                    extract_read_response[(dst_idx * RESP_WORD_BITS) +: RESP_WORD_BITS] =
+                        line_value[(src_idx * RESP_WORD_BITS) +: RESP_WORD_BITS];
                 end
             end
         end
@@ -672,7 +693,8 @@ module axi_llc_subsystem_top #(
                 if (direct_write_r) begin
                     resp_data_r <= {LINE_BITS{1'b0}};
                 end else begin
-                    resp_data_r <= mapped_read_line_w;
+                    resp_data_r <= extract_read_response(direct_addr_r,
+                                                         mapped_read_line_w);
                 end
             end
 

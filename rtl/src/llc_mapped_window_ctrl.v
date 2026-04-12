@@ -37,6 +37,8 @@ module llc_mapped_window_ctrl #(
     reg [SET_BITS + WAY_BITS - 1:0] line_idx;
     reg [ADDR_BITS:0] req_end;
     integer byte_idx;
+    integer line_off;
+    integer dst_idx;
 
     always @(*) begin
         offset_aligned = (window_offset[LINE_OFFSET_BITS-1:0] == {LINE_OFFSET_BITS{1'b0}});
@@ -65,10 +67,12 @@ module llc_mapped_window_ctrl #(
 
         write_line_out    = read_line_out;
         next_valid_bit_out = 1'b1;
+        line_off = local_addr[LINE_OFFSET_BITS-1:0];
 
         for (byte_idx = 0; byte_idx < LINE_BYTES; byte_idx = byte_idx + 1) begin
-            if (write_strb_in[byte_idx]) begin
-                write_line_out[(byte_idx * 8) +: 8] = write_data_in[(byte_idx * 8) +: 8];
+            dst_idx = line_off + byte_idx;
+            if (write_strb_in[byte_idx] && (dst_idx < LINE_BYTES)) begin
+                write_line_out[(dst_idx * 8) +: 8] = write_data_in[(byte_idx * 8) +: 8];
             end
         end
     end

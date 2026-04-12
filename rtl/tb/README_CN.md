@@ -26,6 +26,7 @@
 - `tb_axi_llc_subsystem_invalidate_line_contract.v`
 - `tb_axi_llc_subsystem_size_contract.v`
 - `tb_axi_llc_subsystem_invalidate_all_contract.v`
+- `tb_axi_llc_subsystem_read_slice_contract.v`
 - `tb_llc_smic12_store_contract.v`
 
 ## 运行方式
