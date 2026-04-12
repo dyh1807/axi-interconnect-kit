@@ -15,6 +15,8 @@ module axi_llc_subsystem_top #(
     parameter LLC_SIZE_BYTES   = `AXI_LLC_LLC_SIZE_BYTES,
     parameter WINDOW_BYTES     = `AXI_LLC_WINDOW_BYTES,
     parameter WINDOW_WAYS      = `AXI_LLC_WINDOW_WAYS,
+    parameter MMIO_BASE        = `AXI_LLC_MMIO_BASE,
+    parameter MMIO_SIZE        = `AXI_LLC_MMIO_SIZE,
     parameter DATA_ROW_BITS    = WAY_COUNT * LINE_BITS,
     parameter META_ROW_BITS    = WAY_COUNT * META_BITS
 ) (
@@ -59,23 +61,28 @@ module axi_llc_subsystem_top #(
 
     localparam [MODE_BITS-1:0] MODE_CACHE  = 2'b01;
     localparam [MODE_BITS-1:0] MODE_MAPPED = 2'b10;
-    localparam [1:0] ROUTE_CACHE  = 2'b01;
-    localparam [1:0] ROUTE_BYPASS = 2'b10;
+
+    reg                       direct_wait_rd_r;
+    reg                       direct_write_r;
+    reg [ADDR_BITS-1:0]       direct_addr_r;
+    reg [LINE_BITS-1:0]       direct_wdata_r;
+    reg [LINE_BYTES-1:0]      direct_wstrb_r;
+    reg [SET_BITS-1:0]        direct_set_r;
 
     reg                       resp_pending_r;
     reg [LINE_BITS-1:0]       resp_data_r;
-    reg                       ext_pending_r;
-    reg                       ext_issued_r;
-    reg [1:0]                 ext_route_r;
-    reg                       ext_req_write_r;
-    reg [ADDR_BITS-1:0]       ext_req_addr_r;
-    reg [LINE_BITS-1:0]       ext_req_wdata_r;
-    reg [LINE_BYTES-1:0]      ext_req_wstrb_r;
+
+    reg                       bypass_pending_r;
+    reg                       bypass_issued_r;
+    reg                       bypass_req_write_r;
+    reg [ADDR_BITS-1:0]       bypass_req_addr_r;
+    reg [LINE_BITS-1:0]       bypass_req_wdata_r;
+    reg [LINE_BYTES-1:0]      bypass_req_wstrb_r;
 
     wire [MODE_BITS-1:0]      active_mode_w;
     wire [ADDR_BITS-1:0]      active_offset_w;
-    wire [MODE_BITS-1:0]      target_mode_w;
-    wire [ADDR_BITS-1:0]      target_offset_w;
+    wire [MODE_BITS-1:0]      reconfig_req_mode_w;
+    wire [ADDR_BITS-1:0]      reconfig_req_offset_w;
     wire                      reconfig_block_accepts_w;
     wire                      sweep_busy_w;
     wire                      sweep_done_w;
@@ -84,37 +91,107 @@ module axi_llc_subsystem_top #(
     wire [SET_BITS-1:0]       valid_wr_set_sweep_w;
     wire [WAY_COUNT-1:0]      valid_wr_mask_sweep_w;
     wire [WAY_COUNT-1:0]      valid_wr_bits_sweep_w;
-    wire [WAY_COUNT-1:0]      valid_rd_bits_w;
+
     wire                      offset_aligned_w;
     wire                      mapped_in_window_w;
     wire                      mapped_way_legal_w;
-    wire                      mapped_line_valid_w;
+    wire                      mapped_next_valid_bit_w;
     wire [SET_BITS-1:0]       mapped_set_w;
     wire [WAY_BITS-1:0]       mapped_way_w;
     wire [LINE_BITS-1:0]      mapped_read_line_w;
     wire [LINE_BITS-1:0]      mapped_write_line_w;
-    wire                      mapped_next_valid_bit_w;
-    wire [DATA_ROW_BITS-1:0]  data_rd_row_w;
-    wire [DATA_ROW_BITS-1:0]  data_wr_row_w;
-    wire [WAY_COUNT-1:0]      data_wr_way_mask_w;
-    wire [META_ROW_BITS-1:0]  meta_rd_row_w;
+
+    wire [ADDR_BITS-1:0]      mapped_req_addr_w;
+    wire [LINE_BITS-1:0]      mapped_req_wdata_w;
+    wire [LINE_BYTES-1:0]     mapped_req_wstrb_w;
+    wire [SET_BITS-1:0]       direct_valid_rd_set_w;
+
     wire                      cfg_req_legal_w;
-    wire [MODE_BITS-1:0]      reconfig_req_mode_w;
-    wire [ADDR_BITS-1:0]      reconfig_req_offset_w;
+    wire                      is_mmio_w;
     wire                      route_direct_w;
     wire                      route_cache_w;
+    wire                      route_bypass_w;
+
     wire                      direct_accept_w;
-    wire                      ext_accept_w;
-    wire                      global_quiescent_w;
-    wire                      direct_valid_wr_en_w;
-    wire [SET_BITS-1:0]       direct_valid_wr_set_w;
-    wire [WAY_COUNT-1:0]      direct_valid_wr_mask_w;
-    wire [WAY_COUNT-1:0]      direct_valid_wr_bits_w;
-    wire                      data_wr_en_w;
+    wire                      bypass_accept_w;
+
+    wire                      cache_up_req_valid_w;
+    wire                      cache_up_req_ready_w;
+    wire                      cache_up_resp_valid_w;
+    wire [LINE_BITS-1:0]      cache_up_resp_rdata_w;
+    wire                      cache_mem_req_valid_w;
+    wire                      cache_mem_req_write_w;
+    wire [ADDR_BITS-1:0]      cache_mem_req_addr_w;
+    wire [LINE_BITS-1:0]      cache_mem_req_wdata_w;
+    wire [LINE_BYTES-1:0]     cache_mem_req_wstrb_w;
+    wire                      cache_mem_resp_ready_w;
+
+    wire                      cache_quiescent_w;
+    wire                      cache_flush_busy_w;
+    wire                      cache_dirty_present_w;
+    wire                      cache_flush_start_w;
+
+    wire                      cache_data_rd_en_w;
+    wire [SET_BITS-1:0]       cache_data_rd_set_w;
+    wire                      cache_data_wr_en_w;
+    wire [SET_BITS-1:0]       cache_data_wr_set_w;
+    wire [WAY_COUNT-1:0]      cache_data_wr_way_mask_w;
+    wire [DATA_ROW_BITS-1:0]  cache_data_wr_row_w;
+
+    wire                      cache_meta_rd_en_w;
+    wire [SET_BITS-1:0]       cache_meta_rd_set_w;
+    wire                      cache_meta_wr_en_w;
+    wire [SET_BITS-1:0]       cache_meta_wr_set_w;
+    wire [WAY_COUNT-1:0]      cache_meta_wr_way_mask_w;
+    wire [META_ROW_BITS-1:0]  cache_meta_wr_row_w;
+
+    wire [SET_BITS-1:0]       cache_valid_rd_set_w;
+    wire                      cache_valid_wr_en_w;
+    wire [SET_BITS-1:0]       cache_valid_wr_set_w;
+    wire [WAY_COUNT-1:0]      cache_valid_wr_mask_w;
+    wire [WAY_COUNT-1:0]      cache_valid_wr_bits_w;
+
+    wire [SET_BITS-1:0]       cache_repl_rd_set_w;
+    wire [WAY_BITS-1:0]       repl_rd_way_w;
+    wire                      cache_repl_wr_en_w;
+    wire [SET_BITS-1:0]       cache_repl_wr_set_w;
+    wire [WAY_BITS-1:0]       cache_repl_wr_way_w;
+
     wire                      valid_wr_en_w;
     wire [SET_BITS-1:0]       valid_wr_set_w;
     wire [WAY_COUNT-1:0]      valid_wr_mask_w;
     wire [WAY_COUNT-1:0]      valid_wr_bits_w;
+    wire [WAY_COUNT-1:0]      valid_rd_bits_w;
+
+    wire                      data_rd_en_w;
+    wire [SET_BITS-1:0]       data_rd_set_w;
+    wire                      data_rd_valid_w;
+    wire [DATA_ROW_BITS-1:0]  data_rd_row_w;
+    wire                      data_wr_en_w;
+    wire [SET_BITS-1:0]       data_wr_set_w;
+    wire [WAY_COUNT-1:0]      data_wr_way_mask_w;
+    wire [DATA_ROW_BITS-1:0]  data_wr_row_w;
+    wire                      data_busy_w;
+
+    wire                      meta_rd_en_w;
+    wire [SET_BITS-1:0]       meta_rd_set_w;
+    wire                      meta_rd_valid_w;
+    wire [META_ROW_BITS-1:0]  meta_rd_row_w;
+    wire                      meta_wr_en_w;
+    wire [SET_BITS-1:0]       meta_wr_set_w;
+    wire [WAY_COUNT-1:0]      meta_wr_way_mask_w;
+    wire [META_ROW_BITS-1:0]  meta_wr_row_w;
+    wire                      meta_busy_w;
+
+    wire                      direct_data_wr_en_w;
+    wire [WAY_COUNT-1:0]      direct_data_wr_way_mask_w;
+    wire [DATA_ROW_BITS-1:0]  direct_data_wr_row_w;
+    wire                      direct_valid_wr_en_w;
+    wire [SET_BITS-1:0]       direct_valid_wr_set_w;
+    wire [WAY_COUNT-1:0]      direct_valid_wr_mask_w;
+    wire [WAY_COUNT-1:0]      direct_valid_wr_bits_w;
+
+    wire                      global_quiescent_w;
 
     function [WAY_COUNT-1:0] way_onehot;
         input [WAY_BITS-1:0] way_idx;
@@ -122,7 +199,7 @@ module axi_llc_subsystem_top #(
         begin
             way_onehot = {WAY_COUNT{1'b0}};
             for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
-                if (way_idx == idx) begin
+                if (way_idx == idx[WAY_BITS-1:0]) begin
                     way_onehot[idx] = 1'b1;
                 end
             end
@@ -136,7 +213,7 @@ module axi_llc_subsystem_top #(
         begin
             place_line_in_row = {DATA_ROW_BITS{1'b0}};
             for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
-                if (way_idx == idx) begin
+                if (way_idx == idx[WAY_BITS-1:0]) begin
                     place_line_in_row[(idx * LINE_BITS) +: LINE_BITS] = line_data;
                 end
             end
@@ -144,14 +221,132 @@ module axi_llc_subsystem_top #(
     endfunction
 
     assign cfg_req_legal_w = (mode_req != MODE_MAPPED) ||
-                             (llc_mapped_offset_req[LINE_OFFSET_BITS-1:0] == {LINE_OFFSET_BITS{1'b0}});
+                             (llc_mapped_offset_req[LINE_OFFSET_BITS-1:0] ==
+                              {LINE_OFFSET_BITS{1'b0}});
     assign config_error = (mode_req == MODE_MAPPED) && !cfg_req_legal_w;
     assign reconfig_req_mode_w   = cfg_req_legal_w ? mode_req : active_mode_w;
     assign reconfig_req_offset_w = cfg_req_legal_w ? llc_mapped_offset_req : active_offset_w;
-    assign active_mode   = active_mode_w;
+
+    assign active_mode = active_mode_w;
     assign active_offset = active_offset_w;
     assign reconfig_busy = (reconfig_state != 2'b00);
-    assign global_quiescent_w = !ext_pending_r && !resp_pending_r;
+
+    assign mapped_req_addr_w = direct_wait_rd_r ? direct_addr_r : up_req_addr;
+    assign mapped_req_wdata_w = direct_wait_rd_r ? direct_wdata_r : up_req_wdata;
+    assign mapped_req_wstrb_w = direct_wait_rd_r ? direct_wstrb_r : up_req_wstrb;
+
+    assign direct_valid_rd_set_w = direct_wait_rd_r ? direct_set_r : mapped_set_w;
+    assign is_mmio_w = (up_req_addr >= MMIO_BASE) &&
+                       (up_req_addr < (MMIO_BASE + MMIO_SIZE));
+
+    assign route_direct_w = (active_mode_w == MODE_MAPPED) &&
+                            mapped_in_window_w &&
+                            mapped_way_legal_w &&
+                            offset_aligned_w;
+    assign route_cache_w = (active_mode_w == MODE_CACHE) &&
+                           !up_req_bypass &&
+                           !is_mmio_w;
+    assign route_bypass_w = !route_direct_w && !route_cache_w;
+
+    assign cache_up_req_valid_w = up_req_valid && route_cache_w &&
+                                  !reconfig_block_accepts_w &&
+                                  !resp_pending_r &&
+                                  !bypass_pending_r &&
+                                  !direct_wait_rd_r;
+
+    assign direct_accept_w = up_req_valid && up_req_ready && route_direct_w;
+    assign bypass_accept_w = up_req_valid && up_req_ready && route_bypass_w;
+
+    assign direct_data_wr_en_w = direct_wait_rd_r && data_rd_valid_w && direct_write_r;
+    assign direct_data_wr_way_mask_w = way_onehot(mapped_way_w);
+    assign direct_data_wr_row_w = place_line_in_row(mapped_way_w, mapped_write_line_w);
+
+    assign direct_valid_wr_en_w = direct_wait_rd_r && data_rd_valid_w && direct_write_r;
+    assign direct_valid_wr_set_w = direct_set_r;
+    assign direct_valid_wr_mask_w = way_onehot(mapped_way_w);
+    assign direct_valid_wr_bits_w = mapped_next_valid_bit_w ? way_onehot(mapped_way_w)
+                                                            : {WAY_COUNT{1'b0}};
+
+    assign valid_wr_en_w = valid_wr_en_sweep_w ? 1'b1 :
+                           (active_mode_w == MODE_CACHE) ? cache_valid_wr_en_w :
+                           direct_valid_wr_en_w;
+    assign valid_wr_set_w = valid_wr_en_sweep_w ? valid_wr_set_sweep_w :
+                            (active_mode_w == MODE_CACHE) ? cache_valid_wr_set_w :
+                            direct_valid_wr_set_w;
+    assign valid_wr_mask_w = valid_wr_en_sweep_w ? valid_wr_mask_sweep_w :
+                             (active_mode_w == MODE_CACHE) ? cache_valid_wr_mask_w :
+                             direct_valid_wr_mask_w;
+    assign valid_wr_bits_w = valid_wr_en_sweep_w ? valid_wr_bits_sweep_w :
+                             (active_mode_w == MODE_CACHE) ? cache_valid_wr_bits_w :
+                             direct_valid_wr_bits_w;
+
+    assign data_rd_en_w = (active_mode_w == MODE_CACHE) ? cache_data_rd_en_w :
+                          direct_accept_w;
+    assign data_rd_set_w = (active_mode_w == MODE_CACHE) ? cache_data_rd_set_w :
+                           mapped_set_w;
+    assign data_wr_en_w = (active_mode_w == MODE_CACHE) ? cache_data_wr_en_w :
+                          direct_data_wr_en_w;
+    assign data_wr_set_w = (active_mode_w == MODE_CACHE) ? cache_data_wr_set_w :
+                           direct_set_r;
+    assign data_wr_way_mask_w = (active_mode_w == MODE_CACHE) ?
+                                cache_data_wr_way_mask_w : direct_data_wr_way_mask_w;
+    assign data_wr_row_w = (active_mode_w == MODE_CACHE) ? cache_data_wr_row_w :
+                           direct_data_wr_row_w;
+
+    assign meta_rd_en_w = (active_mode_w == MODE_CACHE) ? cache_meta_rd_en_w : 1'b0;
+    assign meta_rd_set_w = (active_mode_w == MODE_CACHE) ? cache_meta_rd_set_w :
+                           {SET_BITS{1'b0}};
+    assign meta_wr_en_w = (active_mode_w == MODE_CACHE) ? cache_meta_wr_en_w : 1'b0;
+    assign meta_wr_set_w = (active_mode_w == MODE_CACHE) ? cache_meta_wr_set_w :
+                           {SET_BITS{1'b0}};
+    assign meta_wr_way_mask_w = (active_mode_w == MODE_CACHE) ?
+                                cache_meta_wr_way_mask_w : {WAY_COUNT{1'b0}};
+    assign meta_wr_row_w = (active_mode_w == MODE_CACHE) ? cache_meta_wr_row_w :
+                           {META_ROW_BITS{1'b0}};
+
+    assign cache_flush_start_w = reconfig_block_accepts_w &&
+                                 (active_mode_w == MODE_CACHE) &&
+                                 cache_quiescent_w &&
+                                 cache_dirty_present_w &&
+                                 !cache_flush_busy_w;
+
+    assign global_quiescent_w = !resp_pending_r &&
+                                !bypass_pending_r &&
+                                !direct_wait_rd_r &&
+                                !data_busy_w &&
+                                !meta_busy_w &&
+                                ((active_mode_w != MODE_CACHE) ||
+                                 (cache_quiescent_w && !cache_dirty_present_w));
+
+    assign up_req_ready = !reconfig_block_accepts_w &&
+                          !resp_pending_r &&
+                          !bypass_pending_r &&
+                          !direct_wait_rd_r &&
+                          !data_busy_w &&
+                          !meta_busy_w &&
+                          !cache_up_resp_valid_w &&
+                          ((active_mode_w != MODE_CACHE) || cache_quiescent_w) &&
+                          (route_direct_w ? 1'b1 :
+                           route_cache_w ? cache_up_req_ready_w :
+                           1'b1);
+
+    assign up_resp_valid = resp_pending_r | cache_up_resp_valid_w;
+    assign up_resp_rdata = resp_pending_r ? resp_data_r : cache_up_resp_rdata_w;
+
+    assign cache_req_valid = cache_mem_req_valid_w;
+    assign cache_req_write = cache_mem_req_write_w;
+    assign cache_req_addr = cache_mem_req_addr_w;
+    assign cache_req_wdata = cache_mem_req_wdata_w;
+    assign cache_req_wstrb = cache_mem_req_wstrb_w;
+    assign cache_resp_ready = cache_mem_resp_ready_w;
+
+    assign bypass_req_valid = bypass_pending_r && !bypass_issued_r;
+    assign bypass_req_write = bypass_req_write_r;
+    assign bypass_req_addr = bypass_req_addr_r;
+    assign bypass_req_wdata = bypass_req_wdata_r;
+    assign bypass_req_wstrb = bypass_req_wstrb_r;
+    assign bypass_resp_ready = bypass_pending_r && bypass_issued_r &&
+                               !resp_pending_r && !cache_up_resp_valid_w;
 
     axi_reconfig_ctrl reconfig_ctrl (
         .clk              (clk),
@@ -163,8 +358,8 @@ module axi_llc_subsystem_top #(
         .sweep_done       (sweep_done_w),
         .active_mode      (active_mode_w),
         .active_offset    (active_offset_w),
-        .target_mode      (target_mode_w),
-        .target_offset    (target_offset_w),
+        .target_mode      (),
+        .target_offset    (),
         .block_accepts    (reconfig_block_accepts_w),
         .busy             (),
         .sweep_start      (sweep_start_w),
@@ -193,13 +388,29 @@ module axi_llc_subsystem_top #(
         .WAY_COUNT (WAY_COUNT)
     ) valid_ram (
         .clk     (clk),
+        .rst_n   (rst_n),
         .rd_en   (1'b1),
-        .rd_set  (mapped_set_w),
+        .rd_set  ((active_mode_w == MODE_CACHE) ? cache_valid_rd_set_w : direct_valid_rd_set_w),
         .rd_bits (valid_rd_bits_w),
         .wr_en   (valid_wr_en_w),
         .wr_set  (valid_wr_set_w),
         .wr_mask (valid_wr_mask_w),
         .wr_bits (valid_wr_bits_w)
+    );
+
+    llc_repl_ram #(
+        .SET_COUNT (SET_COUNT),
+        .SET_BITS  (SET_BITS),
+        .WAY_COUNT (WAY_COUNT),
+        .WAY_BITS  (WAY_BITS)
+    ) repl_ram (
+        .clk    (clk),
+        .rst_n  (rst_n),
+        .rd_set (cache_repl_rd_set_w),
+        .rd_way (repl_rd_way_w),
+        .wr_en  (cache_repl_wr_en_w),
+        .wr_set (cache_repl_wr_set_w),
+        .wr_way (cache_repl_wr_way_w)
     );
 
     llc_data_store #(
@@ -209,14 +420,17 @@ module axi_llc_subsystem_top #(
         .LINE_BITS (LINE_BITS),
         .ROW_BITS  (DATA_ROW_BITS)
     ) data_store (
-        .clk     (clk),
-        .rd_en   (1'b1),
-        .rd_set  (mapped_set_w),
-        .rd_row  (data_rd_row_w),
-        .wr_en   (data_wr_en_w),
-        .wr_set  (mapped_set_w),
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .rd_en       (data_rd_en_w),
+        .rd_set      (data_rd_set_w),
+        .rd_valid    (data_rd_valid_w),
+        .rd_row      (data_rd_row_w),
+        .wr_en       (data_wr_en_w),
+        .wr_set      (data_wr_set_w),
         .wr_way_mask (data_wr_way_mask_w),
-        .wr_row  (data_wr_row_w)
+        .wr_row      (data_wr_row_w),
+        .busy        (data_busy_w)
     );
 
     llc_meta_store #(
@@ -226,14 +440,85 @@ module axi_llc_subsystem_top #(
         .META_BITS (META_BITS),
         .ROW_BITS  (META_ROW_BITS)
     ) meta_store (
-        .clk        (clk),
-        .rd_en      (1'b0),
-        .rd_set     ({SET_BITS{1'b0}}),
-        .rd_row     (meta_rd_row_w),
-        .wr_en      (1'b0),
-        .wr_set     ({SET_BITS{1'b0}}),
-        .wr_way_mask({WAY_COUNT{1'b0}}),
-        .wr_row     ({META_ROW_BITS{1'b0}})
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .rd_en       (meta_rd_en_w),
+        .rd_set      (meta_rd_set_w),
+        .rd_valid    (meta_rd_valid_w),
+        .rd_row      (meta_rd_row_w),
+        .wr_en       (meta_wr_en_w),
+        .wr_set      (meta_wr_set_w),
+        .wr_way_mask (meta_wr_way_mask_w),
+        .wr_row      (meta_wr_row_w),
+        .busy        (meta_busy_w)
+    );
+
+    llc_cache_ctrl #(
+        .ADDR_BITS        (ADDR_BITS),
+        .LINE_BYTES       (LINE_BYTES),
+        .LINE_BITS        (LINE_BITS),
+        .LINE_OFFSET_BITS (LINE_OFFSET_BITS),
+        .SET_COUNT        (SET_COUNT),
+        .SET_BITS         (SET_BITS),
+        .WAY_COUNT        (WAY_COUNT),
+        .WAY_BITS         (WAY_BITS),
+        .META_BITS        (META_BITS),
+        .DATA_ROW_BITS    (DATA_ROW_BITS),
+        .META_ROW_BITS    (META_ROW_BITS)
+    ) cache_ctrl (
+        .clk          (clk),
+        .rst_n        (rst_n),
+        .req_valid    (cache_up_req_valid_w),
+        .req_ready    (cache_up_req_ready_w),
+        .req_write    (up_req_write),
+        .req_addr     (up_req_addr),
+        .req_wdata    (up_req_wdata),
+        .req_wstrb    (up_req_wstrb),
+        .resp_valid   (cache_up_resp_valid_w),
+        .resp_ready   (up_resp_ready && !resp_pending_r),
+        .resp_rdata   (cache_up_resp_rdata_w),
+        .data_rd_en   (cache_data_rd_en_w),
+        .data_rd_set  (cache_data_rd_set_w),
+        .data_rd_valid(data_rd_valid_w),
+        .data_rd_row  (data_rd_row_w),
+        .data_wr_en   (cache_data_wr_en_w),
+        .data_wr_set  (cache_data_wr_set_w),
+        .data_wr_way_mask(cache_data_wr_way_mask_w),
+        .data_wr_row  (cache_data_wr_row_w),
+        .data_busy    (data_busy_w),
+        .meta_rd_en   (cache_meta_rd_en_w),
+        .meta_rd_set  (cache_meta_rd_set_w),
+        .meta_rd_valid(meta_rd_valid_w),
+        .meta_rd_row  (meta_rd_row_w),
+        .meta_wr_en   (cache_meta_wr_en_w),
+        .meta_wr_set  (cache_meta_wr_set_w),
+        .meta_wr_way_mask(cache_meta_wr_way_mask_w),
+        .meta_wr_row  (cache_meta_wr_row_w),
+        .meta_busy    (meta_busy_w),
+        .valid_rd_set (cache_valid_rd_set_w),
+        .valid_rd_bits(valid_rd_bits_w),
+        .valid_wr_en  (cache_valid_wr_en_w),
+        .valid_wr_set (cache_valid_wr_set_w),
+        .valid_wr_mask(cache_valid_wr_mask_w),
+        .valid_wr_bits(cache_valid_wr_bits_w),
+        .repl_rd_set  (cache_repl_rd_set_w),
+        .repl_rd_way  (repl_rd_way_w),
+        .repl_wr_en   (cache_repl_wr_en_w),
+        .repl_wr_set  (cache_repl_wr_set_w),
+        .repl_wr_way  (cache_repl_wr_way_w),
+        .flush_start  (cache_flush_start_w),
+        .flush_busy   (cache_flush_busy_w),
+        .dirty_present(cache_dirty_present_w),
+        .quiescent    (cache_quiescent_w),
+        .mem_req_valid(cache_mem_req_valid_w),
+        .mem_req_ready(cache_req_ready),
+        .mem_req_write(cache_mem_req_write_w),
+        .mem_req_addr (cache_mem_req_addr_w),
+        .mem_req_wdata(cache_mem_req_wdata_w),
+        .mem_req_wstrb(cache_mem_req_wstrb_w),
+        .mem_resp_valid(cache_resp_valid),
+        .mem_resp_ready(cache_mem_resp_ready_w),
+        .mem_resp_rdata(cache_resp_rdata)
     );
 
     llc_mapped_window_ctrl #(
@@ -248,123 +533,82 @@ module axi_llc_subsystem_top #(
         .WINDOW_BYTES     (WINDOW_BYTES),
         .WINDOW_WAYS      (WINDOW_WAYS)
     ) mapped_window_ctrl (
-        .req_addr           (up_req_addr),
+        .req_addr           (mapped_req_addr_w),
         .window_offset      (active_offset_w),
         .row_data_in        (data_rd_row_w),
         .valid_bits_in      (valid_rd_bits_w),
-        .write_data_in      (up_req_wdata),
-        .write_strb_in      (up_req_wstrb),
+        .write_data_in      (mapped_req_wdata_w),
+        .write_strb_in      (mapped_req_wstrb_w),
         .in_window          (mapped_in_window_w),
         .offset_aligned     (offset_aligned_w),
         .mapped_way_legal   (mapped_way_legal_w),
         .local_addr         (),
         .direct_set         (mapped_set_w),
         .direct_way         (mapped_way_w),
-        .line_valid_out     (mapped_line_valid_w),
+        .line_valid_out     (),
         .read_line_out      (mapped_read_line_w),
         .write_line_out     (mapped_write_line_w),
         .next_valid_bit_out (mapped_next_valid_bit_w)
     );
 
-    assign route_direct_w = (active_mode_w == MODE_MAPPED) &&
-                            mapped_in_window_w &&
-                            mapped_way_legal_w &&
-                            offset_aligned_w;
-    assign route_cache_w  = (active_mode_w == MODE_CACHE) && !up_req_bypass;
-
-    assign up_req_ready   = !reconfig_block_accepts_w && !resp_pending_r && !ext_pending_r;
-    assign direct_accept_w = up_req_valid && up_req_ready && route_direct_w;
-    assign ext_accept_w    = up_req_valid && up_req_ready && !route_direct_w;
-
-    assign direct_valid_wr_en_w   = direct_accept_w && up_req_write;
-    assign direct_valid_wr_set_w  = mapped_set_w;
-    assign direct_valid_wr_mask_w = way_onehot(mapped_way_w);
-    assign direct_valid_wr_bits_w = mapped_next_valid_bit_w ? way_onehot(mapped_way_w)
-                                                            : {WAY_COUNT{1'b0}};
-    assign data_wr_en_w = direct_accept_w && up_req_write;
-    assign data_wr_way_mask_w = way_onehot(mapped_way_w);
-    assign data_wr_row_w = place_line_in_row(mapped_way_w, mapped_write_line_w);
-
-    assign valid_wr_en_w   = valid_wr_en_sweep_w | direct_valid_wr_en_w;
-    assign valid_wr_set_w  = valid_wr_en_sweep_w ? valid_wr_set_sweep_w  : direct_valid_wr_set_w;
-    assign valid_wr_mask_w = valid_wr_en_sweep_w ? valid_wr_mask_sweep_w : direct_valid_wr_mask_w;
-    assign valid_wr_bits_w = valid_wr_en_sweep_w ? valid_wr_bits_sweep_w : direct_valid_wr_bits_w;
-
-    assign up_resp_valid = resp_pending_r;
-    assign up_resp_rdata = resp_data_r;
-
-    assign cache_req_valid = ext_pending_r && !ext_issued_r && (ext_route_r == ROUTE_CACHE);
-    assign cache_req_write = ext_req_write_r;
-    assign cache_req_addr  = ext_req_addr_r;
-    assign cache_req_wdata = ext_req_wdata_r;
-    assign cache_req_wstrb = ext_req_wstrb_r;
-
-    assign bypass_req_valid = ext_pending_r && !ext_issued_r && (ext_route_r == ROUTE_BYPASS);
-    assign bypass_req_write = ext_req_write_r;
-    assign bypass_req_addr  = ext_req_addr_r;
-    assign bypass_req_wdata = ext_req_wdata_r;
-    assign bypass_req_wstrb = ext_req_wstrb_r;
-
-    assign cache_resp_ready  = ext_pending_r && ext_issued_r &&
-                               (ext_route_r == ROUTE_CACHE) && !resp_pending_r;
-    assign bypass_resp_ready = ext_pending_r && ext_issued_r &&
-                               (ext_route_r == ROUTE_BYPASS) && !resp_pending_r;
-
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            resp_pending_r  <= 1'b0;
-            resp_data_r     <= {LINE_BITS{1'b0}};
-            ext_pending_r   <= 1'b0;
-            ext_issued_r    <= 1'b0;
-            ext_route_r     <= ROUTE_BYPASS;
-            ext_req_write_r <= 1'b0;
-            ext_req_addr_r  <= {ADDR_BITS{1'b0}};
-            ext_req_wdata_r <= {LINE_BITS{1'b0}};
-            ext_req_wstrb_r <= {LINE_BYTES{1'b0}};
+            direct_wait_rd_r <= 1'b0;
+            direct_write_r <= 1'b0;
+            direct_addr_r <= {ADDR_BITS{1'b0}};
+            direct_wdata_r <= {LINE_BITS{1'b0}};
+            direct_wstrb_r <= {LINE_BYTES{1'b0}};
+            direct_set_r <= {SET_BITS{1'b0}};
+            resp_pending_r <= 1'b0;
+            resp_data_r <= {LINE_BITS{1'b0}};
+            bypass_pending_r <= 1'b0;
+            bypass_issued_r <= 1'b0;
+            bypass_req_write_r <= 1'b0;
+            bypass_req_addr_r <= {ADDR_BITS{1'b0}};
+            bypass_req_wdata_r <= {LINE_BITS{1'b0}};
+            bypass_req_wstrb_r <= {LINE_BYTES{1'b0}};
         end else begin
             if (resp_pending_r && up_resp_ready) begin
                 resp_pending_r <= 1'b0;
             end
 
             if (direct_accept_w) begin
+                direct_wait_rd_r <= 1'b1;
+                direct_write_r <= up_req_write;
+                direct_addr_r <= up_req_addr;
+                direct_wdata_r <= up_req_wdata;
+                direct_wstrb_r <= up_req_wstrb;
+                direct_set_r <= mapped_set_w;
+            end
+
+            if (direct_wait_rd_r && data_rd_valid_w) begin
+                direct_wait_rd_r <= 1'b0;
                 resp_pending_r <= 1'b1;
-                if (up_req_write) begin
+                if (direct_write_r) begin
                     resp_data_r <= {LINE_BITS{1'b0}};
                 end else begin
                     resp_data_r <= mapped_read_line_w;
                 end
             end
 
-            if (ext_accept_w) begin
-                ext_pending_r   <= 1'b1;
-                ext_issued_r    <= 1'b0;
-                ext_route_r     <= route_cache_w ? ROUTE_CACHE : ROUTE_BYPASS;
-                ext_req_write_r <= up_req_write;
-                ext_req_addr_r  <= up_req_addr;
-                ext_req_wdata_r <= up_req_wdata;
-                ext_req_wstrb_r <= up_req_wstrb;
-            end
-
-            if (cache_req_valid && cache_req_ready) begin
-                ext_issued_r <= 1'b1;
+            if (bypass_accept_w) begin
+                bypass_pending_r <= 1'b1;
+                bypass_issued_r <= 1'b0;
+                bypass_req_write_r <= up_req_write;
+                bypass_req_addr_r <= up_req_addr;
+                bypass_req_wdata_r <= up_req_wdata;
+                bypass_req_wstrb_r <= up_req_wstrb;
             end
 
             if (bypass_req_valid && bypass_req_ready) begin
-                ext_issued_r <= 1'b1;
-            end
-
-            if (cache_resp_valid && cache_resp_ready) begin
-                ext_pending_r  <= 1'b0;
-                ext_issued_r   <= 1'b0;
-                resp_pending_r <= 1'b1;
-                resp_data_r    <= cache_resp_rdata;
+                bypass_issued_r <= 1'b1;
             end
 
             if (bypass_resp_valid && bypass_resp_ready) begin
-                ext_pending_r  <= 1'b0;
-                ext_issued_r   <= 1'b0;
+                bypass_pending_r <= 1'b0;
+                bypass_issued_r <= 1'b0;
                 resp_pending_r <= 1'b1;
-                resp_data_r    <= bypass_resp_rdata;
+                resp_data_r <= bypass_resp_rdata;
             end
         end
     end
