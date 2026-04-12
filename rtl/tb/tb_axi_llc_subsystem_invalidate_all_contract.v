@@ -435,10 +435,8 @@ module tb_axi_llc_subsystem_invalidate_all_contract;
         input [ADDR_BITS-1:0] addr_value;
         integer timeout;
         integer saw_busy;
-        integer accepted;
         begin
             saw_busy = 0;
-            accepted = 0;
             up_req_valid      <= 1'b1;
             up_req_write      <= 1'b0;
             up_req_addr       <= addr_value;
@@ -449,7 +447,7 @@ module tb_axi_llc_subsystem_invalidate_all_contract;
             up_req_bypass     <= 1'b0;
 
             timeout = 0;
-            while (!accepted) begin
+            while (!saw_busy) begin
                 @(posedge clk);
                 timeout = timeout + 1;
                 if (reconfig_busy) begin
@@ -457,17 +455,25 @@ module tb_axi_llc_subsystem_invalidate_all_contract;
                     if (up_req_ready !== 1'b0) begin
                         fail_now("up_req_ready high while invalidate_all reconfig busy");
                     end
-                end else if (up_req_ready) begin
-                    accepted = 1;
                 end
 
                 if (timeout > 400) begin
-                    fail_now("timeout waiting blocked request acceptance");
+                    fail_now("timeout waiting blocked request busy window");
                 end
             end
+        end
+    endtask
 
-            if (!saw_busy) begin
-                fail_now("request was not observed blocked by invalidate_all busy window");
+    task wait_held_read_accept;
+        integer timeout;
+        begin
+            timeout = 0;
+            while (up_req_ready !== 1'b1) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 400) begin
+                    fail_now("timeout waiting held request acceptance");
+                end
             end
 
             @(negedge clk);
@@ -581,6 +587,7 @@ module tb_axi_llc_subsystem_invalidate_all_contract;
 
     axi_llc_subsystem_top #(
         .ADDR_BITS        (ADDR_BITS),
+        .RESET_MODE       (MODE_OFF),
         .MODE_BITS        (MODE_BITS),
         .LINE_BYTES       (LINE_BYTES),
         .LINE_BITS        (LINE_BITS),
@@ -715,8 +722,15 @@ module tb_axi_llc_subsystem_invalidate_all_contract;
         capture_first_cache_write_cycle = -1;
         capture_first_sweep_start_cycle = -1;
 
-        issue_invalidate_all();
+        invalidate_all_valid = 1'b1;
+        wait_cycles(1);
         hold_read_blocked_during_reconfig(CACHE_ADDR_DIRTY);
+        while (!(invalidate_all_valid && invalidate_all_accepted)) begin
+            @(posedge clk);
+        end
+        @(negedge clk);
+        invalidate_all_valid = 1'b0;
+        wait_held_read_accept();
         wait_for_response(resp_line);
         capture_after_invalidate_r = 1'b0;
 

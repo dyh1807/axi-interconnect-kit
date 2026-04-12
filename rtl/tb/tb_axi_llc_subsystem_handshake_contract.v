@@ -72,6 +72,7 @@ module tb_axi_llc_subsystem_handshake_contract;
 
     axi_llc_subsystem_top #(
         .ADDR_BITS        (32),
+        .RESET_MODE       (2'b00),
         .MODE_BITS        (2),
         .LINE_BYTES       (8),
         .LINE_BITS        (64),

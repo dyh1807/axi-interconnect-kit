@@ -18,6 +18,8 @@ module axi_llc_subsystem_top #(
     parameter WINDOW_WAYS      = `AXI_LLC_WINDOW_WAYS,
     parameter MMIO_BASE        = `AXI_LLC_MMIO_BASE,
     parameter MMIO_SIZE        = `AXI_LLC_MMIO_SIZE,
+    parameter RESET_MODE       = {{(`AXI_LLC_MODE_BITS-2){1'b0}}, 2'b01},
+    parameter RESET_OFFSET     = {`AXI_LLC_ADDR_BITS{1'b0}},
     parameter USE_SMIC12_STORES = 0,
     parameter DATA_ROW_BITS    = WAY_COUNT * LINE_BITS,
     parameter META_ROW_BITS    = WAY_COUNT * META_BITS
@@ -141,6 +143,7 @@ module axi_llc_subsystem_top #(
     wire                      cache_up_req_valid_w;
     wire                      cache_up_req_ready_w;
     wire                      cache_up_resp_valid_w;
+    wire                      cache_up_resp_visible_w;
     wire [LINE_BITS-1:0]      cache_up_resp_rdata_w;
     wire [ID_BITS-1:0]        cache_up_resp_id_w;
     wire                      cache_mem_req_valid_w;
@@ -282,6 +285,8 @@ module axi_llc_subsystem_top #(
                            !up_req_bypass &&
                            !is_mmio_w;
     assign route_bypass_w = !route_direct_w && !route_cache_w;
+    assign cache_up_resp_visible_w = (active_mode_w == MODE_CACHE) &&
+                                     cache_up_resp_valid_w;
 
     assign cache_up_req_valid_w = up_req_valid && route_cache_w &&
                                   !invalidate_line_valid &&
@@ -369,13 +374,13 @@ module axi_llc_subsystem_top #(
                           !direct_wait_rd_r &&
                           !data_busy_w &&
                           !meta_busy_w &&
-                          !cache_up_resp_valid_w &&
+                          !cache_up_resp_visible_w &&
                           ((active_mode_w != MODE_CACHE) || cache_quiescent_w) &&
                           (route_direct_w ? 1'b1 :
                            route_cache_w ? cache_up_req_ready_w :
                            1'b1);
 
-    assign up_resp_valid = resp_pending_r | cache_up_resp_valid_w;
+    assign up_resp_valid = resp_pending_r | cache_up_resp_visible_w;
     assign up_resp_rdata = resp_pending_r ? resp_data_r : cache_up_resp_rdata_w;
     assign up_resp_id = resp_pending_r ? resp_id_r : cache_up_resp_id_w;
 
@@ -396,10 +401,15 @@ module axi_llc_subsystem_top #(
     assign bypass_req_wdata = bypass_req_wdata_r;
     assign bypass_req_wstrb = bypass_req_wstrb_r;
     assign bypass_resp_ready = bypass_pending_r && bypass_issued_r &&
-                               !resp_pending_r && !cache_up_resp_valid_w &&
+                               !resp_pending_r && !cache_up_resp_visible_w &&
                                (bypass_resp_id == bypass_req_id_r);
 
-    axi_reconfig_ctrl reconfig_ctrl (
+    axi_reconfig_ctrl #(
+        .MODE_BITS    (MODE_BITS),
+        .ADDR_BITS    (ADDR_BITS),
+        .RESET_MODE   (RESET_MODE),
+        .RESET_OFFSET (RESET_OFFSET)
+    ) reconfig_ctrl (
         .clk              (clk),
         .rst_n            (rst_n),
         .req_mode         (reconfig_req_mode_w),

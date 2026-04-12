@@ -6,10 +6,12 @@ module tb_axi_reconfig_ctrl;
     reg         rst_n;
     reg  [1:0]  req_mode;
     reg  [31:0] req_offset;
+    reg         invalidate_all_valid;
     reg         global_quiescent;
     reg         sweep_busy;
     reg         sweep_done;
 
+    wire        invalidate_all_accepted;
     wire [1:0]  active_mode;
     wire [31:0] active_offset;
     wire [1:0]  target_mode;
@@ -24,9 +26,11 @@ module tb_axi_reconfig_ctrl;
         .rst_n            (rst_n),
         .req_mode         (req_mode),
         .req_offset       (req_offset),
+        .invalidate_all_valid(invalidate_all_valid),
         .global_quiescent (global_quiescent),
         .sweep_busy       (sweep_busy),
         .sweep_done       (sweep_done),
+        .invalidate_all_accepted(invalidate_all_accepted),
         .active_mode      (active_mode),
         .active_offset    (active_offset),
         .target_mode      (target_mode),
@@ -58,8 +62,9 @@ module tb_axi_reconfig_ctrl;
     initial begin
         clk              = 1'b0;
         rst_n            = 1'b0;
-        req_mode         = 2'b00;
+        req_mode         = 2'b01;
         req_offset       = 32'h0000_0000;
+        invalidate_all_valid = 1'b0;
         global_quiescent = 1'b0;
         sweep_busy       = 1'b0;
         sweep_done       = 1'b0;
@@ -68,6 +73,11 @@ module tb_axi_reconfig_ctrl;
         rst_n <= 1'b1;
 
         @(posedge clk);
+        if (active_mode !== 2'b01 || active_offset !== 32'h0000_0000) begin
+            $display("tb_axi_reconfig_ctrl FAIL: reset default mismatch");
+            $finish;
+        end
+
         req_mode   <= 2'b10;
         req_offset <= 32'h0000_1000;
 
@@ -114,6 +124,10 @@ module tb_axi_reconfig_ctrl;
         wait_state(2'b11);
         if (state !== 2'b11) begin
             $display("tb_axi_reconfig_ctrl FAIL: expected ACTIVATE");
+            $finish;
+        end
+        if (!invalidate_all_accepted) begin
+            $display("tb_axi_reconfig_ctrl FAIL: invalidate_all_accepted should pulse on ACTIVATE");
             $finish;
         end
 

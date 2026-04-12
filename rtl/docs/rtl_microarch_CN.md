@@ -33,9 +33,11 @@
 - `requested != active` 或外部 `invalidate_all` 时进入维护流程
 - 切换期间阻止新的上游 accept
 - 只有 `global_quiescent=1` 后才启动 invalidate sweep
-- 只有 `sweep_done=1` 后才更新 active `mode/offset`
-- `invalidate_all_accepted` 表示维护请求已被控制 FSM 吸收；真正的可见状态变化仍发生在
-  `sweep_done` 之后
+- 默认上电 `active_mode=mode1`
+- 只有 `sweep_done=1` 后才进入 `RCFG_ACTIVATE`
+- `RCFG_ACTIVATE` 当拍同时：
+  - 脉冲 `invalidate_all_accepted`
+  - 提交新的 active `mode/offset`
 
 ### `llc_valid_ram`
 
@@ -171,7 +173,7 @@ contract bench：
   - flush 写回为维护事务，不对应上游请求，固定使用维护 id `0`
 
 这套合同是单 outstanding 简化版，不等价于 C++ 里的完整多 master / MSHR mem-id 语义，
-但已经足够支撑后续独立的 `id contract bench`。
+但已经足够支撑当前独立的 `id contract bench`。
 
 ## `prefetch` 状态
 

@@ -18,6 +18,7 @@
   - 第一阶段默认参数
 - `src/axi_reconfig_ctrl.v`
   - 模式切换 + `invalidate_all` 维护控制 FSM
+  - 默认上电 `active_mode=mode1`
 - `src/llc_data_store.v`
   - `mode=1/2` 共享的 resident data set-row 存储
   - 当前已支持两种实现：
@@ -52,6 +53,7 @@
       - `bypass_req_id / bypass_resp_id`
     - 当前已接入 `invalidate_line` / `invalidate_line_accepted`
     - 当前已接入 `invalidate_all_valid` / `invalidate_all_accepted`
+    - `invalidate_all_accepted` 当前表示一次维护 sweep 已完成，并与配置提交同拍对外可见
 
 ## 当前未落地内容
 
@@ -84,6 +86,7 @@
 - `tb/tb_axi_llc_subsystem_invalidate_line_contract.v`
 - `tb/tb_axi_llc_subsystem_size_contract.v`
 - `tb/tb_axi_llc_subsystem_invalidate_all_contract.v`
+- `tb/tb_axi_llc_subsystem_id_contract.v`
 - `tb/tb_llc_smic12_store_contract.v`
 - `flist/*.f`
 
@@ -97,11 +100,14 @@
   `mode=2` 只把固定 way-slice 当作 direct-mapped 本地映射窗口使用，不访问 `meta/repl`。
 - `active_offset` 只在目标模式为 `mode=2` 时参与重配置；`mode=0/1/3` 下单独改变
   offset 不会触发无意义的 sweep。
+- 顶层默认上电模式是 `mode=1`；bench 如果需要从其它模式起步，会显式覆盖 `RESET_MODE`。
 - 请求接口当前已经带 `total_size`，并参与 mode2 整体判窗与下游 `*_size` 发射。
 - `data/meta` 当前都采用同步单端口行为模型，因此 `mode=2` 写路径已经改成“先读
   row，再 merge，再写回”的顺序语义。
 - `invalidate_all` 当前已经接入顶层，不做 whole-array reset，而是通过
   `llc_invalidate_sweep` 顺序清 `valid`。
+- `invalidate_all_accepted` 不再表示“请求已被 FSM 吸收”，而表示“本次维护 sweep 已完成；
+  active 配置在同一拍提交”。
 - `invalidate_line` 当前已经接入：
   - `mode=1` 通过 `llc_cache_ctrl` 查表并清对应 valid
   - `mode=0/2/3` 接受为 no-op，不改变 direct-window resident data

@@ -2,8 +2,8 @@
 
 ## 目标
 
-把当前 C++ 原型中已经稳定下来的 submodule 语义，收敛成可综合 Verilog 的第一阶
-段 RTL 骨架。
+把当前 C++ 原型中已经稳定下来的 submodule 语义，收敛成可综合 Verilog 的第二阶
+段 RTL。
 
 当前阶段优先做 GPT-Pro 审核建议里的高优先级收敛项：
 
@@ -23,8 +23,8 @@
 
 ## 本阶段不包含
 
-- 完整 cache path RTL
-- MSHR / refill / victim writeback
+- 与 C++ 子模块边界完全对齐的最终接口
+- 多读/多写 master，以及与 C++ 一致的更完整 `id` / tag / 多 outstanding 语义
 - parent simulator wrapper
 - 顶层 CMake/CTest 接入
 - 性能优化 / prefetch / debug counter
@@ -36,5 +36,6 @@
 - invalid read 返回 0
 - invalid partial write 采用 zero-merge，再置 `valid=1`
 - 模式切换通过统一 FSM 驱动 valid sweep
-- `mode=1` 不再和 `mode=2` 控制逻辑混在一个大状态机里
-- 顶层与 mode1 lower-memory 路径已具备最小 `id` 接口
+- `mode=1` cache path 已具备最小 hit/miss/refill/writeback/dirty flush 语义
+- `invalidate_all_accepted` 与配置提交同拍可见
+- 顶层与 mode1 lower-memory 路径已具备最小 `id` 接口，并有独立 contract bench

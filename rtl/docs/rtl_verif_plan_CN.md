@@ -127,7 +127,7 @@
 
 ### `tb_axi_llc_subsystem_id_contract.v`
 
-计划由独立验证所有权补充，目标覆盖：
+覆盖：
 
 - cache / direct / bypass 三条路径的 request id 下传与 response id 回传
 - invalidate_all 期间不误接收新 id
@@ -145,7 +145,6 @@
 
 - 当前 bench 仍以 directed contract 为主，`ready/valid` 背压与 mode1 cache 细节需要独立 bench 继续补强。
 - 新增的 `invalidate_all` 与 SMIC12 宏封装路径正在补独立 bench。
-- 还没有覆盖独立的 `id contract`；当前只是把现有 bench 全部升级到带 `id` 端口的接口。
 - 当前已在 `eda-10` 上确认 VCS 可用，并实际跑通：
   - `tb_llc_data_store`
   - `tb_llc_meta_store`
@@ -160,4 +159,5 @@
   - `tb_axi_llc_subsystem_invalidate_line_contract`
   - `tb_axi_llc_subsystem_size_contract`
   - `tb_axi_llc_subsystem_invalidate_all_contract`
+  - `tb_axi_llc_subsystem_id_contract`
   - `tb_llc_smic12_store_contract`

@@ -4,7 +4,7 @@
 module axi_reconfig_ctrl #(
     parameter MODE_BITS    = `AXI_LLC_MODE_BITS,
     parameter ADDR_BITS    = `AXI_LLC_ADDR_BITS,
-    parameter RESET_MODE   = {`AXI_LLC_MODE_BITS{1'b0}},
+    parameter RESET_MODE   = {{(`AXI_LLC_MODE_BITS-2){1'b0}}, 2'b01},
     parameter RESET_OFFSET = {`AXI_LLC_ADDR_BITS{1'b0}}
 ) (
     input                        clk,
@@ -69,7 +69,6 @@ module axi_reconfig_ctrl #(
         case (state)
             RCFG_IDLE: begin
                 if (invalidate_all_valid) begin
-                    invalidate_all_accepted_r   = 1'b1;
                     next_invalidate_all_pending = 1'b1;
                 end
 
@@ -87,7 +86,6 @@ module axi_reconfig_ctrl #(
                 next_target_offset = req_offset;
 
                 if (invalidate_all_valid && !invalidate_all_pending_r) begin
-                    invalidate_all_accepted_r   = 1'b1;
                     next_invalidate_all_pending = 1'b1;
                 end
 
@@ -106,7 +104,6 @@ module axi_reconfig_ctrl #(
                 next_target_offset = req_offset;
 
                 if (invalidate_all_valid && !invalidate_all_pending_r && !sweep_done) begin
-                    invalidate_all_accepted_r   = 1'b1;
                     next_invalidate_all_pending = 1'b1;
                 end
 
@@ -123,6 +120,7 @@ module axi_reconfig_ctrl #(
             end
 
             RCFG_ACTIVATE: begin
+                invalidate_all_accepted_r = 1'b1;
                 next_active_mode   = target_mode_r;
                 next_active_offset = target_offset_r;
                 next_state         = RCFG_IDLE;
