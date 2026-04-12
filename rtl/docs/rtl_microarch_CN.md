@@ -118,7 +118,7 @@
 
 ## SRAM 选型约束
 
-按当前 `/nfs_global/S/daiyihao/project/qm-rocky/sram` 中的分析结果：
+按当前外部 SRAM 分析工作区 `qm-rocky/sram` 中的结论：
 
 - `data` 推荐宏：`1024x128 CM4`
 - `meta` 推荐宏：`1024x128 CM4`
@@ -130,9 +130,9 @@
 
 后续再把这两类接口绑定到固定几何的 SMIC12 SRAM 宏阵列。
 
-当前已经确认可直接参考的宏模型文件位置：
+当前已经确认可直接参考的宏模型目录为外部 handoff 工作区中的：
 
 - data 1024x128:
-  `/nfs_global/S/daiyihao/project/qm-rocky/sram/profile_wrapper/llc_lookup_latency_codex_handoff/inputs/llc_data/compout/views/sadcls0c4l1p1024x128m4b1w1c0p0d0t0s2sdz1rw00/tt0p8v25c/sadcls0c4l1p1024x128m4b1w1c0p0d0t0s2sdz1rw00.mv`
+  `profile_wrapper/llc_lookup_latency_codex_handoff/inputs/llc_data/compout/views/sadcls0c4l1p1024x128m4b1w1c0p0d0t0s2sdz1rw00/tt0p8v25c/sadcls0c4l1p1024x128m4b1w1c0p0d0t0s2sdz1rw00.mv`
 - meta 1024x128:
-  `/nfs_global/S/daiyihao/project/qm-rocky/sram/profile_wrapper/llc_lookup_latency_codex_handoff/inputs/llc_meta/compout/views/sassls0c4l1p1024x128m4b1w0c0p0d0t0s2sdz0rw00__1/tt0p8v25c/sassls0c4l1p1024x128m4b1w0c0p0d0t0s2sdz0rw00__1.mv`
+  `profile_wrapper/llc_lookup_latency_codex_handoff/inputs/llc_meta/compout/views/sassls0c4l1p1024x128m4b1w0c0p0d0t0s2sdz0rw00__1/tt0p8v25c/sassls0c4l1p1024x128m4b1w0c0p0d0t0s2sdz0rw00__1.mv`

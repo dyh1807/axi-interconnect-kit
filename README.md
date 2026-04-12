@@ -170,8 +170,8 @@ rather than reopen basic ordering/coherence rules.
 Validated toolchains:
 
 - `qm` environment default toolchain
-- `/usr/bin/g++`
-- `/workspace/S/daiyihao/miniconda3/envs/qm/bin/x86_64-conda-linux-gnu-c++`
+- system `g++`
+- Conda-hosted `x86_64-conda-linux-gnu-c++` in the `qm` environment
 
 ## Interface Documentation
 

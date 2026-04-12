@@ -158,8 +158,8 @@ router 负责 AXI 侧地址译码。
 已验证编译器：
 
 - `qm` 环境默认工具链
-- `/usr/bin/g++`
-- `/workspace/S/daiyihao/miniconda3/envs/qm/bin/x86_64-conda-linux-gnu-c++`
+- 系统默认 `g++`
+- `qm` 环境中的 Conda 版 `x86_64-conda-linux-gnu-c++`
 
 ## 接口文档
 
