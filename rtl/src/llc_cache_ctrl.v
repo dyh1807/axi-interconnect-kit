@@ -3,6 +3,7 @@
 
 module llc_cache_ctrl #(
     parameter ADDR_BITS        = `AXI_LLC_ADDR_BITS,
+    parameter ID_BITS          = `AXI_LLC_ID_BITS,
     parameter LINE_BYTES       = `AXI_LLC_LINE_BYTES,
     parameter LINE_BITS        = `AXI_LLC_LINE_BITS,
     parameter LINE_OFFSET_BITS = `AXI_LLC_LINE_OFFSET_BITS,
@@ -21,12 +22,14 @@ module llc_cache_ctrl #(
     output                      req_ready,
     input                       req_write,
     input      [ADDR_BITS-1:0]  req_addr,
+    input      [ID_BITS-1:0]    req_id,
     input      [7:0]            req_total_size,
     input      [LINE_BITS-1:0]  req_wdata,
     input      [LINE_BYTES-1:0] req_wstrb,
     output                      resp_valid,
     input                       resp_ready,
     output     [LINE_BITS-1:0]  resp_rdata,
+    output     [ID_BITS-1:0]    resp_id,
     input                       invalidate_line_valid,
     input      [ADDR_BITS-1:0]  invalidate_line_addr,
     output                      invalidate_line_accepted,
@@ -67,12 +70,14 @@ module llc_cache_ctrl #(
     input                       mem_req_ready,
     output                      mem_req_write,
     output     [ADDR_BITS-1:0]  mem_req_addr,
+    output     [ID_BITS-1:0]    mem_req_id,
     output     [LINE_BITS-1:0]  mem_req_wdata,
     output     [LINE_BYTES-1:0] mem_req_wstrb,
     output     [7:0]            mem_req_size,
     input                       mem_resp_valid,
     output                      mem_resp_ready,
-    input      [LINE_BITS-1:0]  mem_resp_rdata
+    input      [LINE_BITS-1:0]  mem_resp_rdata,
+    input      [ID_BITS-1:0]    mem_resp_id
 );
 
     localparam [3:0] ST_IDLE            = 4'd0;
@@ -87,12 +92,14 @@ module llc_cache_ctrl #(
     localparam [3:0] ST_FLUSH_SCAN_WAIT = 4'd9;
     localparam [3:0] ST_FLUSH_WB_REQ    = 4'd10;
     localparam [3:0] ST_FLUSH_WB_WAIT   = 4'd11;
+    localparam [ID_BITS-1:0] FLUSH_MEM_ID = {ID_BITS{1'b0}};
     localparam integer META_TAG_BITS = (TAG_BITS < (META_BITS - 1)) ?
                                        TAG_BITS : (META_BITS - 1);
 
     reg [3:0] state_r;
     reg       req_write_r;
     reg [ADDR_BITS-1:0] req_addr_r;
+    reg [ID_BITS-1:0] req_id_r;
     reg [7:0] req_total_size_r;
     reg [LINE_BITS-1:0] req_wdata_r;
     reg [LINE_BYTES-1:0] req_wstrb_r;
@@ -287,6 +294,8 @@ module llc_cache_ctrl #(
     wire [SET_BITS-1:0] active_lookup_set_w;
     wire [SET_BITS-1:0] active_valid_set_w;
     wire [SET_BITS-1:0] invalidate_lookup_set_w;
+    wire [ID_BITS-1:0] expected_mem_resp_id_w;
+    wire                mem_resp_match_w;
 
     assign req_set_w = req_addr[LINE_OFFSET_BITS + SET_BITS - 1:LINE_OFFSET_BITS];
     assign req_tag_w = req_addr[ADDR_BITS-1:LINE_OFFSET_BITS + SET_BITS];
@@ -361,6 +370,7 @@ module llc_cache_ctrl #(
 
     assign resp_valid = resp_valid_r;
     assign resp_rdata = resp_rdata_r;
+    assign resp_id = req_id_r;
 
     assign mem_req_valid = (state_r == ST_MISS_WB_REQ) ||
                            (state_r == ST_REFILL_REQ) ||
@@ -369,12 +379,16 @@ module llc_cache_ctrl #(
     assign mem_req_addr = (state_r == ST_MISS_WB_REQ) ? victim_addr_r :
                           (state_r == ST_FLUSH_WB_REQ) ? flush_wb_addr_r :
                           line_align_addr(req_addr_r);
+    assign mem_req_id = (state_r == ST_FLUSH_WB_REQ) ? FLUSH_MEM_ID : req_id_r;
     assign mem_req_wdata = (state_r == ST_MISS_WB_REQ) ? victim_data_r : flush_wb_data_r;
     assign mem_req_wstrb = {LINE_BYTES{1'b1}};
     assign mem_req_size = LINE_BYTES[7:0] - 8'd1;
-    assign mem_resp_ready = (state_r == ST_MISS_WB_WAIT) ||
-                            (state_r == ST_REFILL_WAIT) ||
-                            (state_r == ST_FLUSH_WB_WAIT);
+    assign expected_mem_resp_id_w = (state_r == ST_FLUSH_WB_WAIT) ? FLUSH_MEM_ID : req_id_r;
+    assign mem_resp_match_w = mem_resp_valid && (mem_resp_id == expected_mem_resp_id_w);
+    assign mem_resp_ready = ((state_r == ST_MISS_WB_WAIT) ||
+                             (state_r == ST_REFILL_WAIT) ||
+                             (state_r == ST_FLUSH_WB_WAIT)) &&
+                            (mem_resp_id == expected_mem_resp_id_w);
 
     always @(*) begin
         lookup_hit_r = 1'b0;
@@ -472,6 +486,7 @@ module llc_cache_ctrl #(
             state_r <= ST_IDLE;
             req_write_r <= 1'b0;
             req_addr_r <= {ADDR_BITS{1'b0}};
+            req_id_r <= {ID_BITS{1'b0}};
             req_total_size_r <= 8'd0;
             req_wdata_r <= {LINE_BITS{1'b0}};
             req_wstrb_r <= {LINE_BYTES{1'b0}};
@@ -507,6 +522,7 @@ module llc_cache_ctrl #(
                     end else if (accept_invalidate_line_w) begin
                         req_write_r <= 1'b0;
                         req_addr_r <= invalidate_line_addr;
+                        req_id_r <= {ID_BITS{1'b0}};
                         req_total_size_r <= 8'd0;
                         req_wdata_r <= {LINE_BITS{1'b0}};
                         req_wstrb_r <= {LINE_BYTES{1'b0}};
@@ -519,6 +535,7 @@ module llc_cache_ctrl #(
                     end else if (launch_lookup_w) begin
                         req_write_r <= req_write;
                         req_addr_r <= req_addr;
+                        req_id_r <= req_id;
                         req_total_size_r <= req_total_size;
                         req_wdata_r <= req_wdata;
                         req_wstrb_r <= req_wstrb;
@@ -591,7 +608,7 @@ module llc_cache_ctrl #(
                 end
 
                 ST_MISS_WB_WAIT: begin
-                    if (mem_resp_valid) begin
+                    if (mem_resp_match_w) begin
                         if (dirty_count_r != 0) begin
                             dirty_count_r <= dirty_count_r - 32'd1;
                         end
@@ -610,7 +627,7 @@ module llc_cache_ctrl #(
                 end
 
                 ST_REFILL_WAIT: begin
-                    if (mem_resp_valid) begin
+                    if (mem_resp_match_w) begin
                         if (req_write_r) begin
                             install_line_r <= merge_line(mem_resp_rdata,
                                                          req_wdata_r,
@@ -666,7 +683,7 @@ module llc_cache_ctrl #(
                 end
 
                 ST_FLUSH_WB_WAIT: begin
-                    if (mem_resp_valid) begin
+                    if (mem_resp_match_w) begin
                         if (dirty_count_r != 0) begin
                             dirty_count_r <= dirty_count_r - 32'd1;
                         end
