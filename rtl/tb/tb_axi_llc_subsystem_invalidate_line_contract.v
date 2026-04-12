@@ -395,7 +395,7 @@ module tb_axi_llc_subsystem_invalidate_line_contract;
         end
     end
 
-    axi_llc_subsystem_top #(
+    axi_llc_subsystem_core #(
         .ADDR_BITS        (ADDR_BITS),
         .RESET_MODE       (MODE_OFF),
         .MODE_BITS        (MODE_BITS),

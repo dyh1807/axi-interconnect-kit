@@ -11,19 +11,19 @@
 如果你第一次进入 `rtl/`，推荐按下面顺序打开：
 
 1. `src/axi_llc_subsystem.v`
-   - 最终对外顶层
+   - 当前对外顶层
    - 同时能看到上游自定义接口和下游 AXI 接口
 2. `src/axi_llc_subsystem_compat.v`
    - 多 master 兼容层
    - 负责把上游多读/多写 master 收敛成单流核心
-3. `src/axi_llc_subsystem_top.v`
+3. `src/axi_llc_subsystem_core.v`
    - 单流核心
    - 负责 mode 路由、mode 切换、shared store、mode1 cache、mode2 mapped window
 4. `src/axi_llc_axi_bridge.v`
    - 内部 lower request 到 AXI4 五通道的翻译层
 
 如果你只关心“RTL 对外长什么样”，只看 `axi_llc_subsystem.v` 就够了。  
-如果你只关心“mode1/mode2 内部怎么走”，看 `axi_llc_subsystem_top.v`。  
+如果你只关心“mode1/mode2 内部怎么走”，看 `axi_llc_subsystem_core.v`。  
 如果你只关心“AXI 是怎么打包出来的”，看 `axi_llc_axi_bridge.v`。
 
 ## 主层次
@@ -31,7 +31,7 @@
 ```text
 axi_llc_subsystem
 |-- axi_llc_subsystem_compat
-|   `-- axi_llc_subsystem_top
+|   `-- axi_llc_subsystem_core
 |       |-- axi_reconfig_ctrl
 |       |-- llc_invalidate_sweep
 |       |-- llc_valid_ram
@@ -53,7 +53,7 @@ axi_llc_subsystem
 
 职责：
 
-- 提供最终对外 RTL 边界
+- 提供当前对外 RTL 边界
 - 保留 C++ submodule 风格的上游多 master 自定义接口
 - 保留下游单组 AXI4 master 接口
 - 在内部串接：
@@ -73,7 +73,7 @@ axi_llc_subsystem
 
 这一层不负责 AXI，也不直接碰共享 store。
 
-### `axi_llc_subsystem_top`
+### `axi_llc_subsystem_core`
 
 职责：
 
@@ -158,7 +158,7 @@ axi_llc_subsystem
 - `axi_ar*`
 - `axi_r*`
 
-### 单流核心 `axi_llc_subsystem_top`
+### 单流核心 `axi_llc_subsystem_core`
 
 #### 上游单流接口
 
@@ -188,7 +188,7 @@ bypass 路径：
 
 - `src/axi_llc_subsystem.v`
 - `src/axi_llc_subsystem_compat.v`
-- `src/axi_llc_subsystem_top.v`
+- `src/axi_llc_subsystem_core.v`
 - `src/axi_llc_axi_bridge.v`
 
 ### 控制与路径
@@ -220,7 +220,7 @@ bypass 路径：
 
 1. 看 `axi_llc_subsystem.v` 的端口和两级实例化
 2. 看 `axi_llc_subsystem_compat.v`，明确多 master 如何收敛成单流
-3. 看 `axi_llc_subsystem_top.v`，明确 mode 路由和共享 store
+3. 看 `axi_llc_subsystem_core.v`，明确 mode 路由和共享 store
 4. 看 `llc_cache_ctrl.v` 和 `llc_mapped_window_ctrl.v`，理解 mode1 / mode2 差异
 5. 看 `axi_llc_axi_bridge.v`，确认对外 AXI 打包方式
 

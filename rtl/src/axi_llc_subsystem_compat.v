@@ -1,13 +1,13 @@
 `timescale 1ns / 1ps
 `include "axi_llc_params.vh"
 
-// Compatibility wrapper between the C++-style multi-master external boundary
+// Compatibility layer between the C++-style multi-master external boundary
 // and the single-flow RTL core.
 //
 // Responsibilities:
 //   - Hold one queued request per upstream master
 //   - Return accepted / accepted_id / independent write responses
-//   - Serialize requests into axi_llc_subsystem_top
+//   - Serialize requests into axi_llc_subsystem_core
 //
 // This layer does not translate to AXI and does not own resident storage.
 module axi_llc_subsystem_compat #(
@@ -65,7 +65,7 @@ module axi_llc_subsystem_compat #(
     input      [NUM_WRITE_MASTERS-1:0]      write_resp_ready,
     output reg [NUM_WRITE_MASTERS*ID_BITS-1:0] write_resp_id,
     output reg [NUM_WRITE_MASTERS*2-1:0]    write_resp_code,
-    // Single-flow core request/response interface.
+    // Core-exported lower interfaces toward the AXI bridge.
     output                                  cache_req_valid,
     input                                   cache_req_ready,
     output                                  cache_req_write,
@@ -261,7 +261,7 @@ module axi_llc_subsystem_compat #(
     end
 
     // Single-flow core instance.
-    axi_llc_subsystem_top #(
+    axi_llc_subsystem_core #(
         .ADDR_BITS        (ADDR_BITS),
         .ID_BITS          (ID_BITS),
         .MODE_BITS        (MODE_BITS),

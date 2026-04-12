@@ -1,23 +1,25 @@
 # RTL Subtree
 
-This directory hosts the first-stage Verilog (not SystemVerilog) implementation
-for the AXI/LLC submodule.
+This directory hosts the current synthesizable Verilog (not SystemVerilog)
+implementation of the AXI/LLC submodule.
 
 Start here for the current external top:
 
 - `src/axi_llc_subsystem.v`
+- `src/axi_llc_subsystem_core.v`
 
 Detailed hierarchy / IO index is documented in:
 
 - `README_CN.md`
 - `docs/rtl_hierarchy_CN.md`
 
-The current bring-up scope is intentionally narrow:
+Current implemented scope:
 
 - unified reconfiguration FSM
 - valid-sweep invalidate flow
 - mode-2 direct-mapped local window
-- abstract cache/bypass subpath split for future integration
+- mode-1 cache control
+- single AXI4 external boundary
 
 The subtree is self-contained and is not wired into the top-level CMake build
 yet.

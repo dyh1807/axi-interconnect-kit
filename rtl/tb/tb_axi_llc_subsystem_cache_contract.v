@@ -301,7 +301,7 @@ module tb_axi_llc_subsystem_cache_contract;
         end
     end
 
-    axi_llc_subsystem_top #(
+    axi_llc_subsystem_core #(
         .ADDR_BITS        (ADDR_BITS),
         .MODE_BITS        (MODE_BITS),
         .LINE_BYTES       (LINE_BYTES),

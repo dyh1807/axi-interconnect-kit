@@ -13,7 +13,7 @@
 //
 // If the goal is to understand mode behavior or resident-store ownership,
 // start from this file.
-module axi_llc_subsystem_top #(
+module axi_llc_subsystem_core #(
     parameter ADDR_BITS        = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS          = `AXI_LLC_ID_BITS,
     parameter MODE_BITS        = `AXI_LLC_MODE_BITS,
@@ -38,7 +38,7 @@ module axi_llc_subsystem_top #(
 ) (
     input                       clk,
     input                       rst_n,
-    // Requested configuration from the outer wrapper.
+    // Requested configuration from the outer compatibility layer.
     input      [MODE_BITS-1:0]  mode_req,
     input      [ADDR_BITS-1:0]  llc_mapped_offset_req,
     // Single upstream request / response stream.

@@ -12,7 +12,7 @@
 //   - Upstream: current C++-style multi read/write master custom interface
 //   - Downstream: a single AXI4 master port
 //
-// Open this file first if the goal is to find the final top-level IO.
+// Open this file first if the goal is to find the current external IO.
 module axi_llc_subsystem #(
     parameter ADDR_BITS         = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS           = `AXI_LLC_ID_BITS,
@@ -116,7 +116,7 @@ module axi_llc_subsystem #(
 );
 
     // Internal lower-memory abstract interfaces between the compat layer and
-    // the AXI bridge. These are not final external IO.
+    // the AXI bridge. These are not current external IO.
     wire                     cache_req_valid_w;
     wire                     cache_req_ready_w;
     wire                     cache_req_write_w;
@@ -143,7 +143,7 @@ module axi_llc_subsystem #(
     wire [LINE_BITS-1:0]     bypass_resp_rdata_w;
     wire [ID_BITS-1:0]       bypass_resp_id_w;
 
-    // Multi-master wrapper around the single-flow core.
+    // Multi-master compatibility layer around the single-flow core.
     axi_llc_subsystem_compat #(
         .ADDR_BITS         (ADDR_BITS),
         .ID_BITS           (ID_BITS),

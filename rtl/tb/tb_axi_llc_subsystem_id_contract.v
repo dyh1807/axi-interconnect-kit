@@ -94,7 +94,7 @@ module tb_axi_llc_subsystem_id_contract;
 
     always #5 clk = ~clk;
 
-    axi_llc_subsystem_top #(
+    axi_llc_subsystem_core #(
         .ADDR_BITS        (ADDR_BITS),
         .ID_BITS          (ID_BITS),
         .MODE_BITS        (MODE_BITS),

@@ -193,7 +193,7 @@ module tb_axi_llc_subsystem_read_slice_contract;
         end
     endtask
 
-    axi_llc_subsystem_top #(
+    axi_llc_subsystem_core #(
         .ADDR_BITS        (ADDR_BITS),
         .RESET_MODE       (MODE_CACHE),
         .RESET_OFFSET     ({ADDR_BITS{1'b0}}),

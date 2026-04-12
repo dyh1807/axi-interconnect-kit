@@ -1,14 +1,14 @@
-# RTL 微架构说明（第二阶段进行中）
+# RTL 微架构说明
 
 ## 快速导航
 
 如果你当前的目标是“先找到顶层和 IO，再看细节”，建议按下面顺序阅读：
 
 1. `src/axi_llc_subsystem.v`
-   - 最终对外 RTL 顶层
+   - 当前对外 RTL 顶层
 2. `src/axi_llc_subsystem_compat.v`
    - 多 master 兼容层
-3. `src/axi_llc_subsystem_top.v`
+3. `src/axi_llc_subsystem_core.v`
    - 单流核心
 4. `src/axi_llc_axi_bridge.v`
    - AXI 翻译层
@@ -19,7 +19,7 @@
 
 ## 总体结构
 
-第一阶段 RTL 采用“控制分离、存储共享”的组织方式：
+当前 RTL 采用“控制分离、存储共享”的组织方式：
 
 - `mode=1`
   - 进入内建 `llc_cache_ctrl`
@@ -34,7 +34,7 @@
   - resident hit 直接返回 / shadow update
   - miss 或 write-through 再走 `bypass_*` 下游端口
 
-本阶段已经把 `mode=2 + reconfig/invalidate + mode=1 最小 cache 控制` 落地。
+当前已把 `mode=2 + reconfig/invalidate + mode=1 最小 cache 控制` 落地。
 
 ## 模块
 
@@ -170,7 +170,7 @@
 
 ### `axi_llc_subsystem_compat`
 
-新增的 compat wrapper 负责把当前单流核心包装成更接近 C++ 顶层的接口：
+`axi_llc_subsystem_compat` 负责把当前单流核心适配成更接近 C++ 顶层的接口：
 
 - 多 read master / 多 write master
 - read `ready/accepted/accepted_id`
@@ -180,7 +180,7 @@
 
 当前限制：
 
-- 该 wrapper 还不是 C++ interconnect 的完整等价物
+- 该兼容层还不是 C++ interconnect 的完整等价物
 - 内部 lower-memory issue 仍由单流核心串行化
 - 还没有 C++ 那套 `orig_id / mem_id / axi_id` 三层 remap table
 
@@ -202,7 +202,7 @@
 
 ### `axi_llc_subsystem`
 
-当前推荐的最终 RTL 子模块顶层：
+当前对外 RTL 子模块顶层：
 
 - 上游：
   - C++ 风格多 `read master / write master` 自定义接口
@@ -236,7 +236,7 @@ DDR/MMIO 地址分流属于外部系统功能，不在本 RTL 顶层重复展开
 当前 RTL 已有一套可运行的最小 `id` 平面，目的是先冻结接口边界并支撑后续独立
 contract bench：
 
-- `axi_llc_subsystem_top`
+- `axi_llc_subsystem_core`
   - `up_req_id / up_resp_id`
   - `cache_req_id / cache_resp_id`
   - `bypass_req_id / bypass_resp_id`
@@ -253,7 +253,7 @@ contract bench：
   - flush 写回同样使用维护 id `0`
   - 上游 `up_resp_id` 仍保持原始请求 `req_id`
 
-这套合同在 `axi_llc_subsystem_top` 内仍是单流简化版；`axi_llc_subsystem_compat`
+这套合同在 `axi_llc_subsystem_core` 内仍是单流简化版；`axi_llc_subsystem_compat`
 已经把多 master 的 `accepted/resp` 接口补回；`axi_llc_subsystem` 再把 lower 请求
 收敛成单组 AXI4。但它们还没有做到 C++ 的完整多 outstanding / AXI remap 语义。
 
@@ -282,7 +282,7 @@ contract bench：
 - `4MB mapped window`
 - `8 mapped ways`
 
-本阶段 RTL 依赖以下静态几何约束：
+当前 RTL 依赖以下静态几何约束：
 
 - `WINDOW_BYTES <= LLC_SIZE_BYTES`
 - `WINDOW_BYTES` 必须是整 `way-slice`
@@ -291,7 +291,7 @@ contract bench：
 运行时约束：
 
 - `mode=2` 时 `offset` 必须 line 对齐
-- 非对齐 offset 会被 `axi_llc_subsystem_top` 显式拒绝，不会切进新配置
+- 非对齐 offset 会被 `axi_llc_subsystem_core` 显式拒绝，不会切进新配置
 
 ## SRAM 选型约束
 

@@ -71,7 +71,7 @@ module tb_axi_llc_subsystem_handshake_contract;
     integer cache_before;
     integer bypass_before;
 
-    axi_llc_subsystem_top #(
+    axi_llc_subsystem_core #(
         .ADDR_BITS        (32),
         .RESET_MODE       (2'b00),
         .MODE_BITS        (2),

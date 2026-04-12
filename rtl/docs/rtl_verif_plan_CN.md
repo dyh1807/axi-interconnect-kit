@@ -1,9 +1,9 @@
-# RTL 验证计划（第二阶段进行中）
+# RTL 验证计划
 
 ## 目标
 
 当前验证优先覆盖已经落地的共享存储、mode 控制、mode2 直映窗口，以及 mode1 最小 cache 语义。
-在新增 AXI 顶层后，还需要覆盖“上游自定义接口 -> 单组 AXI4”的打包合同。
+当前也覆盖“上游自定义接口 -> 单组 AXI4”的打包合同。
 
 ## P0 单元级
 
@@ -145,25 +145,25 @@
 
 覆盖：
 
-- wrapper 的 read / write `accepted` 单拍脉冲
+- 兼容层的 read / write `accepted` 单拍脉冲
 - read `accepted_id` 与被接受请求 `id` 一致
 - 不同 read / write master 可先入队，再按各自 slot 收到 response
 - write response code 当前固定为 `OKAY`
-- wrapper 不破坏既有 lower 路由合同：
+- 兼容层不破坏既有 lower 路由合同：
   - `mode=1` cache miss 走 `cache_req`
   - `mode=1` bypass 走 `bypass_req`
   - `mode=2` direct-window 不触发 lower 请求
 
 说明：
 
-- 该 bench 只验证 wrapper 暴露给上层的多 master 队列与 response 槽合同，不改 `src/`。
+- 该 bench 只验证兼容层暴露给上层的多 master 队列与 response 槽合同，不改 `src/`。
 - 对 cache lower response，只要求把观测到的 `cache_req_id` 原样回传，不额外约束 cache 内部 `mem_id` 编码。
 
 ### `tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 
 覆盖：
 
-- 最终顶层 `axi_llc_subsystem.v` 的 `mode=1` cache refill 只使用单组 AXI4 读通道
+- 对外顶层 `axi_llc_subsystem.v` 的 `mode=1` cache refill 只使用单组 AXI4 读通道
 - 64B refill 对应 `AR len=1 / size=5 / burst=INCR`
 - 两个 32B `R` beat 组回 1 个 64B line
 - cache refill 期间不得误触发 `AW/W/B`
@@ -172,7 +172,7 @@
 
 覆盖：
 
-- bypass 4B read 在最终顶层只发 single-beat `AR`
+- bypass 4B read 在对外顶层只发 single-beat `AR`
 - `arlen=0 / arsize=5 / arburst=INCR`
 - 只消费 1 个 `R` beat
 - 上游 `read_resp_id` 保持原始事务 `id`
@@ -217,7 +217,7 @@
 ## 当前限制
 
 - 当前 bench 仍以 directed contract 为主，`ready/valid` 背压与 mode1 cache 细节需要独立 bench 继续补强。
-- 新增的 `invalidate_all` 与 SMIC12 宏封装路径正在补独立 bench。
+- `invalidate_all` 与 SMIC12 宏封装路径正在补独立 bench。
 - 当前已在 `eda-10` 上确认 VCS 可用，并实际跑通：
   - `tb_llc_data_store`
   - `tb_llc_meta_store`

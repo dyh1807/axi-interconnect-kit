@@ -513,7 +513,7 @@ module tb_axi_llc_subsystem_bypass_contract;
         end
     endtask
 
-    axi_llc_subsystem_top #(
+    axi_llc_subsystem_core #(
         .ADDR_BITS        (ADDR_BITS),
         .ID_BITS          (ID_BITS),
         .MODE_BITS        (MODE_BITS),

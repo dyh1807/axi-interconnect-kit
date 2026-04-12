@@ -1,4 +1,4 @@
-# RTL 子目录（第二阶段进行中）
+# RTL 子目录
 
 本目录用于开发与当前 C++ submodule 语义对齐的 **Verilog（不是 SystemVerilog）**
 版 AXI/LLC 子模块。
@@ -8,13 +8,13 @@
 如果你只想先找到顶层、IO 和层次，先看下面 4 个文件：
 
 - `src/axi_llc_subsystem.v`
-  - 当前推荐的最终 RTL 顶层
+  - 当前对外 RTL 顶层
   - 上游是 C++ 风格多 `read_masters[] / write_masters[]`
   - 下游是一组 AXI4 `AW/W/B/AR/R`
 - `src/axi_llc_subsystem_compat.v`
   - 兼容层
   - 把多 master 请求收敛成单流核心接口
-- `src/axi_llc_subsystem_top.v`
+- `src/axi_llc_subsystem_core.v`
   - 单流核心
   - 负责 mode 路由、reconfig、shared store、mode1 cache、mode2 mapped-window
 - `src/axi_llc_axi_bridge.v`
@@ -25,7 +25,7 @@
 
 1. `src/axi_llc_subsystem.v`
 2. `src/axi_llc_subsystem_compat.v`
-3. `src/axi_llc_subsystem_top.v`
+3. `src/axi_llc_subsystem_core.v`
 4. `src/axi_llc_axi_bridge.v`
 
 ## 层次关系
@@ -35,7 +35,7 @@
 ```text
 axi_llc_subsystem
 |-- axi_llc_subsystem_compat
-|   `-- axi_llc_subsystem_top
+|   `-- axi_llc_subsystem_core
 |       |-- axi_reconfig_ctrl
 |       |-- llc_invalidate_sweep
 |       |-- llc_valid_ram
@@ -74,9 +74,9 @@ axi_llc_subsystem
   - `up_req_* / up_resp_*`
   - `cache_req_* / cache_resp_*`
   - `bypass_req_* / bypass_resp_*`
-  - 入口在 `src/axi_llc_subsystem_top.v`
+  - 入口在 `src/axi_llc_subsystem_core.v`
 
-当前阶段优先实现并冻结 GPT-Pro 评审明确建议先落地的语义边界：
+当前实现优先冻结并保持以下语义边界：
 
 - `mode=1`：正常 LLC cache path
 - `mode=2`：direct-mapped 本地 LLC window
@@ -88,7 +88,7 @@ axi_llc_subsystem
 ## 当前已落地内容
 
 - `include/axi_llc_params.vh`
-  - 第一阶段默认参数
+  - 当前默认参数
 - `src/axi_reconfig_ctrl.v`
   - 模式切换 + `invalidate_all` 维护控制 FSM
   - 默认上电 `active_mode=mode1`
@@ -113,8 +113,8 @@ axi_llc_subsystem
 - `src/llc_mapped_window_ctrl.v`
   - mode=2 地址翻译 / set-way 计算 / 共享 data-store 的 line 选择 / zero-read /
     zero-merge
-- `src/axi_llc_subsystem_top.v`
-  - 顶层子模块：
+- `src/axi_llc_subsystem_core.v`
+  - 单流核心：
     - 集成 reconfig + shared data/meta/valid/repl store
     - `mode=1`、`mode=0/3`、以及 `mode=2` 窗口外都进入内建 `llc_cache_ctrl`
     - `cache_*` 口现在承载 line-memory miss/refill/writeback
@@ -128,7 +128,7 @@ axi_llc_subsystem
     - 当前已接入 `invalidate_all_valid` / `invalidate_all_accepted`
     - `invalidate_all_accepted` 当前表示一次维护 sweep 已完成，并与配置提交同拍对外可见
 - `src/axi_llc_subsystem_compat.v`
-  - 多读/多写 master 兼容 wrapper
+  - 多读/多写 master 兼容层
   - 补回 `accepted/accepted_id`、独立写响应槽位
   - 当前通过每 master 单深度队列把外部接口收敛到单流核心
 - `src/axi_llc_axi_bridge.v`
@@ -139,7 +139,7 @@ axi_llc_subsystem
     - `burst` 固定为 `INCR`
     - beat `data/strb` 按低地址连续切片
 - `src/axi_llc_subsystem.v`
-  - 当前推荐的最终 RTL 子模块顶层
+  - 当前对外 RTL 子模块顶层
   - 上游保持 C++ 风格的多 read/write master 自定义接口
   - 下游收敛成一组 AXI4 master 五通道
   - 不在本层再分出独立 DDR/MMIO 两组 AXI；地址分流留给外部系统
@@ -159,7 +159,7 @@ axi_llc_subsystem
 
 ## 验证文件
 
-当前提供最小 directed testbench 与 filelist：
+当前提供 directed/contract 验证集与 filelist：
 
 - `tb/tb_llc_data_store.v`
 - `tb/tb_llc_meta_store.v`
@@ -214,12 +214,12 @@ axi_llc_subsystem
   - cache 路径对上游仍返回原始 `up_req_id`
   - `mode=1` demand refill 对下游 line-memory 使用内部读事务 id `1`
   - cache miss 的 victim writeback 与 reconfig/flush 维护写回固定使用维护 id `0`
-- 新增的 `axi_llc_subsystem_compat` 已补回：
+- `axi_llc_subsystem_compat` 已补回：
   - 多 read/write master 的 `ready/accepted`
   - read `accepted_id`
   - 独立 write response `id/code`
   - 但当前内部 lower-issue 仍由单流核心串行化，不等价于 C++ 的完整多 outstanding
-- 新增的 `axi_llc_subsystem` 已把最终对外边界收敛成：
+- `axi_llc_subsystem` 已把当前对外边界收敛成：
   - 上游 `read_masters[] / write_masters[]`
   - 下游单组 AXI4 `AW/W/B/AR/R`
   - `mode / offset / invalidate_line / invalidate_all`
@@ -233,4 +233,4 @@ axi_llc_subsystem
   - C++ 原型里已有专门的 prefetch 单测与实现
   - 但本轮没有在当前分支上完成一次干净、可复现的端到端重验证
   - 因此 RTL 暂不引入 `prefetch` 状态机，只保留后续重新评估的空间
-- 当前已在 `eda-10 + bash_eda10 + VCS` 跑通 store/mode/reconfig/top-level contract bench。
+- 当前已在 `eda-10 + bash_eda10 + VCS` 跑通 store/mode/reconfig/顶层 contract bench。
