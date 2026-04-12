@@ -1,6 +1,18 @@
 `timescale 1ns / 1ps
 `include "axi_llc_params.vh"
 
+// Final external RTL top for the AXI/LLC submodule.
+//
+// Hierarchy:
+//   axi_llc_subsystem
+//     |- axi_llc_subsystem_compat
+//     `- axi_llc_axi_bridge
+//
+// External boundary:
+//   - Upstream: current C++-style multi read/write master custom interface
+//   - Downstream: a single AXI4 master port
+//
+// Open this file first if the goal is to find the final top-level IO.
 module axi_llc_subsystem #(
     parameter ADDR_BITS         = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS           = `AXI_LLC_ID_BITS,
@@ -30,8 +42,10 @@ module axi_llc_subsystem #(
 ) (
     input                                   clk,
     input                                   rst_n,
+    // Reconfiguration / maintenance control.
     input      [MODE_BITS-1:0]              mode_req,
     input      [ADDR_BITS-1:0]              llc_mapped_offset_req,
+    // Upstream read masters.
     input      [NUM_READ_MASTERS-1:0]       read_req_valid,
     output     [NUM_READ_MASTERS-1:0]       read_req_ready,
     output     [NUM_READ_MASTERS-1:0]       read_req_accepted,
@@ -44,6 +58,7 @@ module axi_llc_subsystem #(
     input      [NUM_READ_MASTERS-1:0]       read_resp_ready,
     output     [NUM_READ_MASTERS*LINE_BITS-1:0] read_resp_data,
     output     [NUM_READ_MASTERS*ID_BITS-1:0] read_resp_id,
+    // Upstream write masters.
     input      [NUM_WRITE_MASTERS-1:0]      write_req_valid,
     output     [NUM_WRITE_MASTERS-1:0]      write_req_ready,
     output     [NUM_WRITE_MASTERS-1:0]      write_req_accepted,
@@ -57,6 +72,7 @@ module axi_llc_subsystem #(
     input      [NUM_WRITE_MASTERS-1:0]      write_resp_ready,
     output     [NUM_WRITE_MASTERS*ID_BITS-1:0] write_resp_id,
     output     [NUM_WRITE_MASTERS*2-1:0]    write_resp_code,
+    // Downstream single AXI4 master.
     output                                  axi_awvalid,
     input                                   axi_awready,
     output     [AXI_ID_BITS-1:0]            axi_awid,
@@ -86,6 +102,7 @@ module axi_llc_subsystem #(
     input      [AXI_DATA_BITS-1:0]          axi_rdata,
     input      [1:0]                        axi_rresp,
     input                                   axi_rlast,
+    // Explicit maintenance interface.
     input                                   invalidate_line_valid,
     input      [ADDR_BITS-1:0]              invalidate_line_addr,
     output                                  invalidate_line_accepted,
@@ -98,6 +115,8 @@ module axi_llc_subsystem #(
     output                                  config_error
 );
 
+    // Internal lower-memory abstract interfaces between the compat layer and
+    // the AXI bridge. These are not final external IO.
     wire                     cache_req_valid_w;
     wire                     cache_req_ready_w;
     wire                     cache_req_write_w;
@@ -124,6 +143,7 @@ module axi_llc_subsystem #(
     wire [LINE_BITS-1:0]     bypass_resp_rdata_w;
     wire [ID_BITS-1:0]       bypass_resp_id_w;
 
+    // Multi-master wrapper around the single-flow core.
     axi_llc_subsystem_compat #(
         .ADDR_BITS         (ADDR_BITS),
         .ID_BITS           (ID_BITS),
@@ -212,6 +232,7 @@ module axi_llc_subsystem #(
         .config_error          (config_error)
     );
 
+    // AXI packing / response recovery for cache and bypass lower requests.
     axi_llc_axi_bridge #(
         .ADDR_BITS      (ADDR_BITS),
         .ID_BITS        (ID_BITS),

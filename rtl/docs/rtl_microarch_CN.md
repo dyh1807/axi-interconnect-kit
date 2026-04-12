@@ -1,5 +1,22 @@
 # RTL 微架构说明（第二阶段进行中）
 
+## 快速导航
+
+如果你当前的目标是“先找到顶层和 IO，再看细节”，建议按下面顺序阅读：
+
+1. `src/axi_llc_subsystem.v`
+   - 最终对外 RTL 顶层
+2. `src/axi_llc_subsystem_compat.v`
+   - 多 master 兼容层
+3. `src/axi_llc_subsystem_top.v`
+   - 单流核心
+4. `src/axi_llc_axi_bridge.v`
+   - AXI 翻译层
+
+如果只需要层次图和文件职责索引，直接看：
+
+- [rtl_hierarchy_CN.md](rtl_hierarchy_CN.md)
+
 ## 总体结构
 
 第一阶段 RTL 采用“控制分离、存储共享”的组织方式：

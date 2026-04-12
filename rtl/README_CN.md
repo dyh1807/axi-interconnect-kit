@@ -3,6 +3,79 @@
 本目录用于开发与当前 C++ submodule 语义对齐的 **Verilog（不是 SystemVerilog）**
 版 AXI/LLC 子模块。
 
+## 快速定位
+
+如果你只想先找到顶层、IO 和层次，先看下面 4 个文件：
+
+- `src/axi_llc_subsystem.v`
+  - 当前推荐的最终 RTL 顶层
+  - 上游是 C++ 风格多 `read_masters[] / write_masters[]`
+  - 下游是一组 AXI4 `AW/W/B/AR/R`
+- `src/axi_llc_subsystem_compat.v`
+  - 兼容层
+  - 把多 master 请求收敛成单流核心接口
+- `src/axi_llc_subsystem_top.v`
+  - 单流核心
+  - 负责 mode 路由、reconfig、shared store、mode1 cache、mode2 mapped-window
+- `src/axi_llc_axi_bridge.v`
+  - AXI 翻译层
+  - 把内部 lower request/response 转成单组 AXI4 master 五通道
+
+建议阅读顺序：
+
+1. `src/axi_llc_subsystem.v`
+2. `src/axi_llc_subsystem_compat.v`
+3. `src/axi_llc_subsystem_top.v`
+4. `src/axi_llc_axi_bridge.v`
+
+## 层次关系
+
+当前主层次如下：
+
+```text
+axi_llc_subsystem
+|-- axi_llc_subsystem_compat
+|   `-- axi_llc_subsystem_top
+|       |-- axi_reconfig_ctrl
+|       |-- llc_invalidate_sweep
+|       |-- llc_valid_ram
+|       |-- llc_repl_ram
+|       |-- llc_data_store
+|       |   |-- llc_data_store_generic
+|       |   `-- llc_data_store_smic12
+|       |-- llc_meta_store
+|       |   |-- llc_meta_store_generic
+|       |   `-- llc_meta_store_smic12
+|       |-- llc_cache_ctrl
+|       `-- llc_mapped_window_ctrl
+`-- axi_llc_axi_bridge
+```
+
+更详细的层次、文件职责和 IO 分层见：
+
+- [rtl_hierarchy_CN.md](docs/rtl_hierarchy_CN.md)
+
+## IO 快速定位
+
+- 对外控制面：
+  - `mode_req`
+  - `llc_mapped_offset_req`
+  - `invalidate_line_*`
+  - `invalidate_all_*`
+  - 入口在 `src/axi_llc_subsystem.v`
+- 对外上游请求/响应：
+  - `read_req_* / read_resp_*`
+  - `write_req_* / write_resp_*`
+  - 入口在 `src/axi_llc_subsystem.v`
+- 对外下游 AXI：
+  - `axi_aw* / axi_w* / axi_b* / axi_ar* / axi_r*`
+  - 入口在 `src/axi_llc_subsystem.v`
+- 单流核心接口：
+  - `up_req_* / up_resp_*`
+  - `cache_req_* / cache_resp_*`
+  - `bypass_req_* / bypass_resp_*`
+  - 入口在 `src/axi_llc_subsystem_top.v`
+
 当前阶段优先实现并冻结 GPT-Pro 评审明确建议先落地的语义边界：
 
 - `mode=1`：正常 LLC cache path
@@ -79,6 +152,7 @@
 
 ## 文档
 
+- [rtl_hierarchy_CN.md](docs/rtl_hierarchy_CN.md)
 - [rtl_scope_CN.md](docs/rtl_scope_CN.md)
 - [rtl_microarch_CN.md](docs/rtl_microarch_CN.md)
 - [rtl_verif_plan_CN.md](docs/rtl_verif_plan_CN.md)

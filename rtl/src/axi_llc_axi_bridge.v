@@ -1,6 +1,16 @@
 `timescale 1ns / 1ps
 `include "axi_llc_params.vh"
 
+// Lower-memory to AXI4 translation layer.
+//
+// Input side:
+//   - cache_*  : line-memory requests from the cache path
+//   - bypass_* : lower bypass read/write requests
+//
+// Output side:
+//   - a single AXI4 master AW/W/B/AR/R interface
+//
+// This file owns AXI len/size/burst packing and beat-wise data/strobe assembly.
 module axi_llc_axi_bridge #(
     parameter ADDR_BITS      = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS        = `AXI_LLC_ID_BITS,
@@ -13,6 +23,7 @@ module axi_llc_axi_bridge #(
 ) (
     input                       clk,
     input                       rst_n,
+    // Cache lower path.
     input                       cache_req_valid,
     output                      cache_req_ready,
     input                       cache_req_write,
@@ -25,6 +36,7 @@ module axi_llc_axi_bridge #(
     input                       cache_resp_ready,
     output     [LINE_BITS-1:0]  cache_resp_rdata,
     output     [ID_BITS-1:0]    cache_resp_id,
+    // Bypass lower path.
     input                       bypass_req_valid,
     output                      bypass_req_ready,
     input                       bypass_req_write,
@@ -37,6 +49,7 @@ module axi_llc_axi_bridge #(
     input                       bypass_resp_ready,
     output     [LINE_BITS-1:0]  bypass_resp_rdata,
     output     [ID_BITS-1:0]    bypass_resp_id,
+    // Single AXI4 master port.
     output                      axi_awvalid,
     input                       axi_awready,
     output     [AXI_ID_BITS-1:0] axi_awid,
@@ -83,6 +96,8 @@ module axi_llc_axi_bridge #(
         (AXI_DATA_BYTES == 16) ? 3'd4 :
         (AXI_DATA_BYTES == 8)  ? 3'd3 : 3'd2;
 
+    // One in-flight AXI transaction at a time. This matches the current
+    // simplified RTL contract, not the full C++ multi-outstanding design.
     reg [2:0]                 state_r;
     reg                       txn_from_cache_r;
     reg                       txn_write_r;
@@ -108,6 +123,7 @@ module axi_llc_axi_bridge #(
     wire                      axi_r_match_w;
     wire                      axi_b_match_w;
 
+    // AXI packaging helpers.
     function [7:0] calc_total_beats;
         input [7:0] total_size;
         reg [15:0] bytes;
@@ -183,6 +199,7 @@ module axi_llc_axi_bridge #(
         end
     endfunction
 
+    // Cache requests win when both sources are ready in the same idle cycle.
     assign select_cache_w = (state_r == ST_IDLE) && cache_req_valid;
     assign select_bypass_w = (state_r == ST_IDLE) && !cache_req_valid && bypass_req_valid;
     assign idle_accept_w = select_cache_w || select_bypass_w;
@@ -230,6 +247,7 @@ module axi_llc_axi_bridge #(
     assign bypass_resp_rdata = txn_rdata_r;
     assign bypass_resp_id = txn_req_id_r;
 
+    // Transaction capture, beat accumulation and AXI response retirement.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state_r <= ST_IDLE;

@@ -1,6 +1,18 @@
 `timescale 1ns / 1ps
 `include "axi_llc_params.vh"
 
+// Single-flow core for the AXI/LLC submodule.
+//
+// Responsibilities:
+//   - Own the mode0/1/2/3 routing decision
+//   - Own reconfiguration and valid-sweep invalidate
+//   - Share resident data/meta/valid/repl storage across mode1 and mode2
+//   - Export two internal lower paths:
+//       * cache_*  : line-memory traffic from mode1 cache control
+//       * bypass_* : lower bypass traffic used by mode0/3 and bypass semantics
+//
+// If the goal is to understand mode behavior or resident-store ownership,
+// start from this file.
 module axi_llc_subsystem_top #(
     parameter ADDR_BITS        = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS          = `AXI_LLC_ID_BITS,
@@ -26,8 +38,10 @@ module axi_llc_subsystem_top #(
 ) (
     input                       clk,
     input                       rst_n,
+    // Requested configuration from the outer wrapper.
     input      [MODE_BITS-1:0]  mode_req,
     input      [ADDR_BITS-1:0]  llc_mapped_offset_req,
+    // Single upstream request / response stream.
     input                       up_req_valid,
     output                      up_req_ready,
     input                       up_req_write,
@@ -41,6 +55,7 @@ module axi_llc_subsystem_top #(
     input                       up_resp_ready,
     output     [LINE_BITS-1:0]  up_resp_rdata,
     output     [ID_BITS-1:0]    up_resp_id,
+    // Internal lower line-memory path used by the cache controller.
     output                      cache_req_valid,
     input                       cache_req_ready,
     output                      cache_req_write,
@@ -53,6 +68,7 @@ module axi_llc_subsystem_top #(
     output                      cache_resp_ready,
     input      [LINE_BITS-1:0]  cache_resp_rdata,
     input      [ID_BITS-1:0]    cache_resp_id,
+    // Internal lower bypass path.
     output                      bypass_req_valid,
     input                       bypass_req_ready,
     output                      bypass_req_write,
@@ -65,6 +81,7 @@ module axi_llc_subsystem_top #(
     output                      bypass_resp_ready,
     input      [LINE_BITS-1:0]  bypass_resp_rdata,
     input      [ID_BITS-1:0]    bypass_resp_id,
+    // Explicit maintenance control.
     input                       invalidate_line_valid,
     input      [ADDR_BITS-1:0]  invalidate_line_addr,
     output                      invalidate_line_accepted,
@@ -80,6 +97,7 @@ module axi_llc_subsystem_top #(
     localparam [MODE_BITS-1:0] MODE_CACHE  = 2'b01;
     localparam [MODE_BITS-1:0] MODE_MAPPED = 2'b10;
 
+    // Direct-window in-flight state for mode2 read/modify/write sequencing.
     reg                       direct_wait_rd_r;
     reg                       direct_write_r;
     reg [ADDR_BITS-1:0]       direct_addr_r;
@@ -92,6 +110,7 @@ module axi_llc_subsystem_top #(
     reg [LINE_BITS-1:0]       resp_data_r;
     reg [ID_BITS-1:0]         resp_id_r;
 
+    // Reconfiguration controller outputs.
     wire [MODE_BITS-1:0]      active_mode_w;
     wire [ADDR_BITS-1:0]      active_offset_w;
     wire [MODE_BITS-1:0]      reconfig_req_mode_w;
@@ -105,6 +124,7 @@ module axi_llc_subsystem_top #(
     wire [WAY_COUNT-1:0]      valid_wr_mask_sweep_w;
     wire [WAY_COUNT-1:0]      valid_wr_bits_sweep_w;
 
+    // Mode2 mapped-window decode outputs.
     wire                      offset_aligned_w;
     wire                      mapped_in_window_w;
     wire                      mapped_way_legal_w;
@@ -119,6 +139,7 @@ module axi_llc_subsystem_top #(
     wire [LINE_BYTES-1:0]     mapped_req_wstrb_w;
     wire [SET_BITS-1:0]       direct_valid_rd_set_w;
 
+    // Top-level routing decisions.
     wire                      cfg_req_legal_w;
     wire                      is_mmio_w;
     wire                      req_bypass_w;
@@ -151,6 +172,7 @@ module axi_llc_subsystem_top #(
     wire [LINE_BYTES-1:0]     bypass_mem_req_wstrb_w;
     wire                      bypass_mem_resp_ready_w;
 
+    // Cache-side quiescent / flush status used by reconfiguration.
     wire                      cache_quiescent_w;
     wire                      cache_flush_busy_w;
     wire                      cache_dirty_present_w;
@@ -222,6 +244,7 @@ module axi_llc_subsystem_top #(
     localparam integer RESP_WORD_BITS = 32;
     localparam integer RESP_WORDS = LINE_BITS / RESP_WORD_BITS;
 
+    // Utility helpers for direct-window writeback into a set-row store.
     function [WAY_COUNT-1:0] way_onehot;
         input [WAY_BITS-1:0] way_idx;
         integer idx;
@@ -268,6 +291,7 @@ module axi_llc_subsystem_top #(
         end
     endfunction
 
+    // Address range checks for MMIO and the mapped window.
     assign up_req_end_w = {1'b0, up_req_addr} +
                           {{(ADDR_BITS-7){1'b0}}, up_req_total_size} +
                           {{ADDR_BITS{1'b0}}, 1'b1};
@@ -324,6 +348,8 @@ module axi_llc_subsystem_top #(
     assign direct_valid_wr_bits_w = mapped_next_valid_bit_w ? way_onehot(mapped_way_w)
                                                             : {WAY_COUNT{1'b0}};
     assign direct_store_active_w = direct_wait_rd_r || direct_accept_w;
+    // Shared valid/data/meta stores are arbitrated here. Sweep has highest
+    // priority, then mode2 direct RMW, then mode1 cache control.
     assign valid_wr_en_w = valid_wr_en_sweep_w ? 1'b1 :
                            direct_store_active_w ? direct_valid_wr_en_w :
                            cache_valid_wr_en_w;
@@ -401,6 +427,7 @@ module axi_llc_subsystem_top #(
     assign bypass_req_wstrb = bypass_mem_req_wstrb_w;
     assign bypass_resp_ready = bypass_mem_resp_ready_w;
 
+    // Reconfiguration and invalidate-all controller.
     axi_reconfig_ctrl #(
         .MODE_BITS    (MODE_BITS),
         .ADDR_BITS    (ADDR_BITS),
@@ -426,6 +453,7 @@ module axi_llc_subsystem_top #(
         .state            (reconfig_state)
     );
 
+    // Sequential clear of the standalone valid array.
     llc_invalidate_sweep #(
         .SET_COUNT (SET_COUNT),
         .SET_BITS  (SET_BITS),
@@ -442,6 +470,7 @@ module axi_llc_subsystem_top #(
         .valid_wr_bits (valid_wr_bits_sweep_w)
     );
 
+    // Resident valid bits shared by mode1 cache state and mode2 direct window.
     llc_valid_ram #(
         .SET_COUNT (SET_COUNT),
         .SET_BITS  (SET_BITS),
@@ -458,6 +487,7 @@ module axi_llc_subsystem_top #(
         .wr_bits (valid_wr_bits_w)
     );
 
+    // Replacement state used only by mode1 cache control.
     llc_repl_ram #(
         .SET_COUNT (SET_COUNT),
         .SET_BITS  (SET_BITS),
@@ -473,6 +503,7 @@ module axi_llc_subsystem_top #(
         .wr_way (cache_repl_wr_way_w)
     );
 
+    // Shared resident data store used by both mode1 and mode2.
     llc_data_store #(
         .SET_COUNT (SET_COUNT),
         .SET_BITS  (SET_BITS),
@@ -494,6 +525,7 @@ module axi_llc_subsystem_top #(
         .busy        (data_busy_w)
     );
 
+    // Resident metadata store used only by mode1.
     llc_meta_store #(
         .SET_COUNT (SET_COUNT),
         .SET_BITS  (SET_BITS),
@@ -515,6 +547,7 @@ module axi_llc_subsystem_top #(
         .busy        (meta_busy_w)
     );
 
+    // Mode1 cache control and mode0/3 bypass semantics both converge here.
     llc_cache_ctrl #(
         .ADDR_BITS        (ADDR_BITS),
         .LINE_BYTES       (LINE_BYTES),
@@ -609,6 +642,7 @@ module axi_llc_subsystem_top #(
         .bypass_resp_id(bypass_resp_id)
     );
 
+    // Mode2 direct-mapped local window controller.
     llc_mapped_window_ctrl #(
         .ADDR_BITS        (ADDR_BITS),
         .LINE_BYTES       (LINE_BYTES),

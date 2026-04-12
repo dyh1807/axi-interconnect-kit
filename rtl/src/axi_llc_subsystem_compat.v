@@ -1,6 +1,15 @@
 `timescale 1ns / 1ps
 `include "axi_llc_params.vh"
 
+// Compatibility wrapper between the C++-style multi-master external boundary
+// and the single-flow RTL core.
+//
+// Responsibilities:
+//   - Hold one queued request per upstream master
+//   - Return accepted / accepted_id / independent write responses
+//   - Serialize requests into axi_llc_subsystem_top
+//
+// This layer does not translate to AXI and does not own resident storage.
 module axi_llc_subsystem_compat #(
     parameter ADDR_BITS         = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS           = `AXI_LLC_ID_BITS,
@@ -26,8 +35,10 @@ module axi_llc_subsystem_compat #(
 ) (
     input                                   clk,
     input                                   rst_n,
+    // Reconfiguration / maintenance control.
     input      [MODE_BITS-1:0]              mode_req,
     input      [ADDR_BITS-1:0]              llc_mapped_offset_req,
+    // Upstream read masters.
     input      [NUM_READ_MASTERS-1:0]       read_req_valid,
     output reg [NUM_READ_MASTERS-1:0]       read_req_ready,
     output reg [NUM_READ_MASTERS-1:0]       read_req_accepted,
@@ -40,6 +51,7 @@ module axi_llc_subsystem_compat #(
     input      [NUM_READ_MASTERS-1:0]       read_resp_ready,
     output reg [NUM_READ_MASTERS*LINE_BITS-1:0] read_resp_data,
     output reg [NUM_READ_MASTERS*ID_BITS-1:0] read_resp_id,
+    // Upstream write masters.
     input      [NUM_WRITE_MASTERS-1:0]      write_req_valid,
     output reg [NUM_WRITE_MASTERS-1:0]      write_req_ready,
     output reg [NUM_WRITE_MASTERS-1:0]      write_req_accepted,
@@ -53,6 +65,7 @@ module axi_llc_subsystem_compat #(
     input      [NUM_WRITE_MASTERS-1:0]      write_resp_ready,
     output reg [NUM_WRITE_MASTERS*ID_BITS-1:0] write_resp_id,
     output reg [NUM_WRITE_MASTERS*2-1:0]    write_resp_code,
+    // Single-flow core request/response interface.
     output                                  cache_req_valid,
     input                                   cache_req_ready,
     output                                  cache_req_write,
@@ -92,6 +105,7 @@ module axi_llc_subsystem_compat #(
     localparam integer TOTAL_PORTS = NUM_READ_MASTERS + NUM_WRITE_MASTERS;
     localparam [1:0] WRITE_RESP_OKAY = 2'b00;
 
+    // Per-master one-entry request queues.
     reg [NUM_READ_MASTERS-1:0]   rd_q_valid;
     reg [ADDR_BITS-1:0]          rd_q_addr [0:NUM_READ_MASTERS-1];
     reg [7:0]                    rd_q_size [0:NUM_READ_MASTERS-1];
@@ -123,6 +137,7 @@ module axi_llc_subsystem_compat #(
     reg [7:0]                    inflight_master_r;
     reg [ID_BITS-1:0]            inflight_id_r;
 
+    // Single request presented to the core in the current cycle.
     reg                          core_up_req_valid_w;
     wire                         core_up_req_ready_w;
     reg                          core_up_req_write_w;
@@ -158,6 +173,7 @@ module axi_llc_subsystem_compat #(
                                   target_write_resp_ready_w;
 
     always @(*) begin
+        // Round-robin selection over all read and write queues.
         dispatch_found_w = 1'b0;
         dispatch_is_write_w = 1'b0;
         dispatch_master_w = 8'd0;
@@ -244,6 +260,7 @@ module axi_llc_subsystem_compat #(
         end
     end
 
+    // Single-flow core instance.
     axi_llc_subsystem_top #(
         .ADDR_BITS        (ADDR_BITS),
         .ID_BITS          (ID_BITS),
@@ -401,6 +418,8 @@ module axi_llc_subsystem_compat #(
                 end
             end
 
+            // Move the accepted core response back into the owning read/write
+            // response slot and free the inflight marker.
             if (core_up_resp_valid_w && core_up_resp_ready_w && inflight_valid_r) begin
                 if (inflight_is_write_r) begin
                     wr_resp_valid_r[inflight_master_r] <= 1'b1;
