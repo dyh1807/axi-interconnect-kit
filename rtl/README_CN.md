@@ -18,17 +18,20 @@
   - 第一阶段默认参数
 - `src/axi_reconfig_ctrl.v`
   - 模式切换控制 FSM
+- `src/llc_data_store.v`
+  - `mode=1/2` 共享的 resident data set-row 存储
+- `src/llc_meta_store.v`
+  - 预留给 `mode=1` cache 语义使用的 resident meta set-row 存储
 - `src/llc_valid_ram.v`
   - 独立 valid bit-array
 - `src/llc_invalidate_sweep.v`
   - 顺序清 valid 的 sweep 控制器
-- `src/llc_data_ram.v`
-  - direct-window 第一阶段使用的 line 数据存储
 - `src/llc_mapped_window_ctrl.v`
-  - mode=2 地址翻译 / set-way 计算 / zero-read / zero-merge
+  - mode=2 地址翻译 / set-way 计算 / 共享 data-store 的 line 选择 / zero-read /
+    zero-merge
 - `src/axi_llc_subsystem_top.v`
   - 第一阶段顶层 bring-up wrapper：
-    - 集成 reconfig + valid/data + mode2 direct path
+    - 集成 reconfig + shared data/valid store + mode2 direct path
     - `mode=1` 暂时通过抽象 `cache_*` 子路径端口接出去
     - `mode=0/3` 与 mode2 窗口外通过抽象 `bypass_*` 子路径端口接出去
 
@@ -49,6 +52,8 @@
 
 当前提供最小 directed testbench 与 filelist：
 
+- `tb/tb_llc_data_store.v`
+- `tb/tb_llc_meta_store.v`
 - `tb/tb_llc_valid_ram.v`
 - `tb/tb_llc_mapped_window_ctrl.v`
 - `tb/tb_axi_reconfig_ctrl.v`
@@ -58,8 +63,11 @@
 ## 说明
 
 - 本目录中的 Verilog 均按可综合写法约束组织，不依赖 SystemVerilog 语法。
+- RTL 模块中不使用 `initial + $display/$finish` 之类仅用于仿真的写法；静态几何
+  约束通过文档和外部验证流程约束。
 - `valid` 不再放回 `meta`。
+- `mode=1` 与 `mode=2` 共享 `data + valid`；其中 `mode=2` 只把固定 way-slice 当作
+  direct-mapped 本地映射窗口使用，不访问 `meta`。
 - `invalidate_all` 不做 whole-array reset，而是通过 `llc_invalidate_sweep` 顺序清
   `valid`。
-- 当前环境下尚未验证可用的本地 Verilog 仿真工具链，因此 filelist 与 testbench
-  先随源一并提供，后续再接入统一仿真命令。
+- 目前已经在 `eda-10 + bash_eda10 + VCS` 环境下通过了第一阶段 directed bench。

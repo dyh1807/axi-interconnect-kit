@@ -11,6 +11,8 @@
 
 ## 当前提供
 
+- `tb_llc_data_store.v`
+- `tb_llc_meta_store.v`
 - `tb_llc_valid_ram.v`
 - `tb_llc_mapped_window_ctrl.v`
 - `tb_axi_reconfig_ctrl.v`
@@ -34,3 +36,5 @@ vvp simv_reconfig
 
 当前工作机上的 HDL 工具链可用性尚未确认完成，因此这些 testbench 先作为源码与
 filelist 一并进入仓库。
+
+目前已在 `eda-10` 上通过 `bash_eda10 + VCS` 跑通当前这些 testbench。

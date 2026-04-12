@@ -11,9 +11,12 @@ module axi_llc_subsystem_top #(
     parameter SET_BITS         = `AXI_LLC_SET_BITS,
     parameter WAY_COUNT        = `AXI_LLC_WAY_COUNT,
     parameter WAY_BITS         = `AXI_LLC_WAY_BITS,
+    parameter META_BITS        = `AXI_LLC_META_BITS,
     parameter LLC_SIZE_BYTES   = `AXI_LLC_LLC_SIZE_BYTES,
     parameter WINDOW_BYTES     = `AXI_LLC_WINDOW_BYTES,
-    parameter WINDOW_WAYS      = `AXI_LLC_WINDOW_WAYS
+    parameter WINDOW_WAYS      = `AXI_LLC_WINDOW_WAYS,
+    parameter DATA_ROW_BITS    = WAY_COUNT * LINE_BITS,
+    parameter META_ROW_BITS    = WAY_COUNT * META_BITS
 ) (
     input                       clk,
     input                       rst_n,
@@ -85,12 +88,16 @@ module axi_llc_subsystem_top #(
     wire                      offset_aligned_w;
     wire                      mapped_in_window_w;
     wire                      mapped_way_legal_w;
+    wire                      mapped_line_valid_w;
     wire [SET_BITS-1:0]       mapped_set_w;
     wire [WAY_BITS-1:0]       mapped_way_w;
     wire [LINE_BITS-1:0]      mapped_read_line_w;
-    wire [LINE_BITS-1:0]      mapped_merged_line_w;
+    wire [LINE_BITS-1:0]      mapped_write_line_w;
     wire                      mapped_next_valid_bit_w;
-    wire [LINE_BITS-1:0]      data_rd_line_w;
+    wire [DATA_ROW_BITS-1:0]  data_rd_row_w;
+    wire [DATA_ROW_BITS-1:0]  data_wr_row_w;
+    wire [WAY_COUNT-1:0]      data_wr_way_mask_w;
+    wire [META_ROW_BITS-1:0]  meta_rd_row_w;
     wire                      cfg_req_legal_w;
     wire [MODE_BITS-1:0]      reconfig_req_mode_w;
     wire [ADDR_BITS-1:0]      reconfig_req_offset_w;
@@ -122,22 +129,19 @@ module axi_llc_subsystem_top #(
         end
     endfunction
 
-    initial begin
-        if (WINDOW_BYTES > LLC_SIZE_BYTES) begin
-            $display("ERROR: axi_llc_subsystem_top WINDOW_BYTES exceeds LLC_SIZE_BYTES");
-            $finish;
+    function [DATA_ROW_BITS-1:0] place_line_in_row;
+        input [WAY_BITS-1:0]  way_idx;
+        input [LINE_BITS-1:0] line_data;
+        integer idx;
+        begin
+            place_line_in_row = {DATA_ROW_BITS{1'b0}};
+            for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
+                if (way_idx == idx) begin
+                    place_line_in_row[(idx * LINE_BITS) +: LINE_BITS] = line_data;
+                end
+            end
         end
-
-        if ((WINDOW_BYTES % (SET_COUNT * LINE_BYTES)) != 0) begin
-            $display("ERROR: axi_llc_subsystem_top WINDOW_BYTES must be an integer way-slice");
-            $finish;
-        end
-
-        if (WINDOW_WAYS > WAY_COUNT) begin
-            $display("ERROR: axi_llc_subsystem_top WINDOW_WAYS exceeds WAY_COUNT");
-            $finish;
-        end
-    end
+    endfunction
 
     assign cfg_req_legal_w = (mode_req != MODE_MAPPED) ||
                              (llc_mapped_offset_req[LINE_OFFSET_BITS-1:0] == {LINE_OFFSET_BITS{1'b0}});
@@ -198,22 +202,38 @@ module axi_llc_subsystem_top #(
         .wr_bits (valid_wr_bits_w)
     );
 
-    llc_data_ram #(
+    llc_data_store #(
         .SET_COUNT (SET_COUNT),
         .SET_BITS  (SET_BITS),
         .WAY_COUNT (WAY_COUNT),
-        .WAY_BITS  (WAY_BITS),
-        .LINE_BITS (LINE_BITS)
-    ) data_ram (
+        .LINE_BITS (LINE_BITS),
+        .ROW_BITS  (DATA_ROW_BITS)
+    ) data_store (
         .clk     (clk),
         .rd_en   (1'b1),
         .rd_set  (mapped_set_w),
-        .rd_way  (mapped_way_w),
-        .rd_line (data_rd_line_w),
+        .rd_row  (data_rd_row_w),
         .wr_en   (data_wr_en_w),
         .wr_set  (mapped_set_w),
-        .wr_way  (mapped_way_w),
-        .wr_line (mapped_merged_line_w)
+        .wr_way_mask (data_wr_way_mask_w),
+        .wr_row  (data_wr_row_w)
+    );
+
+    llc_meta_store #(
+        .SET_COUNT (SET_COUNT),
+        .SET_BITS  (SET_BITS),
+        .WAY_COUNT (WAY_COUNT),
+        .META_BITS (META_BITS),
+        .ROW_BITS  (META_ROW_BITS)
+    ) meta_store (
+        .clk        (clk),
+        .rd_en      (1'b0),
+        .rd_set     ({SET_BITS{1'b0}}),
+        .rd_row     (meta_rd_row_w),
+        .wr_en      (1'b0),
+        .wr_set     ({SET_BITS{1'b0}}),
+        .wr_way_mask({WAY_COUNT{1'b0}}),
+        .wr_row     ({META_ROW_BITS{1'b0}})
     );
 
     llc_mapped_window_ctrl #(
@@ -230,8 +250,8 @@ module axi_llc_subsystem_top #(
     ) mapped_window_ctrl (
         .req_addr           (up_req_addr),
         .window_offset      (active_offset_w),
-        .line_data_in       (data_rd_line_w),
-        .line_valid_in      (mapped_way_legal_w ? valid_rd_bits_w[mapped_way_w] : 1'b0),
+        .row_data_in        (data_rd_row_w),
+        .valid_bits_in      (valid_rd_bits_w),
         .write_data_in      (up_req_wdata),
         .write_strb_in      (up_req_wstrb),
         .in_window          (mapped_in_window_w),
@@ -240,8 +260,9 @@ module axi_llc_subsystem_top #(
         .local_addr         (),
         .direct_set         (mapped_set_w),
         .direct_way         (mapped_way_w),
+        .line_valid_out     (mapped_line_valid_w),
         .read_line_out      (mapped_read_line_w),
-        .merged_line_out    (mapped_merged_line_w),
+        .write_line_out     (mapped_write_line_w),
         .next_valid_bit_out (mapped_next_valid_bit_w)
     );
 
@@ -261,6 +282,8 @@ module axi_llc_subsystem_top #(
     assign direct_valid_wr_bits_w = mapped_next_valid_bit_w ? way_onehot(mapped_way_w)
                                                             : {WAY_COUNT{1'b0}};
     assign data_wr_en_w = direct_accept_w && up_req_write;
+    assign data_wr_way_mask_w = way_onehot(mapped_way_w);
+    assign data_wr_row_w = place_line_in_row(mapped_way_w, mapped_write_line_w);
 
     assign valid_wr_en_w   = valid_wr_en_sweep_w | direct_valid_wr_en_w;
     assign valid_wr_set_w  = valid_wr_en_sweep_w ? valid_wr_set_sweep_w  : direct_valid_wr_set_w;

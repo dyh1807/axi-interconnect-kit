@@ -6,10 +6,12 @@
 
 - `mode=1`
   - 未来进入 `cache` 子路径
-  - 需要 `meta/repl/MSHR/refill`
+  - 使用共享 `data + valid`
+  - 额外需要 `meta/repl/MSHR/refill`
 - `mode=2`
   - 进入 direct-mapped 本地 window 子路径
-  - 只访问 `data + valid`
+  - 使用同一套共享 `data + valid`
+  - 不访问 `meta/repl/MSHR`
 - `mode=0/3`
   - 全 bypass
 
@@ -51,13 +53,23 @@
 - 不清 `data/meta/repl`
 - 与最终硬件语义一致，不做“accepted 即全清”
 
-### `llc_data_ram`
+### `llc_data_store`
 
-第一阶段给 `mode=2` direct-window 使用的 line 存储：
+共享 resident data store：
 
-- `data[set][way]`
-- 单读口 + 单写口
-- 无阵列 reset
+- 按 `set-row` 组织
+- 一行包含所有 `way` 的 line 数据
+- `mode=1` 和 `mode=2` 共用
+- 第一阶段先由行为模型实现
+
+### `llc_meta_store`
+
+共享 resident meta store：
+
+- 按 `set-row` 组织
+- 当前只为 `mode=1` 预留
+- `mode=2` 明确不访问
+- 第一阶段先由行为模型实现
 
 ### `llc_mapped_window_ctrl`
 
@@ -65,6 +77,7 @@
 
 - `addr - active_offset`
 - `line_idx -> set + way`
+- 从共享 `data_store` row 中选择 direct line
 - invalid read 返回 0
 - invalid partial write 以 0 line 做 merge
 
@@ -92,7 +105,7 @@
 - `4MB mapped window`
 - `8 mapped ways`
 
-本阶段 RTL 内已经把以下约束显式做成参数检查：
+本阶段 RTL 依赖以下静态几何约束：
 
 - `WINDOW_BYTES <= LLC_SIZE_BYTES`
 - `WINDOW_BYTES` 必须是整 `way-slice`
@@ -102,3 +115,24 @@
 
 - `mode=2` 时 `offset` 必须 line 对齐
 - 非对齐 offset 会被 `axi_llc_subsystem_top` 显式拒绝，不会切进新配置
+
+## SRAM 选型约束
+
+按当前 `/nfs_global/S/daiyihao/project/qm-rocky/sram` 中的分析结果：
+
+- `data` 推荐宏：`1024x128 CM4`
+- `meta` 推荐宏：`1024x128 CM4`
+
+第一阶段先把共享存储接口定型成：
+
+- `data_store`: `set-row` 读 + `way mask` 写
+- `meta_store`: `set-row` 读 + `way mask` 写
+
+后续再把这两类接口绑定到固定几何的 SMIC12 SRAM 宏阵列。
+
+当前已经确认可直接参考的宏模型文件位置：
+
+- data 1024x128:
+  `/nfs_global/S/daiyihao/project/qm-rocky/sram/profile_wrapper/llc_lookup_latency_codex_handoff/inputs/llc_data/compout/views/sadcls0c4l1p1024x128m4b1w1c0p0d0t0s2sdz1rw00/tt0p8v25c/sadcls0c4l1p1024x128m4b1w1c0p0d0t0s2sdz1rw00.mv`
+- meta 1024x128:
+  `/nfs_global/S/daiyihao/project/qm-rocky/sram/profile_wrapper/llc_lookup_latency_codex_handoff/inputs/llc_meta/compout/views/sassls0c4l1p1024x128m4b1w0c0p0d0t0s2sdz0rw00__1/tt0p8v25c/sassls0c4l1p1024x128m4b1w0c0p0d0t0s2sdz0rw00__1.mv`

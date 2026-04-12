@@ -6,6 +6,17 @@
 
 ## P0 单元级
 
+### `tb_llc_data_store.v`
+
+- set-row 读
+- 按 way mask 写
+- 不同 way 更新互不破坏
+
+### `tb_llc_meta_store.v`
+
+- meta row 的按 way mask 写
+- 读回一致
+
 ### `tb_llc_valid_ram.v`
 
 - 掩码写
@@ -42,6 +53,12 @@
 
 ## 当前限制
 
-- 当前环境没有确认可直接运行的 HDL 仿真器，因此本阶段先把 testbench 与 flist
-  一并整理进仓库。
-- 一旦工具链稳定，可直接按 `rtl/flist/*.f` 驱动 VCS/iverilog/verilator。
+- 当前只覆盖第一阶段共享存储 + mode2 + reconfiguration 语义。
+- 完整 `mode=1` cache datapath 仍未接入。
+- 当前已在 `eda-10` 上确认 VCS 可用，并实际跑通：
+  - `tb_llc_data_store`
+  - `tb_llc_meta_store`
+  - `tb_llc_valid_ram`
+  - `tb_llc_mapped_window_ctrl`
+  - `tb_axi_reconfig_ctrl`
+  - `tb_axi_llc_subsystem_directed`

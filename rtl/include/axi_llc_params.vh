@@ -10,6 +10,7 @@
 `define AXI_LLC_SET_BITS          13
 `define AXI_LLC_WAY_COUNT         16
 `define AXI_LLC_WAY_BITS          4
+`define AXI_LLC_META_BITS         24
 `define AXI_LLC_LLC_SIZE_BYTES    8388608
 `define AXI_LLC_WINDOW_BYTES      4194304
 `define AXI_LLC_WINDOW_WAYS       8
