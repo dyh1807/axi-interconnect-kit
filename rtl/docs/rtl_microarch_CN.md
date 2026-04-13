@@ -152,6 +152,8 @@
 - write hit 按 byte mask merge，并置 dirty
 - full-line write miss 直接安装 dirty line
 - partial write miss 先 refill，再 merge 安装 dirty line
+- full-line write miss 如果遇到 dirty victim，当前也会转成 slot 挂起：
+  先发 victim writeback，再安装新 dirty line
 - 上述 merge 当前都按请求地址的 line offset 写入 resident line，不再假定请求从 line 起始字节发起
 - victim dirty line 先 writeback，再覆盖安装
 - reconfig / `invalidate_all` 期间不会主动 dirty flush；只有 quiescent 且没有 dirty resident
@@ -192,6 +194,8 @@
   消失后才把 maintenance 请求交给 core
 - core 内部的 `llc_cache_ctrl` 还会继续检查 same-line read miss / victim hazard；
   只有这层也通过时，`invalidate_line_accepted` 才会拉高
+- compat 当前还会在接受面挡住 pending dirty victim 的 victim-line read，避免外层先收下这类
+  请求再在 core 内部滞留
 - `MASTER_DCACHE_R` 保留 same-cycle accept，其它 read master 仍保持 ready-first
 - `ready` 采用 sticky-grant 语义：一次只对一个 read master、一个 write master 发放 ready，
   在握手或请求撤销前保持
@@ -202,9 +206,12 @@
 - resident lookup / install / invalidate 仍是单发射路径
 - 但 cacheable read miss 已经支持多 slot 挂起，并通过 lower AXI 多 outstanding 推进
 - bypass 风格请求已可绕开单发射 lookup 路径，与 cacheable miss 并发推进
+- dirty-victim 的 full-line cacheable write miss 已能与其它行的 cache miss 并发推进
 - compat 侧已经补成 per-master read response queue，因此同一 master 可连续回收多笔 cacheable read
 - 下游 AXI 侧已经补成多 outstanding / 独立 `axi_id` remap
-- 整个子模块的并发度仍不等价于 C++ 全量 MSHR 版本，当前差距主要在 cacheable write / victim / prefetch 的全量并发化
+- 整个子模块的并发度仍不等价于 C++ 全量 MSHR 版本，当前差距主要收敛到：
+  - `pending read victim` 上的 write-hit snapshot refresh 还没补
+  - `prefetch` 仍未进入 RTL
 
 ### `axi_llc_axi_bridge`
 
@@ -286,8 +293,10 @@ contract bench：
 `llc_cache_ctrl` 已经补成“lookup 单发射 + read miss 多挂起”的结构，
 `axi_llc_subsystem_compat` 也已经把多 master 的 `accepted/resp` 接口补回，并为
 cacheable core-path 请求补上内部 slot / per-master read response queue；`axi_llc_subsystem`
-再把 lower 请求收敛成单组 AXI4。当前剩余差异主要在 cacheable write / victim /
-prefetch 还没有做成 C++ 那种全量并发化，而不是 lower AXI remap。
+再把 lower 请求收敛成单组 AXI4。当前剩余差异主要不再是 lower AXI remap，而是
+write/victim 侧一条更保守的处理：`pending read victim` 期间，RTL 目前保守阻塞
+victim-line write，尚未复现 C++ 中“write hit 刷新 pending victim snapshot”的那条
+特化语义；另外 `prefetch` 仍未实现。
 
 ## `prefetch` 状态
 

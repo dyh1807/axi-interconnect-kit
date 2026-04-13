@@ -215,6 +215,21 @@
 - `invalidate_line` 在 pending dirty victim 仍归属该 line 时不能被 accepted
 - 上述 read-side hazard 清空后，`invalidate_line` 才允许被 accepted
 
+### `tb_axi_llc_subsystem_compat_write_victim_multiflow_contract.v`
+
+覆盖：
+
+- dirty-victim 的 full-line cacheable write miss 会先发 victim writeback
+- victim writeback 在途时，另一条不相关 cache miss 仍能继续进入 lower cache 路径
+- write miss 与后续 read miss 最终都能正确回包
+
+### `tb_axi_llc_subsystem_compat_victim_line_hazard_contract.v`
+
+覆盖：
+
+- pending dirty victim 仍归属某条 line 时，victim-line read 在 compat 接受面不会被提前吞入
+- victim hazard 清空后，该 victim line 会重新变得可访问
+
 ### `tb_axi_llc_subsystem_read_master_timing_contract.v`
 
 覆盖：
@@ -303,6 +318,8 @@
   - `tb_axi_llc_subsystem_cache_contract`
   - `tb_axi_llc_subsystem_invalidate_line_contract`
   - `tb_axi_llc_subsystem_invalidate_line_read_hazard_contract`
+  - `tb_axi_llc_subsystem_compat_write_victim_multiflow_contract`
+  - `tb_axi_llc_subsystem_compat_victim_line_hazard_contract`
   - `tb_axi_llc_subsystem_size_contract`
   - `tb_axi_llc_subsystem_invalidate_all_contract`
   - `tb_axi_llc_subsystem_id_contract`

@@ -171,6 +171,8 @@ axi_llc_subsystem
 - 但 `axi_llc_subsystem_core + llc_cache_ctrl` 现在已经支持多个 cacheable read miss
   同时挂起；compat 也支持同一 master 的多 read response 排队回传
 - bypass 风格请求现在可以绕开单发射 lookup 路径，与 cacheable miss 并发推进
+- dirty-victim 的 full-line cacheable write miss 现在也走内部 slot 路径，不再把其它
+  miss/维护流量完全串死在旧的串行 writeback 状态机后面
 - 但 `axi_llc_axi_bridge` 已经补成 lower AXI 多 outstanding / 独立 `axi_id` remap：
   - read / write 各自独立分配 `axi_id`
   - `req_id` 保持 source-local，不直接暴露到 AXI
@@ -215,6 +217,8 @@ axi_llc_subsystem
 - `tb/tb_axi_llc_subsystem_axi_cache_multiread_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_same_master_multiread_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_direct_bypass_contract.v`
+- `tb/tb_axi_llc_subsystem_compat_write_victim_multiflow_contract.v`
+- `tb/tb_axi_llc_subsystem_compat_victim_line_hazard_contract.v`
 - `tb/tb_axi_llc_axi_bridge_read_outstanding_contract.v`
 - `tb/tb_axi_llc_axi_bridge_write_outstanding_contract.v`
 - `tb/tb_axi_llc_axi_bridge_write_id_reuse_contract.v`
@@ -262,6 +266,8 @@ axi_llc_subsystem
     才把 `invalidate_line` 交给 core
   - core 内部还会继续挡住 same-line read miss / refill / dirty victim hazard，
     避免旧 resident line 在 `invalidate_line` accepted 之后被回装
+- pending dirty victim 当前还会在 compat 接受面挡住 victim-line read，因此这类读不会先被
+  外层 FIFO 吃进去再在 core 内部滞留
 - 当前 `id` 采用单个 `4-bit` 平面：
   - 直接路径返回捕获的 `up_req_id`
   - bypass lower 路径当前仍向下传 `bypass_req_id`，响应需带回匹配 id
@@ -279,6 +285,7 @@ axi_llc_subsystem
   - bypass 风格请求当前可绕开单流核心，与 cache miss 并发推进
   - cacheable read miss 当前已经能通过 core-path 内部 slot + lower AXI 多 outstanding
     并发推进
+  - dirty-victim 的 cacheable full-line write miss 现在也能与其它行的 cache miss 并发推进
   - 但 resident lookup / install / invalidate 仍是单发射，因此并发度仍不等价于
     C++ interconnect 的完整全路径多事务发射
 - `axi_llc_axi_bridge` 当前已补回 lower AXI 多 outstanding / remap：
@@ -303,4 +310,7 @@ axi_llc_subsystem
   - C++ 原型里已有专门的 prefetch 单测与实现
   - 但本轮没有在当前分支上完成一次干净、可复现的端到端重验证
   - 因此 RTL 暂不引入 `prefetch` 状态机，只保留后续重新评估的空间
+- 相比当前 C++ 原型，write/victim 侧仍保留一条更保守的差异：
+  - `pending read victim` 期间，RTL 当前会保守阻塞 victim-line write
+  - 尚未复现 C++ 中“write hit 刷新 pending victim snapshot”的那条特化语义
 - 当前已在 `eda-10 + bash_eda10 + VCS` 跑通 store/mode/reconfig/顶层 contract bench。

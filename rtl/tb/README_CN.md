@@ -33,6 +33,8 @@
 - `tb_axi_llc_subsystem_bypass_contract.v`
 - `tb_axi_llc_subsystem_compat_reconfig_drain_contract.v`
 - `tb_axi_llc_subsystem_compat_invalidate_line_hazard_contract.v`
+- `tb_axi_llc_subsystem_compat_write_victim_multiflow_contract.v`
+- `tb_axi_llc_subsystem_compat_victim_line_hazard_contract.v`
 - `tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 - `tb_axi_llc_subsystem_axi_bypass_read_contract.v`
 - `tb_axi_llc_subsystem_axi_bypass_write_contract.v`
@@ -156,6 +158,32 @@ core 内部 hazard 遮掉。
 对应 flist：
 
 - `flist/tb_axi_llc_subsystem_invalidate_line_read_hazard_contract.f`
+
+### `tb_axi_llc_subsystem_compat_write_victim_multiflow_contract.v`
+
+目标是钉住 dirty-victim 的 cacheable full-line write miss 不再把其它 cache miss 全部串死：
+
+- full-line write miss 遇到 dirty victim 时，先发 victim writeback
+- victim writeback 在途时，另一条不相关 cache miss 仍可继续进入 lower cache
+- write miss 和 read miss 最终都要正常回包
+
+对应 flist：
+
+- `flist/tb_axi_llc_subsystem_compat_write_victim_multiflow_contract.f`
+
+### `tb_axi_llc_subsystem_compat_victim_line_hazard_contract.v`
+
+目标是钉住 pending dirty victim 的 victim-line access 合同：
+
+- victim-line read 在 compat 接受面不会被提前吞入
+- victim hazard 清空后，该 victim line 会重新变得可访问
+
+这个 bench 当前只钉 read 侧，因为 write 侧在 C++ 原型里还存在一条更细的
+`write hit 刷新 pending victim snapshot` 特化语义，RTL 暂未完全跟上。
+
+对应 flist：
+
+- `flist/tb_axi_llc_subsystem_compat_victim_line_hazard_contract.f`
 
 ### 对外 AXI 顶层 contract bench
 

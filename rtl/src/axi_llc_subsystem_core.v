@@ -97,7 +97,9 @@ module axi_llc_subsystem_core #(
     output     [ADDR_BITS-1:0]  active_offset,
     output                      reconfig_busy,
     output     [1:0]            reconfig_state,
-    output                      config_error
+    output                      config_error,
+    output [`AXI_LLC_MAX_OUTSTANDING-1:0] victim_line_valid,
+    output [(`AXI_LLC_MAX_OUTSTANDING*ADDR_BITS)-1:0] victim_line_addr
 );
 
     localparam [MODE_BITS-1:0] MODE_CACHE  = 2'b01;
@@ -185,6 +187,8 @@ module axi_llc_subsystem_core #(
     wire                      cache_flush_busy_w;
     wire                      cache_dirty_present_w;
     wire                      cache_flush_start_w;
+    wire [`AXI_LLC_MAX_OUTSTANDING-1:0] cache_victim_line_valid_w;
+    wire [(`AXI_LLC_MAX_OUTSTANDING*ADDR_BITS)-1:0] cache_victim_line_addr_w;
 
     wire                      cache_data_rd_en_w;
     wire [SET_BITS-1:0]       cache_data_rd_set_w;
@@ -351,6 +355,8 @@ module axi_llc_subsystem_core #(
 
     assign direct_accept_w = up_req_valid && up_req_ready && route_direct_w;
     assign invalidate_line_accepted = cache_invalidate_line_accepted_w;
+    assign victim_line_valid = cache_victim_line_valid_w;
+    assign victim_line_addr = cache_victim_line_addr_w;
 
     assign direct_data_wr_en_w = direct_wait_rd_r &&
                                  data_rd_valid_w &&
@@ -649,6 +655,8 @@ module axi_llc_subsystem_core #(
         .flush_busy   (cache_flush_busy_w),
         .dirty_present(cache_dirty_present_w),
         .quiescent    (cache_quiescent_w),
+        .victim_line_valid(cache_victim_line_valid_w),
+        .victim_line_addr(cache_victim_line_addr_w),
         .mem_req_valid(cache_mem_req_valid_w),
         .mem_req_ready(cache_req_ready),
         .mem_req_write(cache_mem_req_write_w),

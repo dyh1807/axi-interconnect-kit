@@ -213,6 +213,8 @@ module axi_llc_subsystem_compat #(
     wire [READ_RESP_BITS-1:0]    core_up_resp_rdata_w;
     wire [ID_BITS-1:0]           core_up_resp_id_w;
     wire [1:0]                   core_up_resp_code_w;
+    wire [`AXI_LLC_MAX_OUTSTANDING-1:0] core_victim_line_valid_w;
+    wire [(`AXI_LLC_MAX_OUTSTANDING*ADDR_BITS)-1:0] core_victim_line_addr_w;
 
     reg                          dispatch_found_w;
     reg                          dispatch_is_write_w;
@@ -412,6 +414,21 @@ module axi_llc_subsystem_compat #(
             read_resp_has_room = (!rd_resp_valid_r[master_idx] &&
                                   (rd_resp_q_count[master_idx] == 0)) ||
                                  (rd_resp_q_count[master_idx] < READ_RESP_QUEUE_DEPTH);
+        end
+    endfunction
+
+    function core_path_line_hazard;
+        input [ADDR_BITS-1:0] addr_value;
+        integer depth_idx;
+        begin
+            core_path_line_hazard = 1'b0;
+            for (depth_idx = 0; depth_idx < MAX_OUTSTANDING; depth_idx = depth_idx + 1) begin
+                if (core_victim_line_valid_w[depth_idx] &&
+                    ((core_victim_line_addr_w[(depth_idx * ADDR_BITS) +: ADDR_BITS] >>
+                      LINE_OFFSET_BITS) == (addr_value >> LINE_OFFSET_BITS))) begin
+                    core_path_line_hazard = 1'b1;
+                end
+            end
         end
     endfunction
 
@@ -670,6 +687,13 @@ module axi_llc_subsystem_compat #(
                     read_req_valid[next_port] &&
                     (rd_q_count[next_port] < READ_FIFO_DEPTH) &&
                     (total_read_outstanding_w < MAX_OUTSTANDING) &&
+                    (request_uses_direct_bypass(active_mode,
+                                               active_offset,
+                                               read_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS],
+                                               read_req_total_size[(next_port * 8) +: 8],
+                                               read_req_bypass[next_port]) ||
+                     !core_path_line_hazard(
+                         read_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS])) &&
                     !read_id_conflict(next_port,
                         read_req_id[(next_port * ID_BITS) +: ID_BITS])) begin
                     rd_select_found_w = 1'b1;
@@ -688,6 +712,13 @@ module axi_llc_subsystem_compat #(
                     write_req_valid[next_port] &&
                     (wr_q_count[next_port] < WRITE_FIFO_DEPTH) &&
                     (total_write_outstanding_w < MAX_WRITE_OUTSTANDING) &&
+                    (request_uses_direct_bypass(active_mode,
+                                               active_offset,
+                                               write_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS],
+                                               write_req_total_size[(next_port * 8) +: 8],
+                                               write_req_bypass[next_port]) ||
+                     !core_path_line_hazard(
+                         write_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS])) &&
                     !write_id_conflict(next_port,
                         write_req_id[(next_port * ID_BITS) +: ID_BITS])) begin
                     wr_select_found_w = 1'b1;
@@ -735,7 +766,9 @@ module axi_llc_subsystem_compat #(
                                                             active_offset,
                                                             rd_q_addr[dispatch_fifo_slot_w],
                                                             rd_q_size[dispatch_fifo_slot_w],
-                                                            rd_q_bypass[dispatch_fifo_slot_w])) begin
+                                                            rd_q_bypass[dispatch_fifo_slot_w]) &&
+                                !core_path_line_hazard(
+                                    rd_q_addr[dispatch_fifo_slot_w])) begin
                                 dispatch_found_w = 1'b1;
                                 dispatch_is_write_w = 1'b0;
                                 dispatch_master_w = next_port[7:0];
@@ -752,7 +785,9 @@ module axi_llc_subsystem_compat #(
                                                             active_offset,
                                                             wr_q_addr[dispatch_fifo_slot_w],
                                                             wr_q_size[dispatch_fifo_slot_w],
-                                                            wr_q_bypass[dispatch_fifo_slot_w])) begin
+                                                            wr_q_bypass[dispatch_fifo_slot_w]) &&
+                                !core_path_line_hazard(
+                                    wr_q_addr[dispatch_fifo_slot_w])) begin
                                 dispatch_found_w = 1'b1;
                                 dispatch_is_write_w = 1'b1;
                                 dispatch_master_w = flat_idx[7:0];
@@ -995,7 +1030,9 @@ module axi_llc_subsystem_compat #(
         .active_offset         (active_offset),
         .reconfig_busy         (reconfig_busy),
         .reconfig_state        (reconfig_state),
-        .config_error          (config_error)
+        .config_error          (config_error),
+        .victim_line_valid     (core_victim_line_valid_w),
+        .victim_line_addr      (core_victim_line_addr_w)
     );
 
     integer idx;
