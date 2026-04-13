@@ -23,6 +23,7 @@ module tb_axi_llc_subsystem_axi_bypass_write_contract;
     localparam AXI_DATA_BYTES    = `AXI_LLC_AXI_DATA_BYTES;
     localparam AXI_DATA_BITS     = `AXI_LLC_AXI_DATA_BITS;
     localparam AXI_STRB_BITS     = `AXI_LLC_AXI_STRB_BITS;
+    localparam READ_RESP_BITS    = `AXI_LLC_READ_RESP_BITS;
 
     localparam [MODE_BITS-1:0] MODE_CACHE = 2'b01;
     localparam [1:0] AXI_BURST_INCR = 2'b01;
@@ -46,7 +47,7 @@ module tb_axi_llc_subsystem_axi_bypass_write_contract;
     reg  [NUM_READ_MASTERS-1:0]     read_req_bypass;
     wire [NUM_READ_MASTERS-1:0]     read_resp_valid;
     reg  [NUM_READ_MASTERS-1:0]     read_resp_ready;
-    wire [NUM_READ_MASTERS*LINE_BITS-1:0] read_resp_data;
+    wire [NUM_READ_MASTERS*READ_RESP_BITS-1:0] read_resp_data;
     wire [NUM_READ_MASTERS*ID_BITS-1:0] read_resp_id;
     reg  [NUM_WRITE_MASTERS-1:0]    write_req_valid;
     wire [NUM_WRITE_MASTERS-1:0]    write_req_ready;
@@ -157,7 +158,8 @@ module tb_axi_llc_subsystem_axi_bypass_write_contract;
         .AXI_ID_BITS       (AXI_ID_BITS),
         .AXI_DATA_BYTES    (AXI_DATA_BYTES),
         .AXI_DATA_BITS     (AXI_DATA_BITS),
-        .AXI_STRB_BITS     (AXI_STRB_BITS)
+        .AXI_STRB_BITS     (AXI_STRB_BITS),
+        .READ_RESP_BITS    (READ_RESP_BITS)
     ) dut (
         .clk                   (clk),
         .rst_n                 (rst_n),

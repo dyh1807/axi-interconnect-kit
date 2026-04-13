@@ -33,6 +33,9 @@ module axi_llc_subsystem_core #(
     parameter RESET_MODE       = {{(`AXI_LLC_MODE_BITS-2){1'b0}}, 2'b01},
     parameter RESET_OFFSET     = {`AXI_LLC_ADDR_BITS{1'b0}},
     parameter USE_SMIC12_STORES = 0,
+    parameter TABLE_READ_LATENCY = `AXI_LLC_TABLE_READ_LATENCY,
+    parameter READ_RESP_BYTES  = `AXI_LLC_READ_RESP_BYTES,
+    parameter READ_RESP_BITS   = `AXI_LLC_READ_RESP_BITS,
     parameter DATA_ROW_BITS    = WAY_COUNT * LINE_BITS,
     parameter META_ROW_BITS    = WAY_COUNT * META_BITS
 ) (
@@ -53,7 +56,7 @@ module axi_llc_subsystem_core #(
     input                       up_req_bypass,
     output                      up_resp_valid,
     input                       up_resp_ready,
-    output     [LINE_BITS-1:0]  up_resp_rdata,
+    output     [READ_RESP_BITS-1:0] up_resp_rdata,
     output     [ID_BITS-1:0]    up_resp_id,
     // Internal lower line-memory path used by the cache controller.
     output                      cache_req_valid,
@@ -66,7 +69,7 @@ module axi_llc_subsystem_core #(
     output     [LINE_BYTES-1:0] cache_req_wstrb,
     input                       cache_resp_valid,
     output                      cache_resp_ready,
-    input      [LINE_BITS-1:0]  cache_resp_rdata,
+    input      [READ_RESP_BITS-1:0] cache_resp_rdata,
     input      [ID_BITS-1:0]    cache_resp_id,
     // Internal lower bypass path.
     output                      bypass_req_valid,
@@ -79,7 +82,7 @@ module axi_llc_subsystem_core #(
     output     [LINE_BYTES-1:0] bypass_req_wstrb,
     input                       bypass_resp_valid,
     output                      bypass_resp_ready,
-    input      [LINE_BITS-1:0]  bypass_resp_rdata,
+    input      [READ_RESP_BITS-1:0] bypass_resp_rdata,
     input      [ID_BITS-1:0]    bypass_resp_id,
     // Explicit maintenance control.
     input                       invalidate_line_valid,
@@ -107,7 +110,7 @@ module axi_llc_subsystem_core #(
     reg [SET_BITS-1:0]        direct_set_r;
 
     reg                       resp_pending_r;
-    reg [LINE_BITS-1:0]       resp_data_r;
+    reg [READ_RESP_BITS-1:0]  resp_data_r;
     reg [ID_BITS-1:0]         resp_id_r;
 
     // Reconfiguration controller outputs.
@@ -153,7 +156,7 @@ module axi_llc_subsystem_core #(
     wire                      cache_up_req_ready_w;
     wire                      cache_up_resp_valid_w;
     wire                      cache_up_resp_visible_w;
-    wire [LINE_BITS-1:0]      cache_up_resp_rdata_w;
+    wire [READ_RESP_BITS-1:0] cache_up_resp_rdata_w;
     wire [ID_BITS-1:0]        cache_up_resp_id_w;
     wire                      cache_mem_req_valid_w;
     wire                      cache_mem_req_write_w;
@@ -192,12 +195,14 @@ module axi_llc_subsystem_core #(
     wire [WAY_COUNT-1:0]      cache_meta_wr_way_mask_w;
     wire [META_ROW_BITS-1:0]  cache_meta_wr_row_w;
 
+    wire                      cache_valid_rd_en_w;
     wire [SET_BITS-1:0]       cache_valid_rd_set_w;
     wire                      cache_valid_wr_en_w;
     wire [SET_BITS-1:0]       cache_valid_wr_set_w;
     wire [WAY_COUNT-1:0]      cache_valid_wr_mask_w;
     wire [WAY_COUNT-1:0]      cache_valid_wr_bits_w;
 
+    wire                      cache_repl_rd_en_w;
     wire [SET_BITS-1:0]       cache_repl_rd_set_w;
     wire [WAY_BITS-1:0]       repl_rd_way_w;
     wire                      cache_repl_wr_en_w;
@@ -208,7 +213,10 @@ module axi_llc_subsystem_core #(
     wire [SET_BITS-1:0]       valid_wr_set_w;
     wire [WAY_COUNT-1:0]      valid_wr_mask_w;
     wire [WAY_COUNT-1:0]      valid_wr_bits_w;
+    wire                      valid_rd_en_w;
+    wire                      valid_rd_valid_w;
     wire [WAY_COUNT-1:0]      valid_rd_bits_w;
+    wire                      repl_rd_valid_w;
 
     wire                      data_rd_en_w;
     wire [SET_BITS-1:0]       data_rd_set_w;
@@ -242,7 +250,8 @@ module axi_llc_subsystem_core #(
     wire [ADDR_BITS:0]        up_req_end_w;
     wire [ADDR_BITS:0]        mmio_limit_w;
     localparam integer RESP_WORD_BITS = 32;
-    localparam integer RESP_WORDS = LINE_BITS / RESP_WORD_BITS;
+    localparam integer RESP_WORDS = READ_RESP_BITS / RESP_WORD_BITS;
+    localparam integer LINE_WORDS = LINE_BITS / RESP_WORD_BITS;
 
     // Utility helpers for direct-window writeback into a set-row store.
     function [WAY_COUNT-1:0] way_onehot;
@@ -272,18 +281,18 @@ module axi_llc_subsystem_core #(
         end
     endfunction
 
-    function [LINE_BITS-1:0] extract_read_response;
+    function [READ_RESP_BITS-1:0] extract_read_response;
         input [ADDR_BITS-1:0] addr_value;
         input [LINE_BITS-1:0] line_value;
         integer dst_idx;
         integer src_idx;
         integer start_word;
         begin
-            extract_read_response = {LINE_BITS{1'b0}};
+            extract_read_response = {READ_RESP_BITS{1'b0}};
             start_word = addr_value[LINE_OFFSET_BITS-1:2];
             for (dst_idx = 0; dst_idx < RESP_WORDS; dst_idx = dst_idx + 1) begin
                 src_idx = start_word + dst_idx;
-                if (src_idx < RESP_WORDS) begin
+                if (src_idx < LINE_WORDS) begin
                     extract_read_response[(dst_idx * RESP_WORD_BITS) +: RESP_WORD_BITS] =
                         line_value[(src_idx * RESP_WORD_BITS) +: RESP_WORD_BITS];
                 end
@@ -338,11 +347,17 @@ module axi_llc_subsystem_core #(
     assign direct_accept_w = up_req_valid && up_req_ready && route_direct_w;
     assign invalidate_line_accepted = cache_invalidate_line_accepted_w;
 
-    assign direct_data_wr_en_w = direct_wait_rd_r && data_rd_valid_w && direct_write_r;
+    assign direct_data_wr_en_w = direct_wait_rd_r &&
+                                 data_rd_valid_w &&
+                                 valid_rd_valid_w &&
+                                 direct_write_r;
     assign direct_data_wr_way_mask_w = way_onehot(mapped_way_w);
     assign direct_data_wr_row_w = place_line_in_row(mapped_way_w, mapped_write_line_w);
 
-    assign direct_valid_wr_en_w = direct_wait_rd_r && data_rd_valid_w && direct_write_r;
+    assign direct_valid_wr_en_w = direct_wait_rd_r &&
+                                  data_rd_valid_w &&
+                                  valid_rd_valid_w &&
+                                  direct_write_r;
     assign direct_valid_wr_set_w = direct_set_r;
     assign direct_valid_wr_mask_w = way_onehot(mapped_way_w);
     assign direct_valid_wr_bits_w = mapped_next_valid_bit_w ? way_onehot(mapped_way_w)
@@ -362,6 +377,7 @@ module axi_llc_subsystem_core #(
     assign valid_wr_bits_w = valid_wr_en_sweep_w ? valid_wr_bits_sweep_w :
                              direct_store_active_w ? direct_valid_wr_bits_w :
                              cache_valid_wr_bits_w;
+    assign valid_rd_en_w = direct_accept_w ? 1'b1 : cache_valid_rd_en_w;
 
     assign data_rd_en_w = direct_accept_w ? 1'b1 : cache_data_rd_en_w;
     assign data_rd_set_w = direct_accept_w ? mapped_set_w :
@@ -382,10 +398,7 @@ module axi_llc_subsystem_core #(
     assign meta_wr_way_mask_w = cache_meta_wr_way_mask_w;
     assign meta_wr_row_w = cache_meta_wr_row_w;
 
-    assign cache_flush_start_w = reconfig_block_accepts_w &&
-                                 cache_quiescent_w &&
-                                 cache_dirty_present_w &&
-                                 !cache_flush_busy_w;
+    assign cache_flush_start_w = 1'b0;
 
     assign global_quiescent_w = !resp_pending_r &&
                                 !direct_wait_rd_r &&
@@ -474,12 +487,14 @@ module axi_llc_subsystem_core #(
     llc_valid_ram #(
         .SET_COUNT (SET_COUNT),
         .SET_BITS  (SET_BITS),
-        .WAY_COUNT (WAY_COUNT)
+        .WAY_COUNT (WAY_COUNT),
+        .READ_LATENCY_CYCLES(TABLE_READ_LATENCY)
     ) valid_ram (
         .clk     (clk),
         .rst_n   (rst_n),
-        .rd_en   (1'b1),
+        .rd_en   (valid_rd_en_w),
         .rd_set  (direct_store_active_w ? direct_valid_rd_set_w : cache_valid_rd_set_w),
+        .rd_valid(valid_rd_valid_w),
         .rd_bits (valid_rd_bits_w),
         .wr_en   (valid_wr_en_w),
         .wr_set  (valid_wr_set_w),
@@ -492,11 +507,14 @@ module axi_llc_subsystem_core #(
         .SET_COUNT (SET_COUNT),
         .SET_BITS  (SET_BITS),
         .WAY_COUNT (WAY_COUNT),
-        .WAY_BITS  (WAY_BITS)
+        .WAY_BITS  (WAY_BITS),
+        .READ_LATENCY_CYCLES(TABLE_READ_LATENCY)
     ) repl_ram (
         .clk    (clk),
         .rst_n  (rst_n),
+        .rd_en  (cache_repl_rd_en_w),
         .rd_set (cache_repl_rd_set_w),
+        .rd_valid(repl_rd_valid_w),
         .rd_way (repl_rd_way_w),
         .wr_en  (cache_repl_wr_en_w),
         .wr_set (cache_repl_wr_set_w),
@@ -510,6 +528,7 @@ module axi_llc_subsystem_core #(
         .WAY_COUNT (WAY_COUNT),
         .LINE_BITS (LINE_BITS),
         .ROW_BITS  (DATA_ROW_BITS),
+        .READ_LATENCY_CYCLES(TABLE_READ_LATENCY),
         .USE_SMIC12(USE_SMIC12_STORES)
     ) data_store (
         .clk         (clk),
@@ -532,6 +551,7 @@ module axi_llc_subsystem_core #(
         .WAY_COUNT (WAY_COUNT),
         .META_BITS (META_BITS),
         .ROW_BITS  (META_ROW_BITS),
+        .READ_LATENCY_CYCLES(TABLE_READ_LATENCY),
         .USE_SMIC12(USE_SMIC12_STORES)
     ) meta_store (
         .clk         (clk),
@@ -560,7 +580,9 @@ module axi_llc_subsystem_core #(
         .META_BITS        (META_BITS),
         .ID_BITS          (ID_BITS),
         .DATA_ROW_BITS    (DATA_ROW_BITS),
-        .META_ROW_BITS    (META_ROW_BITS)
+        .META_ROW_BITS    (META_ROW_BITS),
+        .READ_RESP_BYTES  (READ_RESP_BYTES),
+        .READ_RESP_BITS   (READ_RESP_BITS)
     ) cache_ctrl (
         .clk          (clk),
         .rst_n        (rst_n),
@@ -601,13 +623,17 @@ module axi_llc_subsystem_core #(
         .meta_wr_way_mask(cache_meta_wr_way_mask_w),
         .meta_wr_row  (cache_meta_wr_row_w),
         .meta_busy    (meta_busy_w),
+        .valid_rd_en  (cache_valid_rd_en_w),
         .valid_rd_set (cache_valid_rd_set_w),
+        .valid_rd_valid(valid_rd_valid_w),
         .valid_rd_bits(valid_rd_bits_w),
         .valid_wr_en  (cache_valid_wr_en_w),
         .valid_wr_set (cache_valid_wr_set_w),
         .valid_wr_mask(cache_valid_wr_mask_w),
         .valid_wr_bits(cache_valid_wr_bits_w),
+        .repl_rd_en   (cache_repl_rd_en_w),
         .repl_rd_set  (cache_repl_rd_set_w),
+        .repl_rd_valid(repl_rd_valid_w),
         .repl_rd_way  (repl_rd_way_w),
         .repl_wr_en   (cache_repl_wr_en_w),
         .repl_wr_set  (cache_repl_wr_set_w),
@@ -684,7 +710,7 @@ module axi_llc_subsystem_core #(
             direct_wstrb_r <= {LINE_BYTES{1'b0}};
             direct_set_r <= {SET_BITS{1'b0}};
             resp_pending_r <= 1'b0;
-            resp_data_r <= {LINE_BITS{1'b0}};
+            resp_data_r <= {READ_RESP_BITS{1'b0}};
             resp_id_r <= {ID_BITS{1'b0}};
         end else begin
             if (resp_pending_r && up_resp_ready) begin
@@ -701,12 +727,12 @@ module axi_llc_subsystem_core #(
                 direct_set_r <= mapped_set_w;
             end
 
-            if (direct_wait_rd_r && data_rd_valid_w) begin
+            if (direct_wait_rd_r && data_rd_valid_w && valid_rd_valid_w) begin
                 direct_wait_rd_r <= 1'b0;
                 resp_pending_r <= 1'b1;
                 resp_id_r <= direct_id_r;
                 if (direct_write_r) begin
-                    resp_data_r <= {LINE_BITS{1'b0}};
+                    resp_data_r <= {READ_RESP_BITS{1'b0}};
                 end else begin
                     resp_data_r <= extract_read_response(direct_addr_r,
                                                          mapped_read_line_w);

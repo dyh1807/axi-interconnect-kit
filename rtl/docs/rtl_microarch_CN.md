@@ -52,7 +52,7 @@
 - `requested != active` 或外部 `invalidate_all` 时进入维护流程
 - 切换期间阻止新的上游 accept
 - 只有 `global_quiescent=1` 后才启动 invalidate sweep
-- 默认上电 `active_mode=mode1`
+- 默认上电先做一次 startup valid sweep，完成后 `active_mode=mode1`
 - 只有 `sweep_done=1` 后才进入 `RCFG_ACTIVATE`
 - `RCFG_ACTIVATE` 当拍同时：
   - 脉冲 `invalidate_all_accepted`
@@ -65,7 +65,7 @@
 - `valid[set][way]`
 - 单读口 + 单写口
 - 只支持掩码写
-- reset 后清零
+- 不做整表 reset，依赖 startup / reconfig sweep 清零
 
 ### `llc_repl_ram`
 
@@ -74,6 +74,7 @@
 - `repl[set] = next victim way`
 - 组合读 + 同步写
 - 当前采用 round-robin next-way 语义
+- 不做整表 reset
 
 ### `llc_invalidate_sweep`
 
@@ -90,9 +91,10 @@
 - 按 `set-row` 组织
 - 一行包含所有 `way` 的 line 数据
 - `mode=1` 和 `mode=2` 共用
-- 当前行为模型采用**同步单端口读**：
-  - `rd_en` 当拍发起
-  - 下一拍 `rd_valid` 返回 `rd_row`
+- 当前行为模型采用**带显式返回 valid 的同步单端口读**：
+  - `TABLE_READ_LATENCY=1` 时保持当前默认可见行为
+  - `TABLE_READ_LATENCY>1` 时，store 内部延后 first-capture，再通过 `rd_valid`
+    对外发布 `rd_row`
   - `wr_en` 同步按 `way mask` 更新
 - 当前模块已经支持两种实现：
   - 默认通用数组实现
@@ -109,7 +111,7 @@
 - 当前只为 `mode=1` 预留
 - `mode=2` 明确不访问
 - 当前行为模型采用：
-  - 同步单端口读
+  - 带显式 `rd_valid` 的同步单端口读
   - 写侧 `busy` 语义
   - 这对应后续宏阵列实现里按 `way` 做 RMW 的最小合同
 - 当前模块已经支持两种实现：
@@ -132,6 +134,7 @@
 - mode2 write merge 当前按请求地址的 line offset 写入 resident line，不再默认从 byte 0 开始覆盖
 - direct-window 读响应在顶层再按请求地址的 32-bit word offset 做提取，不直接把 whole line
   原样返回上游
+- mode2 direct-window 当前会等 `data + valid` 同拍返回后再消费 resident row
 
 ### `llc_cache_ctrl`
 
@@ -151,7 +154,8 @@
 - partial write miss 先 refill，再 merge 安装 dirty line
 - 上述 merge 当前都按请求地址的 line offset 写入 resident line，不再假定请求从 line 起始字节发起
 - victim dirty line 先 writeback，再覆盖安装
-- reconfig 期间若存在 dirty resident line，会先顺序 flush 再允许 valid sweep
+- reconfig / `invalidate_all` 期间不会主动 dirty flush；只有 quiescent 且没有 dirty resident
+  line 时才允许 valid sweep
 - `invalidate_line` 已接入：
   - idle 时接受 maintenance 请求
   - 复用一次 resident lookup
@@ -160,6 +164,9 @@
   reset
 - read hit / refill response 当前都按请求地址的 32-bit word offset 做提取，对齐 C++
   `extract_line_response()` 的打包语义
+- resident lookup 当前与 C++ 外部表 bundle 更一致：
+  - `data/meta/valid/repl` 各自有独立返回 valid
+  - `llc_cache_ctrl` 在四表都返回后才消费 lookup 结果
 - 当前已接入单平面 `id`：
   - 上游 `req_id`
   - 上游 `resp_id`
@@ -176,7 +183,9 @@
 - read `ready/accepted/accepted_id`
 - write `ready/accepted`
 - 独立 write response `id/code`
-- 每个 master 单深度请求队列 + 独立 response 槽位
+- per-master request FIFO + 独立 response 槽位
+- `ready` 采用 sticky-grant 语义：一次只对一个 read master、一个 write master 发放 ready，
+  在握手或请求撤销前保持
 
 当前限制：
 
@@ -198,7 +207,7 @@
   - `size` 固定等于下游 AXI beat 宽度
   - `burst` 固定 `INCR`
   - 写 `data/strb` 按低地址连续切片
-  - 读 beat 也按低地址连续拼回 `LINE_BITS` 缓冲
+- 读 beat 也按低地址连续拼回 `READ_RESP_BITS=256B` 缓冲
 
 ### `axi_llc_subsystem`
 
@@ -318,6 +327,8 @@ contract bench：
 当前已确认：
 
 - 在默认通用数组实现下，单元 bench 与顶层 contract bench 可直接跑通
+- 若要做更保守的 SMIC12 wrapper 级 timing 评估，建议使用 `TABLE_READ_LATENCY=2`，
+  并按 deferred first-capture 解释这多出的拍数，而不是把 response 后端再补拍
 - 在 `USE_SMIC12=1` 且显式带入外部 `.mv` 的功能仿真下，shared store 语义可以跑通
 - 若直接启用外部宏模型自带 timing check，零延迟 RTL 仍会触发 hold 违例；这一点属于
   当前 RTL 与详细 timing model 之间的接口约束问题，尚未做额外隔离

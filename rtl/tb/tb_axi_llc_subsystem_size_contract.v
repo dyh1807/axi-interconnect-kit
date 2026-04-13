@@ -1,4 +1,5 @@
 `timescale 1ns / 1ps
+`include "axi_llc_params.vh"
 
 module tb_axi_llc_subsystem_size_contract;
 
@@ -16,6 +17,7 @@ module tb_axi_llc_subsystem_size_contract;
     localparam LLC_SIZE_BYTES   = LINE_BYTES * SET_COUNT * WAY_COUNT;
     localparam WINDOW_BYTES     = 64;
     localparam WINDOW_WAYS      = 2;
+    localparam READ_RESP_BITS   = `AXI_LLC_READ_RESP_BITS;
     localparam [MODE_BITS-1:0] MODE_OFF    = 2'b00;
     localparam [MODE_BITS-1:0] MODE_CACHE  = 2'b01;
     localparam [MODE_BITS-1:0] MODE_MAPPED = 2'b10;
@@ -39,7 +41,7 @@ module tb_axi_llc_subsystem_size_contract;
     reg                       up_req_bypass;
     wire                      up_resp_valid;
     reg                       up_resp_ready;
-    wire [LINE_BITS-1:0]      up_resp_rdata;
+    wire [READ_RESP_BITS-1:0] up_resp_rdata;
     wire [ID_BITS-1:0]        up_resp_id;
     wire                      cache_req_valid;
     reg                       cache_req_ready;
@@ -51,7 +53,7 @@ module tb_axi_llc_subsystem_size_contract;
     wire [LINE_BYTES-1:0]     cache_req_wstrb;
     reg                       cache_resp_valid;
     wire                      cache_resp_ready;
-    reg  [LINE_BITS-1:0]      cache_resp_rdata;
+    reg  [READ_RESP_BITS-1:0] cache_resp_rdata;
     reg  [ID_BITS-1:0]        cache_resp_id;
     wire                      bypass_req_valid;
     reg                       bypass_req_ready;
@@ -63,7 +65,7 @@ module tb_axi_llc_subsystem_size_contract;
     wire [LINE_BYTES-1:0]     bypass_req_wstrb;
     reg                       bypass_resp_valid;
     wire                      bypass_resp_ready;
-    reg  [LINE_BITS-1:0]      bypass_resp_rdata;
+    reg  [READ_RESP_BITS-1:0] bypass_resp_rdata;
     reg  [ID_BITS-1:0]        bypass_resp_id;
     reg                       invalidate_line_valid;
     reg  [ADDR_BITS-1:0]      invalidate_line_addr;
@@ -94,6 +96,9 @@ module tb_axi_llc_subsystem_size_contract;
     reg  [ADDR_BITS-1:0]      last_bypass_addr;
     reg  [7:0]                last_bypass_size;
     reg  [LINE_BITS-1:0]      tmp_rdata;
+    wire [LINE_BITS-1:0]      up_resp_line;
+
+    assign up_resp_line = up_resp_rdata[LINE_BITS-1:0];
 
     function [ADDR_BITS-1:0] line_align_addr;
         input [ADDR_BITS-1:0] addr_value;
@@ -118,6 +123,14 @@ module tb_axi_llc_subsystem_size_contract;
         input [ADDR_BITS-1:0] addr_value;
         begin
             make_bypass_line = 64'hB1A5_5500_0000_0000 ^ {32'h0, addr_value};
+        end
+    endfunction
+
+    function [READ_RESP_BITS-1:0] pack_read_resp_line;
+        input [LINE_BITS-1:0] line_value;
+        begin
+            pack_read_resp_line = {READ_RESP_BITS{1'b0}};
+            pack_read_resp_line[LINE_BITS-1:0] = line_value;
         end
     endfunction
 
@@ -205,7 +218,7 @@ module tb_axi_llc_subsystem_size_contract;
                     fail_now("timeout waiting up_resp_valid");
                 end
             end
-            tmp_rdata = up_resp_rdata;
+            tmp_rdata = up_resp_line;
             @(posedge clk);
             timeout = 0;
             while (up_resp_valid) begin
@@ -234,7 +247,8 @@ module tb_axi_llc_subsystem_size_contract;
         .WINDOW_BYTES     (WINDOW_BYTES),
         .WINDOW_WAYS      (WINDOW_WAYS),
         .MMIO_BASE        (32'hF000_0000),
-        .MMIO_SIZE        (32'h0000_1000)
+        .MMIO_SIZE        (32'h0000_1000),
+        .READ_RESP_BITS   (READ_RESP_BITS)
     ) dut (
         .clk                   (clk),
         .rst_n                 (rst_n),
@@ -294,10 +308,10 @@ module tb_axi_llc_subsystem_size_contract;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             cache_resp_valid <= 1'b0;
-            cache_resp_rdata <= {LINE_BITS{1'b0}};
+            cache_resp_rdata <= {READ_RESP_BITS{1'b0}};
             cache_resp_id <= {ID_BITS{1'b0}};
             bypass_resp_valid <= 1'b0;
-            bypass_resp_rdata <= {LINE_BITS{1'b0}};
+            bypass_resp_rdata <= {READ_RESP_BITS{1'b0}};
             bypass_resp_id <= {ID_BITS{1'b0}};
             cache_resp_pending_r <= 1'b0;
             cache_resp_pending_data_r <= {LINE_BITS{1'b0}};
@@ -327,13 +341,13 @@ module tb_axi_llc_subsystem_size_contract;
 
             if (cache_resp_pending_r) begin
                 cache_resp_valid <= 1'b1;
-                cache_resp_rdata <= cache_resp_pending_data_r;
+                cache_resp_rdata <= pack_read_resp_line(cache_resp_pending_data_r);
                 cache_resp_id <= cache_resp_pending_id_r;
                 cache_resp_pending_r <= 1'b0;
             end
             if (bypass_resp_pending_r) begin
                 bypass_resp_valid <= 1'b1;
-                bypass_resp_rdata <= bypass_resp_pending_data_r;
+                bypass_resp_rdata <= pack_read_resp_line(bypass_resp_pending_data_r);
                 bypass_resp_id <= bypass_resp_pending_id_r;
                 bypass_resp_pending_r <= 1'b0;
             end
@@ -382,11 +396,11 @@ module tb_axi_llc_subsystem_size_contract;
         up_resp_ready = 1'b1;
         cache_req_ready = 1'b1;
         cache_resp_valid = 1'b0;
-        cache_resp_rdata = {LINE_BITS{1'b0}};
+        cache_resp_rdata = {READ_RESP_BITS{1'b0}};
         cache_resp_id = {ID_BITS{1'b0}};
         bypass_req_ready = 1'b1;
         bypass_resp_valid = 1'b0;
-        bypass_resp_rdata = {LINE_BITS{1'b0}};
+        bypass_resp_rdata = {READ_RESP_BITS{1'b0}};
         bypass_resp_id = {ID_BITS{1'b0}};
         invalidate_line_valid = 1'b0;
         invalidate_line_addr = {ADDR_BITS{1'b0}};

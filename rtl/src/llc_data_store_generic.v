@@ -6,7 +6,8 @@ module llc_data_store_generic #(
     parameter SET_BITS  = `AXI_LLC_SET_BITS,
     parameter WAY_COUNT = `AXI_LLC_WAY_COUNT,
     parameter LINE_BITS = `AXI_LLC_LINE_BITS,
-    parameter ROW_BITS  = WAY_COUNT * LINE_BITS
+    parameter ROW_BITS  = WAY_COUNT * LINE_BITS,
+    parameter READ_LATENCY_CYCLES = `AXI_LLC_TABLE_READ_LATENCY
 ) (
     input                         clk,
     input                         rst_n,
@@ -22,6 +23,9 @@ module llc_data_store_generic #(
 );
 
     reg [ROW_BITS-1:0] row_mem [0:SET_COUNT-1];
+    reg                read_pending_r;
+    reg [SET_BITS-1:0] read_set_r;
+    reg [7:0]          read_delay_left_r;
     integer way_idx;
 
     assign busy = 1'b0;
@@ -30,11 +34,29 @@ module llc_data_store_generic #(
         if (!rst_n) begin
             rd_valid <= 1'b0;
             rd_row   <= {ROW_BITS{1'b0}};
+            read_pending_r <= 1'b0;
+            read_set_r <= {SET_BITS{1'b0}};
+            read_delay_left_r <= 8'd0;
         end else begin
-            rd_valid <= rd_en && !wr_en;
+            rd_valid <= 1'b0;
 
-            if (rd_en && !wr_en) begin
-                rd_row <= row_mem[rd_set];
+            if (read_pending_r) begin
+                if (read_delay_left_r != 0) begin
+                    read_delay_left_r <= read_delay_left_r - 8'd1;
+                end else begin
+                    rd_valid <= 1'b1;
+                    rd_row <= row_mem[read_set_r];
+                    read_pending_r <= 1'b0;
+                end
+            end else if (rd_en && !wr_en) begin
+                if (READ_LATENCY_CYCLES <= 1) begin
+                    rd_valid <= 1'b1;
+                    rd_row <= row_mem[rd_set];
+                end else begin
+                    read_pending_r <= 1'b1;
+                    read_set_r <= rd_set;
+                    read_delay_left_r <= READ_LATENCY_CYCLES - 2;
+                end
             end
 
             if (wr_en) begin

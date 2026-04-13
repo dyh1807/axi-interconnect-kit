@@ -7,6 +7,7 @@ module llc_meta_store #(
     parameter WAY_COUNT  = `AXI_LLC_WAY_COUNT,
     parameter META_BITS  = `AXI_LLC_META_BITS,
     parameter ROW_BITS   = WAY_COUNT * META_BITS,
+    parameter READ_LATENCY_CYCLES = `AXI_LLC_TABLE_READ_LATENCY,
     parameter USE_SMIC12 = 0
 ) (
     input                         clk,
@@ -33,7 +34,8 @@ module llc_meta_store #(
                 .SET_BITS  (SET_BITS),
                 .WAY_COUNT (WAY_COUNT),
                 .META_BITS (META_BITS),
-                .ROW_BITS  (ROW_BITS)
+                .ROW_BITS  (ROW_BITS),
+                .READ_LATENCY_CYCLES(READ_LATENCY_CYCLES)
             ) u_impl (
                 .clk         (clk),
                 .rst_n       (rst_n),
@@ -53,7 +55,8 @@ module llc_meta_store #(
                 .SET_BITS  (SET_BITS),
                 .WAY_COUNT (WAY_COUNT),
                 .META_BITS (META_BITS),
-                .ROW_BITS  (ROW_BITS)
+                .ROW_BITS  (ROW_BITS),
+                .READ_LATENCY_CYCLES(READ_LATENCY_CYCLES)
             ) u_impl (
                 .clk         (clk),
                 .rst_n       (rst_n),

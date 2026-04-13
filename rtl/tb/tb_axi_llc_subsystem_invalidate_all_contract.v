@@ -431,6 +431,26 @@ module tb_axi_llc_subsystem_invalidate_all_contract;
         end
     endtask
 
+    task issue_invalidate_line_once;
+        input [ADDR_BITS-1:0] addr_value;
+        integer timeout;
+        begin
+            invalidate_line_valid <= 1'b1;
+            invalidate_line_addr <= addr_value;
+            timeout = 0;
+            while (!invalidate_line_accepted) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail_now("timeout waiting invalidate_line handshake");
+                end
+            end
+            @(negedge clk);
+            invalidate_line_valid <= 1'b0;
+            invalidate_line_addr <= {ADDR_BITS{1'b0}};
+        end
+    endtask
+
     task hold_read_blocked_during_reconfig;
         input [ADDR_BITS-1:0] addr_value;
         integer timeout;
@@ -718,42 +738,58 @@ module tb_axi_llc_subsystem_invalidate_all_contract;
         writes_before = cache_write_count;
         sweeps_before = sweep_start_count;
         accepts_before = invalidate_all_accept_count;
-        capture_after_invalidate_r = 1'b1;
-        capture_first_cache_write_cycle = -1;
-        capture_first_sweep_start_cycle = -1;
 
         invalidate_all_valid = 1'b1;
         wait_cycles(1);
         hold_read_blocked_during_reconfig(CACHE_ADDR_DIRTY);
+        wait_cycles(16);
+        if ((invalidate_all_accept_count - accepts_before) != 0) begin
+            fail_now("mode1 dirty invalidate_all should not accept");
+        end
+        if ((cache_write_count - writes_before) != 0) begin
+            fail_now("mode1 dirty invalidate_all should not flush dirty line");
+        end
+        if ((sweep_start_count - sweeps_before) != 0) begin
+            fail_now("mode1 dirty invalidate_all should not start sweep");
+        end
+        @(negedge clk);
+        invalidate_all_valid = 1'b0;
+        up_req_valid = 1'b0;
+        up_req_write = 1'b0;
+        up_req_addr = {ADDR_BITS{1'b0}};
+        up_req_id = {ID_BITS{1'b0}};
+        up_req_total_size = 8'd0;
+        up_req_wdata = {LINE_BITS{1'b0}};
+        up_req_wstrb = {LINE_BYTES{1'b0}};
+        up_req_bypass = 1'b0;
+        wait_upstream_idle();
+
+        issue_invalidate_line_once(CACHE_ADDR_DIRTY);
+        wait_upstream_idle();
+
+        do_read_expect(CACHE_ADDR_DIRTY,
+                       dirty_line_init,
+                       "mode1 reread after invalidate_line mismatch");
+
+        reads_before = cache_read_count;
+        writes_before = cache_write_count;
+        sweeps_before = sweep_start_count;
+        accepts_before = invalidate_all_accept_count;
+        invalidate_all_valid = 1'b1;
         while (!(invalidate_all_valid && invalidate_all_accepted)) begin
             @(posedge clk);
         end
         @(negedge clk);
         invalidate_all_valid = 1'b0;
-        wait_held_read_accept();
-        wait_for_response(resp_line);
-        capture_after_invalidate_r = 1'b0;
+        do_read_expect(CACHE_ADDR_DIRTY,
+                       dirty_line_init,
+                       "mode1 reread after clean invalidate_all mismatch");
 
         if ((invalidate_all_accept_count - accepts_before) != 1) begin
-            fail_now("mode1 invalidate_all should accept exactly once");
+            fail_now("mode1 clean invalidate_all should accept exactly once");
         end
-        if ((cache_write_count - writes_before) < 1) begin
-            fail_now("mode1 invalidate_all should flush dirty line before sweep");
-        end
-        if (capture_first_cache_write_cycle < 0) begin
-            fail_now("mode1 invalidate_all did not observe dirty writeback");
-        end
-        if (capture_first_sweep_start_cycle < 0) begin
-            fail_now("mode1 invalidate_all did not observe valid sweep start");
-        end
-        if (capture_first_cache_write_cycle >= capture_first_sweep_start_cycle) begin
-            fail_now("mode1 dirty flush must happen before valid sweep");
-        end
-        if ((cache_read_count - reads_before) != 1) begin
-            fail_now("mode1 reread after invalidate_all should miss exactly once");
-        end
-        if (resp_line !== dirty_line_after_write) begin
-            fail_now("mode1 reread after invalidate_all returned unexpected data");
+        if ((cache_write_count - writes_before) != 0) begin
+            fail_now("mode1 clean invalidate_all should not flush dirty line");
         end
         if ((sweep_start_count - sweeps_before) != 1) begin
             fail_now("mode1 invalidate_all should trigger one sweep");

@@ -37,9 +37,9 @@
 - invalid read 返回 0
 - invalid partial write 采用 zero-merge，再置 `valid=1`
 - 模式切换通过统一 FSM 驱动 valid sweep
-- `mode=1` cache path 已具备最小 hit/miss/refill/writeback/dirty flush 语义
+- `mode=1` cache path 已具备最小 hit/miss/refill/writeback 语义
 - bypass hit/miss/write-through 语义与当前 C++ 原型一致
 - `invalidate_all_accepted` 与配置提交同拍可见
 - 单流核心已具备最小 `id` 接口，并有独立 contract bench
-- 兼容层已补回多 read/write master 的 `accepted/resp` 接口
+- 兼容层已补回多 read/write master 的 `accepted/resp` 接口，并带 per-master request FIFO
 - 对外 RTL 顶层已补成单组 AXI4 master 接口，不在本层做 DDR/MMIO 二次拆分

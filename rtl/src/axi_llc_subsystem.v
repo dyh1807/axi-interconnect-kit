@@ -33,12 +33,15 @@ module axi_llc_subsystem #(
     parameter RESET_MODE        = {{(`AXI_LLC_MODE_BITS-2){1'b0}}, 2'b01},
     parameter RESET_OFFSET      = {`AXI_LLC_ADDR_BITS{1'b0}},
     parameter USE_SMIC12_STORES = 0,
+    parameter TABLE_READ_LATENCY = `AXI_LLC_TABLE_READ_LATENCY,
     parameter NUM_READ_MASTERS  = 4,
     parameter NUM_WRITE_MASTERS = 2,
     parameter AXI_ID_BITS       = `AXI_LLC_AXI_ID_BITS,
     parameter AXI_DATA_BYTES    = `AXI_LLC_AXI_DATA_BYTES,
     parameter AXI_DATA_BITS     = `AXI_LLC_AXI_DATA_BITS,
-    parameter AXI_STRB_BITS     = `AXI_LLC_AXI_STRB_BITS
+    parameter AXI_STRB_BITS     = `AXI_LLC_AXI_STRB_BITS,
+    parameter READ_RESP_BYTES   = `AXI_LLC_READ_RESP_BYTES,
+    parameter READ_RESP_BITS    = `AXI_LLC_READ_RESP_BITS
 ) (
     input                                   clk,
     input                                   rst_n,
@@ -56,7 +59,7 @@ module axi_llc_subsystem #(
     input      [NUM_READ_MASTERS-1:0]       read_req_bypass,
     output     [NUM_READ_MASTERS-1:0]       read_resp_valid,
     input      [NUM_READ_MASTERS-1:0]       read_resp_ready,
-    output     [NUM_READ_MASTERS*LINE_BITS-1:0] read_resp_data,
+    output     [NUM_READ_MASTERS*READ_RESP_BITS-1:0] read_resp_data,
     output     [NUM_READ_MASTERS*ID_BITS-1:0] read_resp_id,
     // Upstream write masters.
     input      [NUM_WRITE_MASTERS-1:0]      write_req_valid,
@@ -127,7 +130,7 @@ module axi_llc_subsystem #(
     wire [LINE_BYTES-1:0]    cache_req_wstrb_w;
     wire                     cache_resp_valid_w;
     wire                     cache_resp_ready_w;
-    wire [LINE_BITS-1:0]     cache_resp_rdata_w;
+    wire [READ_RESP_BITS-1:0] cache_resp_rdata_w;
     wire [ID_BITS-1:0]       cache_resp_id_w;
 
     wire                     bypass_req_valid_w;
@@ -140,7 +143,7 @@ module axi_llc_subsystem #(
     wire [LINE_BYTES-1:0]    bypass_req_wstrb_w;
     wire                     bypass_resp_valid_w;
     wire                     bypass_resp_ready_w;
-    wire [LINE_BITS-1:0]     bypass_resp_rdata_w;
+    wire [READ_RESP_BITS-1:0] bypass_resp_rdata_w;
     wire [ID_BITS-1:0]       bypass_resp_id_w;
 
     // Multi-master compatibility layer around the single-flow core.
@@ -164,8 +167,11 @@ module axi_llc_subsystem #(
         .RESET_MODE        (RESET_MODE),
         .RESET_OFFSET      (RESET_OFFSET),
         .USE_SMIC12_STORES (USE_SMIC12_STORES),
+        .TABLE_READ_LATENCY(TABLE_READ_LATENCY),
         .NUM_READ_MASTERS  (NUM_READ_MASTERS),
-        .NUM_WRITE_MASTERS (NUM_WRITE_MASTERS)
+        .NUM_WRITE_MASTERS (NUM_WRITE_MASTERS),
+        .READ_RESP_BYTES   (READ_RESP_BYTES),
+        .READ_RESP_BITS    (READ_RESP_BITS)
     ) compat (
         .clk                   (clk),
         .rst_n                 (rst_n),
@@ -241,7 +247,9 @@ module axi_llc_subsystem #(
         .AXI_ID_BITS    (AXI_ID_BITS),
         .AXI_DATA_BYTES (AXI_DATA_BYTES),
         .AXI_DATA_BITS  (AXI_DATA_BITS),
-        .AXI_STRB_BITS  (AXI_STRB_BITS)
+        .AXI_STRB_BITS  (AXI_STRB_BITS),
+        .READ_RESP_BYTES(READ_RESP_BYTES),
+        .READ_RESP_BITS (READ_RESP_BITS)
     ) bridge (
         .clk               (clk),
         .rst_n             (rst_n),

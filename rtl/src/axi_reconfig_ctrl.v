@@ -136,7 +136,7 @@ module axi_reconfig_ctrl #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state           <= RCFG_IDLE;
+            state           <= RCFG_INV_SWEEP;
             active_mode_r   <= RESET_MODE;
             active_offset_r <= RESET_OFFSET;
             target_mode_r   <= RESET_MODE;

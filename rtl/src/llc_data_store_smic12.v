@@ -6,7 +6,8 @@ module llc_data_store_smic12 #(
     parameter SET_BITS  = `AXI_LLC_SET_BITS,
     parameter WAY_COUNT = `AXI_LLC_WAY_COUNT,
     parameter LINE_BITS = `AXI_LLC_LINE_BITS,
-    parameter ROW_BITS  = WAY_COUNT * LINE_BITS
+    parameter ROW_BITS  = WAY_COUNT * LINE_BITS,
+    parameter READ_LATENCY_CYCLES = `AXI_LLC_TABLE_READ_LATENCY
 ) (
     input                         clk,
     input                         rst_n,
@@ -28,6 +29,8 @@ module llc_data_store_smic12 #(
     localparam CHUNK_COUNT    = LINE_BITS / CHUNK_BITS;
 
     reg [BANK_BITS-1:0] rd_bank_r;
+    reg                 read_pending_r;
+    reg [7:0]           read_delay_left_r;
     wire [BANK_BITS-1:0] rd_bank_w;
     wire [BANK_BITS-1:0] wr_bank_w;
     wire [BANK_ADDR_BITS-1:0] rd_addr_w;
@@ -79,11 +82,26 @@ module llc_data_store_smic12 #(
         if (!rst_n) begin
             rd_valid   <= 1'b0;
             rd_bank_r  <= {BANK_BITS{1'b0}};
+            read_pending_r <= 1'b0;
+            read_delay_left_r <= 8'd0;
         end else begin
-            rd_valid <= rd_en && !wr_en;
+            rd_valid <= 1'b0;
 
-            if (rd_en && !wr_en) begin
+            if (read_pending_r) begin
+                if (read_delay_left_r != 0) begin
+                    read_delay_left_r <= read_delay_left_r - 8'd1;
+                end else begin
+                    rd_valid <= 1'b1;
+                    read_pending_r <= 1'b0;
+                end
+            end else if (rd_en && !wr_en) begin
                 rd_bank_r <= rd_bank_w;
+                if (READ_LATENCY_CYCLES <= 1) begin
+                    rd_valid <= 1'b1;
+                end else begin
+                    read_pending_r <= 1'b1;
+                    read_delay_left_r <= READ_LATENCY_CYCLES - 2;
+                end
             end
         end
     end

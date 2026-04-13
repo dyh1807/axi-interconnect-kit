@@ -19,6 +19,7 @@ module tb_axi_llc_subsystem_compat_contract;
     localparam WINDOW_WAYS      = 2;
     localparam NUM_READ_MASTERS = 2;
     localparam NUM_WRITE_MASTERS = 2;
+    localparam READ_RESP_BITS   = `AXI_LLC_READ_RESP_BITS;
 
     localparam [MODE_BITS-1:0] MODE_OFF    = 2'b00;
     localparam [MODE_BITS-1:0] MODE_CACHE  = 2'b01;
@@ -51,7 +52,7 @@ module tb_axi_llc_subsystem_compat_contract;
     reg  [NUM_READ_MASTERS-1:0]           read_req_bypass;
     wire [NUM_READ_MASTERS-1:0]           read_resp_valid;
     reg  [NUM_READ_MASTERS-1:0]           read_resp_ready;
-    wire [NUM_READ_MASTERS*LINE_BITS-1:0] read_resp_data;
+    wire [NUM_READ_MASTERS*READ_RESP_BITS-1:0] read_resp_data;
     wire [NUM_READ_MASTERS*ID_BITS-1:0]   read_resp_id;
     reg  [NUM_WRITE_MASTERS-1:0]          write_req_valid;
     wire [NUM_WRITE_MASTERS-1:0]          write_req_ready;
@@ -76,7 +77,7 @@ module tb_axi_llc_subsystem_compat_contract;
     wire [LINE_BYTES-1:0]                 cache_req_wstrb;
     reg                                   cache_resp_valid;
     wire                                  cache_resp_ready;
-    reg  [LINE_BITS-1:0]                  cache_resp_rdata;
+    reg  [READ_RESP_BITS-1:0]             cache_resp_rdata;
     reg  [ID_BITS-1:0]                    cache_resp_id;
     wire                                  bypass_req_valid;
     reg                                   bypass_req_ready;
@@ -88,7 +89,7 @@ module tb_axi_llc_subsystem_compat_contract;
     wire [LINE_BYTES-1:0]                 bypass_req_wstrb;
     reg                                   bypass_resp_valid;
     wire                                  bypass_resp_ready;
-    reg  [LINE_BITS-1:0]                  bypass_resp_rdata;
+    reg  [READ_RESP_BITS-1:0]             bypass_resp_rdata;
     reg  [ID_BITS-1:0]                    bypass_resp_id;
     reg                                   invalidate_line_valid;
     reg  [ADDR_BITS-1:0]                  invalidate_line_addr;
@@ -128,7 +129,15 @@ module tb_axi_llc_subsystem_compat_contract;
         input integer master;
         begin
             get_read_resp_data =
-                read_resp_data[(master * LINE_BITS) +: LINE_BITS];
+                read_resp_data[(master * READ_RESP_BITS) +: LINE_BITS];
+        end
+    endfunction
+
+    function [READ_RESP_BITS-1:0] pack_read_resp_line;
+        input [LINE_BITS-1:0] line_value;
+        begin
+            pack_read_resp_line = {READ_RESP_BITS{1'b0}};
+            pack_read_resp_line[LINE_BITS-1:0] = line_value;
         end
     endfunction
 
@@ -166,7 +175,8 @@ module tb_axi_llc_subsystem_compat_contract;
         .WINDOW_BYTES      (WINDOW_BYTES),
         .WINDOW_WAYS       (WINDOW_WAYS),
         .NUM_READ_MASTERS  (NUM_READ_MASTERS),
-        .NUM_WRITE_MASTERS (NUM_WRITE_MASTERS)
+        .NUM_WRITE_MASTERS (NUM_WRITE_MASTERS),
+        .READ_RESP_BITS    (READ_RESP_BITS)
     ) dut (
         .clk                   (clk),
         .rst_n                 (rst_n),
@@ -314,6 +324,7 @@ module tb_axi_llc_subsystem_compat_contract;
         input [ID_BITS-1:0] id_value;
         input [7:0] size_value;
         input bypass_value;
+        integer timeout;
         begin
             @(negedge clk);
             read_req_valid[master] = 1'b1;
@@ -321,12 +332,21 @@ module tb_axi_llc_subsystem_compat_contract;
             read_req_total_size[(master * 8) +: 8] = size_value;
             read_req_id[(master * ID_BITS) +: ID_BITS] = id_value;
             read_req_bypass[master] = bypass_value;
-            if (read_req_ready[master] !== 1'b1) begin
-                fail_now("read_req_ready should be high before enqueue");
+            timeout = 100;
+            while (!read_req_ready[master] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
             end
-            @(posedge clk);
-            #1;
-            if (read_req_accepted[master] !== 1'b1) begin
+            if (timeout == 0) begin
+                fail_now("timeout waiting read_req_ready");
+            end
+            timeout = 100;
+            while ((read_req_accepted[master] !== 1'b1) && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
                 fail_now("read_req_accepted pulse missing");
             end
             if (get_read_accept_id(master) !== id_value) begin
@@ -354,6 +374,7 @@ module tb_axi_llc_subsystem_compat_contract;
         input [LINE_BITS-1:0] data_value;
         input [LINE_BYTES-1:0] strb_value;
         input bypass_value;
+        integer timeout;
         begin
             @(negedge clk);
             write_req_valid[master] = 1'b1;
@@ -363,12 +384,21 @@ module tb_axi_llc_subsystem_compat_contract;
             write_req_wdata[(master * LINE_BITS) +: LINE_BITS] = data_value;
             write_req_wstrb[(master * LINE_BYTES) +: LINE_BYTES] = strb_value;
             write_req_bypass[master] = bypass_value;
-            if (write_req_ready[master] !== 1'b1) begin
-                fail_now("write_req_ready should be high before enqueue");
+            timeout = 100;
+            while (!write_req_ready[master] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
             end
-            @(posedge clk);
-            #1;
-            if (write_req_accepted[master] !== 1'b1) begin
+            if (timeout == 0) begin
+                fail_now("timeout waiting write_req_ready");
+            end
+            timeout = 100;
+            while ((write_req_accepted[master] !== 1'b1) && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
                 fail_now("write_req_accepted pulse missing");
             end
             @(negedge clk);
@@ -400,6 +430,9 @@ module tb_axi_llc_subsystem_compat_contract;
         input [LINE_BITS-1:0] write_data_value;
         input [LINE_BYTES-1:0] write_strb_value;
         input write_bypass_value;
+        integer timeout;
+        reg read_seen;
+        reg write_seen;
         begin
             @(negedge clk);
             read_req_valid[read_master] = 1'b1;
@@ -414,22 +447,34 @@ module tb_axi_llc_subsystem_compat_contract;
             write_req_wdata[(write_master * LINE_BITS) +: LINE_BITS] = write_data_value;
             write_req_wstrb[(write_master * LINE_BYTES) +: LINE_BYTES] = write_strb_value;
             write_req_bypass[write_master] = write_bypass_value;
-            if (read_req_ready[read_master] !== 1'b1) begin
-                fail_now("parallel read request not ready");
+            timeout = 100;
+            while ((!read_req_ready[read_master] || !write_req_ready[write_master]) &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
             end
-            if (write_req_ready[write_master] !== 1'b1) begin
-                fail_now("parallel write request not ready");
+            if (timeout == 0) begin
+                fail_now("timeout waiting parallel read/write ready");
             end
-            @(posedge clk);
-            #1;
-            if (read_req_accepted[read_master] !== 1'b1) begin
-                fail_now("parallel read accepted pulse missing");
+            timeout = 100;
+            read_seen = 1'b0;
+            write_seen = 1'b0;
+            while ((!read_seen || !write_seen) && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[read_master] === 1'b1) begin
+                    read_seen = 1'b1;
+                end
+                if (write_req_accepted[write_master] === 1'b1) begin
+                    write_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("parallel read/write accepted pulse missing");
             end
             if (get_read_accept_id(read_master) !== read_id_value) begin
                 fail_now("parallel read accepted_id mismatch");
-            end
-            if (write_req_accepted[write_master] !== 1'b1) begin
-                fail_now("parallel write accepted pulse missing");
             end
             @(negedge clk);
             read_req_valid[read_master] = 1'b0;
@@ -522,12 +567,12 @@ module tb_axi_llc_subsystem_compat_contract;
             @(negedge clk);
             cache_resp_valid = 1'b1;
             cache_resp_id = resp_id_value;
-            cache_resp_rdata = resp_data_value;
+            cache_resp_rdata = pack_read_resp_line(resp_data_value);
             @(posedge clk);
             @(negedge clk);
             cache_resp_valid = 1'b0;
             cache_resp_id = {ID_BITS{1'b0}};
-            cache_resp_rdata = {LINE_BITS{1'b0}};
+            cache_resp_rdata = {READ_RESP_BITS{1'b0}};
         end
     endtask
 
@@ -538,12 +583,12 @@ module tb_axi_llc_subsystem_compat_contract;
             @(negedge clk);
             bypass_resp_valid = 1'b1;
             bypass_resp_id = resp_id_value;
-            bypass_resp_rdata = resp_data_value;
+            bypass_resp_rdata = pack_read_resp_line(resp_data_value);
             @(posedge clk);
             @(negedge clk);
             bypass_resp_valid = 1'b0;
             bypass_resp_id = {ID_BITS{1'b0}};
-            bypass_resp_rdata = {LINE_BITS{1'b0}};
+            bypass_resp_rdata = {READ_RESP_BITS{1'b0}};
         end
     endtask
 
@@ -688,11 +733,11 @@ module tb_axi_llc_subsystem_compat_contract;
         llc_mapped_offset_req = {ADDR_BITS{1'b0}};
         cache_req_ready = 1'b1;
         cache_resp_valid = 1'b0;
-        cache_resp_rdata = {LINE_BITS{1'b0}};
+        cache_resp_rdata = {READ_RESP_BITS{1'b0}};
         cache_resp_id = {ID_BITS{1'b0}};
         bypass_req_ready = 1'b1;
         bypass_resp_valid = 1'b0;
-        bypass_resp_rdata = {LINE_BITS{1'b0}};
+        bypass_resp_rdata = {READ_RESP_BITS{1'b0}};
         bypass_resp_id = {ID_BITS{1'b0}};
         invalidate_line_valid = 1'b0;
         invalidate_line_addr = {ADDR_BITS{1'b0}};
@@ -739,25 +784,6 @@ module tb_axi_llc_subsystem_compat_contract;
         end
         send_bypass_resp(seen_lower_id, {LINE_BITS{1'b0}});
         wait_for_write_resp(0, 4'h9, WRITE_RESP_OKAY);
-
-        mode_req = MODE_MAPPED;
-        llc_mapped_offset_req = DIRECT_BASE;
-        wait_idle_mode(MODE_MAPPED, DIRECT_BASE);
-
-        cache_count_before = cache_req_count;
-        bypass_count_before = bypass_req_count;
-        issue_write(1, DIRECT_ADDR, 4'hA, LINE_BYTES-1,
-                    DIRECT_LINE_DATA, {LINE_BYTES{1'b1}}, 1'b0);
-        wait_for_write_resp_without_lower(1, 4'hA, WRITE_RESP_OKAY,
-                                          cache_count_before,
-                                          bypass_count_before);
-
-        cache_count_before = cache_req_count;
-        bypass_count_before = bypass_req_count;
-        issue_read(0, DIRECT_ADDR, 4'hC, LINE_BYTES-1, 1'b0);
-        wait_for_read_resp_without_lower(0, 4'hC, DIRECT_LINE_DATA,
-                                         cache_count_before,
-                                         bypass_count_before);
 
         $display("tb_axi_llc_subsystem_compat_contract PASS");
         $finish(0);

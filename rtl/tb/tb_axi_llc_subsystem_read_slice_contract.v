@@ -165,6 +165,26 @@ module tb_axi_llc_subsystem_read_slice_contract;
         end
     endtask
 
+    task issue_invalidate_line;
+        input [ADDR_BITS-1:0] addr_value;
+        integer timeout;
+        begin
+            invalidate_line_valid <= 1'b1;
+            invalidate_line_addr <= addr_value;
+            timeout = 0;
+            while (!invalidate_line_accepted) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 128) begin
+                    fail_now("timeout waiting invalidate_line_accepted");
+                end
+            end
+            @(posedge clk);
+            invalidate_line_valid <= 1'b0;
+            invalidate_line_addr <= {ADDR_BITS{1'b0}};
+        end
+    endtask
+
     task wait_for_response;
         input [ID_BITS-1:0] expect_id;
         integer timeout;
@@ -371,6 +391,8 @@ module tb_axi_llc_subsystem_read_slice_contract;
         if (observed_rdata_r !== SLICE_EXPECT_CACHE_PATCH) begin
             fail_now("mode1 unaligned write hit should merge at line offset");
         end
+
+        issue_invalidate_line(CACHE_LINE_ADDR);
 
         mode_req = MODE_MAPPED;
         llc_mapped_offset_req = MAPPED_OFFSET;

@@ -10,11 +10,22 @@ module llc_smic12_meta_1024x128 (
     output     [127:0]  q
 );
 
-`ifdef AXI_LLC_USE_EXTERNAL_SRAM_MODELS
+`ifdef SYNTHESIS
     sassls0c4l1p1024x128m4b1w0c0p0d0t0s2sdz0rw00__1 u_macro (
         .Q        (q),
-        .VDD      (1'b1),
-        .VSS      (1'b0),
+        .ADR      (addr),
+        .D        (din),
+        .WE       (we),
+        .ME       (me),
+        .CLK      (clk),
+        .TEST1    (1'b0),
+        .TEST_RNM (1'b0),
+        .RME      (1'b0),
+        .RM       (4'b0000)
+    );
+`elsif AXI_LLC_USE_EXTERNAL_SRAM_MODELS
+    sassls0c4l1p1024x128m4b1w0c0p0d0t0s2sdz0rw00__1 u_macro (
+        .Q        (q),
         .ADR      (addr),
         .D        (din),
         .WE       (we),

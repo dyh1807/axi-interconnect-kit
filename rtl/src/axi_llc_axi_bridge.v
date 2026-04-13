@@ -19,7 +19,9 @@ module axi_llc_axi_bridge #(
     parameter AXI_ID_BITS    = `AXI_LLC_AXI_ID_BITS,
     parameter AXI_DATA_BYTES = `AXI_LLC_AXI_DATA_BYTES,
     parameter AXI_DATA_BITS  = `AXI_LLC_AXI_DATA_BITS,
-    parameter AXI_STRB_BITS  = `AXI_LLC_AXI_STRB_BITS
+    parameter AXI_STRB_BITS  = `AXI_LLC_AXI_STRB_BITS,
+    parameter READ_RESP_BYTES = `AXI_LLC_READ_RESP_BYTES,
+    parameter READ_RESP_BITS  = `AXI_LLC_READ_RESP_BITS
 ) (
     input                       clk,
     input                       rst_n,
@@ -34,7 +36,7 @@ module axi_llc_axi_bridge #(
     input      [LINE_BYTES-1:0] cache_req_wstrb,
     output                      cache_resp_valid,
     input                       cache_resp_ready,
-    output     [LINE_BITS-1:0]  cache_resp_rdata,
+    output     [READ_RESP_BITS-1:0] cache_resp_rdata,
     output     [ID_BITS-1:0]    cache_resp_id,
     // Bypass lower path.
     input                       bypass_req_valid,
@@ -47,7 +49,7 @@ module axi_llc_axi_bridge #(
     input      [LINE_BYTES-1:0] bypass_req_wstrb,
     output                      bypass_resp_valid,
     input                       bypass_resp_ready,
-    output     [LINE_BITS-1:0]  bypass_resp_rdata,
+    output     [READ_RESP_BITS-1:0] bypass_resp_rdata,
     output     [ID_BITS-1:0]    bypass_resp_id,
     // Single AXI4 master port.
     output                      axi_awvalid,
@@ -106,7 +108,7 @@ module axi_llc_axi_bridge #(
     reg [7:0]                 txn_size_r;
     reg [LINE_BITS-1:0]       txn_wdata_r;
     reg [LINE_BYTES-1:0]      txn_wstrb_r;
-    reg [LINE_BITS-1:0]       txn_rdata_r;
+    reg [READ_RESP_BITS-1:0]  txn_rdata_r;
     reg [AXI_ID_BITS-1:0]     txn_axi_id_r;
     reg [7:0]                 txn_total_beats_r;
     reg [7:0]                 txn_beats_done_r;
@@ -181,8 +183,8 @@ module axi_llc_axi_bridge #(
         end
     endfunction
 
-    function [LINE_BITS-1:0] merge_read_beat;
-        input [LINE_BITS-1:0] line_data;
+    function [READ_RESP_BITS-1:0] merge_read_beat;
+        input [READ_RESP_BITS-1:0] line_data;
         input [AXI_DATA_BITS-1:0] beat_data;
         input [7:0] beat_idx;
         integer byte_idx;
@@ -191,7 +193,7 @@ module axi_llc_axi_bridge #(
             merge_read_beat = line_data;
             for (byte_idx = 0; byte_idx < AXI_DATA_BYTES; byte_idx = byte_idx + 1) begin
                 dst_byte = beat_idx * AXI_DATA_BYTES + byte_idx;
-                if (dst_byte < LINE_BYTES) begin
+                if (dst_byte < READ_RESP_BYTES) begin
                     merge_read_beat[(dst_byte * 8) +: 8] =
                         beat_data[(byte_idx * 8) +: 8];
                 end
@@ -258,7 +260,7 @@ module axi_llc_axi_bridge #(
             txn_size_r <= 8'd0;
             txn_wdata_r <= {LINE_BITS{1'b0}};
             txn_wstrb_r <= {LINE_BYTES{1'b0}};
-            txn_rdata_r <= {LINE_BITS{1'b0}};
+            txn_rdata_r <= {READ_RESP_BITS{1'b0}};
             txn_axi_id_r <= {{(AXI_ID_BITS-1){1'b0}}, 1'b1};
             txn_total_beats_r <= 8'd0;
             txn_beats_done_r <= 8'd0;
@@ -274,7 +276,7 @@ module axi_llc_axi_bridge #(
                         txn_size_r <= select_cache_w ? cache_req_size : bypass_req_size;
                         txn_wdata_r <= select_cache_w ? cache_req_wdata : bypass_req_wdata;
                         txn_wstrb_r <= select_cache_w ? cache_req_wstrb : bypass_req_wstrb;
-                        txn_rdata_r <= {LINE_BITS{1'b0}};
+                        txn_rdata_r <= {READ_RESP_BITS{1'b0}};
                         txn_axi_id_r <= next_axi_id_r;
                         txn_total_beats_r <= selected_beats_w;
                         txn_beats_done_r <= 8'd0;
@@ -330,7 +332,7 @@ module axi_llc_axi_bridge #(
 
                 ST_WR_B: begin
                     if (axi_b_match_w) begin
-                        txn_rdata_r <= {LINE_BITS{1'b0}};
+            txn_rdata_r <= {READ_RESP_BITS{1'b0}};
                         state_r <= ST_WR_RESP;
                     end
                 end

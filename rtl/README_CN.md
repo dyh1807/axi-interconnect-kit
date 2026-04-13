@@ -82,6 +82,8 @@ axi_llc_subsystem
 - `mode=2`：direct-mapped 本地 LLC window
 - `mode=0/3`：请求仍先进入 LLC resident lookup，但按 bypass 语义处理
 - 模式切换统一走 `block accepts -> drain -> valid-sweep invalidate -> activate`
+- `invalidate_all` 只有在 cache 已 quiescent 且没有 dirty resident line 时才会被接受，
+  不主动触发 dirty flush
 
 当前目录是**自包含**的，不接入根 CMake，也不影响现有 C++/CTest 构建。
 
@@ -91,25 +93,31 @@ axi_llc_subsystem
   - 当前默认参数
 - `src/axi_reconfig_ctrl.v`
   - 模式切换 + `invalidate_all` 维护控制 FSM
-  - 默认上电 `active_mode=mode1`
+  - 默认上电先执行一次 startup valid sweep，完成后 `active_mode=mode1`
 - `src/llc_data_store.v`
   - `mode=1/2` 共享的 resident data set-row 存储
   - 当前已支持两种实现：
     - 默认通用数组实现
     - `USE_SMIC12_STORES=1` 时的 SMIC12 宏封装实现
+  - 读返回通过 `rd_valid` 显式标记，默认 `TABLE_READ_LATENCY=1`
 - `src/llc_meta_store.v`
   - 预留给 `mode=1` cache 语义使用的 resident meta set-row 存储
   - 当前已支持两种实现：
     - 默认通用数组实现
     - `USE_SMIC12_STORES=1` 时的 SMIC12 宏封装实现
+  - 读返回通过 `rd_valid` 显式标记，默认 `TABLE_READ_LATENCY=1`
 - `src/llc_valid_ram.v`
   - 独立 valid bit-array
+  - 不做整表 reset，依赖 startup / reconfig sweep 清零
+  - 读接口已收口成 `rd_en -> rd_valid`
 - `src/llc_repl_ram.v`
   - 每 set 一个 next-victim-way 的 replacement 小表
+  - 不做整表 reset
+  - 读接口已收口成 `rd_en -> rd_valid`
 - `src/llc_invalidate_sweep.v`
   - 顺序清 valid 的 sweep 控制器
 - `src/llc_cache_ctrl.v`
-  - `mode=1` 的 resident lookup / hit / miss / refill / victim writeback / reconfig 前 dirty flush
+  - `mode=1` 的 resident lookup / hit / miss / refill / victim writeback
 - `src/llc_mapped_window_ctrl.v`
   - mode=2 地址翻译 / set-way 计算 / 共享 data-store 的 line 选择 / zero-read /
     zero-merge
@@ -130,7 +138,9 @@ axi_llc_subsystem
 - `src/axi_llc_subsystem_compat.v`
   - 多读/多写 master 兼容层
   - 补回 `accepted/accepted_id`、独立写响应槽位
-  - 当前通过每 master 单深度队列把外部接口收敛到单流核心
+  - 当前通过 per-master request FIFO 把外部接口收敛到单流核心
+  - `ready` 采用 sticky-grant 语义：一次只对一个 read master、一个 write master
+    给出 ready，并在握手或请求撤销前保持
 - `src/axi_llc_axi_bridge.v`
   - 把内部 `cache_* / bypass_*` lower 请求统一转换成单组 AXI4 `AW/W/B/AR/R`
   - 当前对齐 C++ 原型的下游打包合同：
@@ -155,6 +165,7 @@ axi_llc_subsystem
 - [rtl_hierarchy_CN.md](docs/rtl_hierarchy_CN.md)
 - [rtl_scope_CN.md](docs/rtl_scope_CN.md)
 - [rtl_microarch_CN.md](docs/rtl_microarch_CN.md)
+- [rtl_timing_model_CN.md](docs/rtl_timing_model_CN.md)
 - [rtl_verif_plan_CN.md](docs/rtl_verif_plan_CN.md)
 
 ## 验证文件
@@ -164,6 +175,7 @@ axi_llc_subsystem
 - `tb/tb_llc_data_store.v`
 - `tb/tb_llc_meta_store.v`
 - `tb/tb_llc_valid_ram.v`
+- `tb/tb_llc_repl_ram.v`
 - `tb/tb_llc_invalidate_sweep.v`
 - `tb/tb_llc_mapped_window_ctrl.v`
 - `tb/tb_axi_reconfig_ctrl.v`
@@ -178,6 +190,7 @@ axi_llc_subsystem
 - `tb/tb_axi_llc_subsystem_read_slice_contract.v`
 - `tb/tb_axi_llc_subsystem_bypass_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_contract.v`
+- `tb/tb_axi_llc_subsystem_compat_read_queue_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_bypass_read_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_bypass_write_contract.v`
@@ -195,9 +208,16 @@ axi_llc_subsystem
 - `active_offset` 只在目标模式为 `mode=2` 时参与重配置；`mode=0/1/3` 下单独改变
   offset 不会触发无意义的 sweep。
 - 顶层默认上电模式是 `mode=1`；bench 如果需要从其它模式起步，会显式覆盖 `RESET_MODE`。
+- 顶层默认上电会先跑一次 startup valid sweep，因此 reset 释放后需要等待维护流程回到 idle。
 - 请求接口当前已经带 `total_size`，并参与 mode2 整体判窗与下游 `*_size` 发射。
 - `mode=1` resident hit/refill 读响应、以及 `mode=2` direct-window 读响应，当前都按请求
   地址的 32-bit word offset 提取返回数据，与 C++ 原型的 `extract_line_response()` 语义对齐。
+- resident table 读当前按 C++ 外部表 bundle 合同收口：
+  - `data/meta/valid/repl` 各自有独立 `rd_valid`
+  - `mode=1` lookup 会等四表同拍返回后再消费
+  - `mode=2` direct-window 会等 `data + valid` 返回后再消费
+- `TABLE_READ_LATENCY` 默认值是 `1`，保持当前功能回归时序；如果做更保守的 SMIC12
+  wrapper 级 timing 建模，可提到 `2/3`
 - `data/meta` 当前都采用同步单端口行为模型，因此 `mode=2` 写路径已经改成“先读
   row，再 merge，再写回”的顺序语义。
 - bypass 读命中当前直接从 resident 返回；只有 miss 才通过 `bypass_*` 口访问 lower memory。
@@ -205,6 +225,11 @@ axi_llc_subsystem
   `llc_invalidate_sweep` 顺序清 `valid`。
 - `invalidate_all_accepted` 不再表示“请求已被 FSM 吸收”，而表示“本次维护 sweep 已完成；
   active 配置在同一拍提交”。
+- `invalidate_all` 当前与 C++ 原型保持一致：
+  - dirty resident line 存在时不会主动 flush
+  - 只有 quiescent 且 `dirty_count==0` 时才接受
+- 因此如果要在 mode1 脏写之后切换 mode，bench 或上层驱动必须先做 maintenance
+  清掉脏 line，不能依赖 mode switch 隐式 flush
 - `invalidate_line` 当前已经接入：
   - 所有非 direct-window 请求都通过 `llc_cache_ctrl` 复用 resident lookup 做 maintenance
   - `mode=2` direct-window resident line 仍不复用这条 maintenance 语义
@@ -218,6 +243,8 @@ axi_llc_subsystem
   - 多 read/write master 的 `ready/accepted`
   - read `accepted_id`
   - 独立 write response `id/code`
+  - per-master request FIFO
+  - sticky-grant `ready`
   - 但当前内部 lower-issue 仍由单流核心串行化，不等价于 C++ 的完整多 outstanding
 - `axi_llc_subsystem` 已把当前对外边界收敛成：
   - 上游 `read_masters[] / write_masters[]`
@@ -229,6 +256,8 @@ axi_llc_subsystem
 - 共享 `data/meta` 当前支持 `USE_SMIC12_STORES=1` 的宏封装实现；在真实外部宏模型
   上做功能仿真时，当前建议关闭 timing check（例如 `+notimingcheck`），因为零延迟
   RTL 直接连接详细 timing model 还会触发 hold 违例。
+- 当前 DC 可直接综合到“宏实例 + 标准单元”这一级；但 SRAM 目前只有文本 `Liberty (.lib)`，
+  若要在 DC 中得到带真实宏时序的 WNS/TNS，仍需要可用的 `.db` 或可用的 Library Compiler。
 - prefetch 当前仍未进入 RTL：
   - C++ 原型里已有专门的 prefetch 单测与实现
   - 但本轮没有在当前分支上完成一次干净、可复现的端到端重验证

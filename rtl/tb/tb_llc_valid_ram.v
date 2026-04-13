@@ -6,6 +6,7 @@ module tb_llc_valid_ram;
     reg rst_n;
     reg rd_en;
     reg [1:0] rd_set;
+    wire rd_valid;
     wire [3:0] rd_bits;
     reg wr_en;
     reg [1:0] wr_set;
@@ -21,6 +22,7 @@ module tb_llc_valid_ram;
         .rst_n   (rst_n),
         .rd_en   (rd_en),
         .rd_set  (rd_set),
+        .rd_valid(rd_valid),
         .rd_bits (rd_bits),
         .wr_en   (wr_en),
         .wr_set  (wr_set),
@@ -31,10 +33,17 @@ module tb_llc_valid_ram;
     always #5 clk = ~clk;
 
     task expect_bits;
+        input expected_valid;
         input [3:0] expected;
         begin
             #1;
-            if (rd_bits !== expected) begin
+            if (rd_valid !== expected_valid) begin
+                $display("tb_llc_valid_ram FAIL: expected_valid=%b got=%b",
+                         expected_valid,
+                         rd_valid);
+                $finish;
+            end
+            if (expected_valid && (rd_bits !== expected)) begin
                 $display("tb_llc_valid_ram FAIL: expected=%b got=%b", expected, rd_bits);
                 $finish;
             end
@@ -44,7 +53,7 @@ module tb_llc_valid_ram;
     initial begin
         clk    = 1'b0;
         rst_n  = 1'b0;
-        rd_en  = 1'b1;
+        rd_en  = 1'b0;
         rd_set = 2'b00;
         wr_en  = 1'b0;
         wr_set = 2'b00;
@@ -55,7 +64,19 @@ module tb_llc_valid_ram;
         rst_n <= 1'b1;
 
         @(posedge clk);
-        expect_bits(4'b0000);
+        wr_en   <= 1'b1;
+        wr_set  <= 2'b00;
+        wr_mask <= 4'b1111;
+        wr_bits <= 4'b0000;
+
+        @(posedge clk);
+        wr_en  <= 1'b0;
+        rd_en  <= 1'b1;
+        rd_set <= 2'b00;
+
+        @(posedge clk);
+        rd_en <= 1'b0;
+        expect_bits(1'b1, 4'b0000);
 
         @(posedge clk);
         wr_en   <= 1'b1;
@@ -65,8 +86,12 @@ module tb_llc_valid_ram;
 
         @(posedge clk);
         wr_en   <= 1'b0;
+        rd_en   <= 1'b1;
         rd_set  <= 2'b01;
-        expect_bits(4'b0101);
+
+        @(posedge clk);
+        rd_en <= 1'b0;
+        expect_bits(1'b1, 4'b0101);
 
         @(posedge clk);
         wr_en   <= 1'b1;
@@ -76,8 +101,12 @@ module tb_llc_valid_ram;
 
         @(posedge clk);
         wr_en   <= 1'b0;
+        rd_en   <= 1'b1;
         rd_set  <= 2'b01;
-        expect_bits(4'b0111);
+
+        @(posedge clk);
+        rd_en <= 1'b0;
+        expect_bits(1'b1, 4'b0111);
 
         @(posedge clk);
         wr_en   <= 1'b1;
@@ -87,8 +116,12 @@ module tb_llc_valid_ram;
 
         @(posedge clk);
         wr_en   <= 1'b0;
+        rd_en   <= 1'b1;
         rd_set  <= 2'b01;
-        expect_bits(4'b0011);
+
+        @(posedge clk);
+        rd_en <= 1'b0;
+        expect_bits(1'b1, 4'b0011);
 
         $display("tb_llc_valid_ram PASS");
         $finish;

@@ -10,7 +10,7 @@
 ### `tb_llc_data_store.v`
 
 - 同步 set-row 读
-- `rd_en -> rd_valid` 时序
+- 默认 `TABLE_READ_LATENCY=1` 的 `rd_en -> rd_valid` 时序
 - 按 way mask 写
 - 不同 way 更新互不破坏
 
@@ -25,7 +25,12 @@
 - 掩码写
 - 同一 set 多次更新
 - 未更新位保持
-- reset 后清零
+- 通过显式写零替代整表 reset 假设
+
+### `tb_llc_repl_ram.v`
+
+- 默认 `TABLE_READ_LATENCY=1` 的 `rd_en -> rd_valid` 时序
+- 写后读回一致
 
 ### `tb_llc_invalidate_sweep.v`
 
@@ -159,6 +164,22 @@
 - 该 bench 只验证兼容层暴露给上层的多 master 队列与 response 槽合同，不改 `src/`。
 - 对 cache lower response，只要求把观测到的 `cache_req_id` 原样回传，不额外约束 cache 内部 `mem_id` 编码。
 
+### `tb_axi_llc_subsystem_compat_read_queue_contract.v`
+
+覆盖：
+
+- `axi_llc_subsystem_compat` 的 read queue 支持同一 master 多请求排队
+- 每次 read 入队都产生单拍 `accepted`
+- 每次 read 入队的 `accepted_id` 与入队 `req_id` 一致
+- 同一 master 的重复 `req_id` 在未完成前被 `ready/accept` 拒绝
+- 不同 read master 可各自排队，且后续都能回到各自 response 槽
+
+说明：
+
+- 该 bench 固定在 `mode=0` 的 bypass read 环境下，只验证 compat 层的 read queue 合同。
+- 场景中显式覆盖 `master0` 上两笔不同 `req_id` 的连续入队。
+- 该 bench 不约束 queued read 的全局调度顺序，只要求每个已接受请求最终都能被正确下发并回到正确 master。
+
 ### `tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 
 覆盖：
@@ -191,11 +212,12 @@
 
 覆盖：
 
-- mode1 下外部 `invalidate_all` 握手后先 drain / dirty flush，再做 valid sweep
+- mode1 下 dirty line 存在时外部 `invalidate_all` 不会被接受，也不会主动 flush
+- mode1 下 clean resident 状态时，`invalidate_all` 经过 drain 后触发 valid sweep
 - mode1 invalidate 后同地址重新 miss
 - mode2 下外部 `invalidate_all` 后 direct-window resident data 不再可见
 - mode 切换与 `invalidate_all` 同时出现时只做一轮维护流程
-- dirty flush / reread 过程继续通过 `id` 接口回传响应
+- clean reread 过程继续通过 `id` 接口回传响应
 
 ### `tb_axi_llc_subsystem_id_contract.v`
 
@@ -222,6 +244,7 @@
   - `tb_llc_data_store`
   - `tb_llc_meta_store`
   - `tb_llc_valid_ram`
+  - `tb_llc_repl_ram`
   - `tb_llc_invalidate_sweep`
   - `tb_llc_mapped_window_ctrl`
   - `tb_axi_reconfig_ctrl`
@@ -234,4 +257,5 @@
   - `tb_axi_llc_subsystem_invalidate_all_contract`
   - `tb_axi_llc_subsystem_id_contract`
   - `tb_axi_llc_subsystem_compat_contract`
+  - `tb_axi_llc_subsystem_compat_read_queue_contract`
   - `tb_llc_smic12_store_contract`
