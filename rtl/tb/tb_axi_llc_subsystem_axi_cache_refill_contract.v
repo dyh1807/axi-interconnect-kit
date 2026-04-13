@@ -352,23 +352,27 @@ module tb_axi_llc_subsystem_axi_cache_refill_contract;
     task drive_r_beat;
         input [AXI_DATA_BITS-1:0] beat_data;
         input                     beat_last;
+        integer start_r_count;
         integer timeout;
+        reg     handshake_seen;
         begin
             axi_rid = seen_arid;
             axi_rdata = beat_data;
             axi_rresp = 2'b00;
             axi_rlast = beat_last;
             axi_rvalid = 1'b1;
+            start_r_count = r_count;
+            handshake_seen = 1'b0;
             timeout = 40;
-            while (timeout > 0) begin
+            while ((timeout > 0) && !handshake_seen) begin
                 @(posedge clk);
-                if (axi_rvalid && axi_rready) begin
-                    timeout = 0;
-                end else begin
-                    timeout = timeout - 1;
+                #1;
+                if (r_count != start_r_count) begin
+                    handshake_seen = 1'b1;
                 end
+                timeout = timeout - 1;
             end
-            if (!(axi_rvalid && axi_rready)) begin
+            if (!handshake_seen) begin
                 fail_now("AXI R handshake timeout");
             end
             #1;

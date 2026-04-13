@@ -160,8 +160,12 @@ axi_llc_subsystem
 
 ## 当前保留的微架构差异
 
-- lower AXI 路径当前仍做串行化处理，没有把 C++ interconnect 那套多 outstanding /
-  `orig_id / mem_id / axi_id` remap table 原样搬进 RTL
+- `axi_llc_subsystem_compat` 与 `axi_llc_subsystem_core` 仍然是单流收敛结构，因此整个子模块
+  能向下游制造的并发度仍受上层单 inflight / per-master FIFO 调度限制
+- 但 `axi_llc_axi_bridge` 已经补成 lower AXI 多 outstanding / 独立 `axi_id` remap：
+  - read / write 各自独立分配 `axi_id`
+  - `req_id` 保持 source-local，不直接暴露到 AXI
+  - completion 进入 source-local response queue 后再回给 cache / bypass
 - 带 timing-check 的外部宏模型直连时序隔离还没有接入日常回归
 - `prefetch` 仍未进入 RTL，本轮继续保持关闭
 
@@ -199,6 +203,9 @@ axi_llc_subsystem
 - `tb/tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_bypass_read_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_bypass_write_contract.v`
+- `tb/tb_axi_llc_axi_bridge_read_outstanding_contract.v`
+- `tb/tb_axi_llc_axi_bridge_write_outstanding_contract.v`
+- `tb/tb_axi_llc_axi_bridge_write_id_reuse_contract.v`
 - `tb/tb_llc_smic12_store_contract.v`
 - `flist/*.f`
 
@@ -254,7 +261,14 @@ axi_llc_subsystem
   - 独立 write response `id/code`
   - per-master request FIFO
   - sticky-grant `ready`
-  - 但当前内部 lower-issue 仍由单流核心串行化，不等价于 C++ 的完整多 outstanding
+  - 当前内部 lower-issue 仍由单流核心串行化，因此上层能制造的并发度不等价于 C++
+    interconnect 的完整多事务发射
+- `axi_llc_axi_bridge` 当前已补回 lower AXI 多 outstanding / remap：
+  - read pending table 与 write pending table 分离
+  - AXI `R/B` 完成后再进入 cache / bypass 各自的 completion queue
+  - write `axi_id` 在 `B` 握手后立即释放，可在 source response 尚未被消费时重用
+  - `cache/bypass` 两个 source 可以跨源乱序完成，但对外仍保持各自 source-local `req_id`
+    回传
 - `axi_llc_subsystem` 已把当前对外边界收敛成：
   - 上游 `read_masters[] / write_masters[]`
   - 下游单组 AXI4 `AW/W/B/AR/R`

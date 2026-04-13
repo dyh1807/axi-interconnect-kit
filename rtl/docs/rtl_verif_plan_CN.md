@@ -264,7 +264,10 @@
 ## 当前限制
 
 - 当前 bench 仍以 directed contract 为主，更大规模的 randomized / long-run backpressure 还没有接入。
-- lower AXI 多 outstanding / remap table 仍保持 RTL 当前的简化实现，因此验证重点放在外部可见合同，而不是强行约束内部发射并发度。
+- lower AXI 多 outstanding / remap 已经有独立 bridge-local contract bench；当前验证重点转到：
+  - bridge 的 `req_id -> axi_id -> req_id` 回路由
+  - write `axi_id` 在 `B` 后即可复用
+  - top/compat 侧旧合同在新 bridge 下不回归
 - 当前已在 `eda-10` 上确认 VCS 可用，并实际跑通：
   - `tb_llc_data_store`
   - `tb_llc_meta_store`
@@ -273,6 +276,9 @@
   - `tb_llc_invalidate_sweep`
   - `tb_llc_mapped_window_ctrl`
   - `tb_axi_reconfig_ctrl`
+  - `tb_axi_llc_axi_bridge_read_outstanding_contract`
+  - `tb_axi_llc_axi_bridge_write_outstanding_contract`
+  - `tb_axi_llc_axi_bridge_write_id_reuse_contract`
   - `tb_axi_llc_subsystem_directed`
   - `tb_axi_llc_subsystem_handshake_contract`
   - `tb_axi_llc_subsystem_mode_contract`
@@ -281,8 +287,14 @@
   - `tb_axi_llc_subsystem_size_contract`
   - `tb_axi_llc_subsystem_invalidate_all_contract`
   - `tb_axi_llc_subsystem_id_contract`
+  - `tb_axi_llc_subsystem_axi_cache_refill_contract`
+  - `tb_axi_llc_subsystem_axi_bypass_read_contract`
+  - `tb_axi_llc_subsystem_axi_bypass_write_contract`
   - `tb_axi_llc_subsystem_compat_contract`
   - `tb_axi_llc_subsystem_compat_read_queue_contract`
+  - `tb_axi_llc_subsystem_compat_reconfig_drain_contract`
+  - `tb_axi_llc_subsystem_compat_invalidate_line_hazard_contract`
+  - `tb_axi_llc_subsystem_read_master_timing_contract`
   - `tb_axi_llc_subsystem_compat_reconfig_drain_contract`
   - `tb_axi_llc_subsystem_compat_invalidate_line_hazard_contract`
   - `tb_axi_llc_subsystem_read_master_timing_contract`

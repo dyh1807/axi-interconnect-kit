@@ -327,16 +327,14 @@ module tb_axi_llc_subsystem_compat_read_queue_contract;
             read_req_id[(master * ID_BITS) +: ID_BITS] = id_value;
             read_req_bypass[master] = 1'b1;
             timeout = 20;
-            while ((read_req_ready[master] !== 1'b1) && (timeout > 0)) begin
-                @(negedge clk);
+            while ((read_req_accepted[master] !== 1'b1) && (timeout > 0)) begin
+                @(posedge clk);
                 #1;
                 timeout = timeout - 1;
             end
             if (timeout == 0) begin
-                fail_now("timeout waiting read_req_ready for accepted enqueue");
+                fail_now("timeout waiting read_req_accepted for enqueue");
             end
-            @(posedge clk);
-            #1;
             if (read_req_accepted !== expected_accept) begin
                 fail_now("read accepted pulse should be one-hot");
             end

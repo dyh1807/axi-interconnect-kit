@@ -25,7 +25,7 @@
 
 ## 当前不包含
 
-- C++ interconnect 那套完整多 outstanding / AXI remap 微架构
+- compat/core 层面对整个子模块的完整多发射调度微架构
 - parent simulator 对接层
 - 顶层 CMake/CTest 接入
 - 性能优化 / prefetch / debug counter

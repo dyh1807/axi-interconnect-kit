@@ -425,6 +425,7 @@ module axi_llc_subsystem_compat #(
         // Keep the C++ dcache-read same-cycle accept behavior. Other read
         // masters still use ready-first sticky-grant semantics.
         if (!accept_blocked_w &&
+            (MASTER_DCACHE_R < NUM_READ_MASTERS) &&
             rd_select_found_w &&
             (rd_select_master_w == MASTER_DCACHE_R) &&
             read_req_valid[MASTER_DCACHE_R]) begin

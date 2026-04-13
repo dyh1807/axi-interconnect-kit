@@ -71,6 +71,8 @@ module tb_axi_llc_subsystem_mode_contract;
     reg        bypass_resp_pending;
     reg [ID_BITS-1:0] cache_next_id;
     reg [ID_BITS-1:0] bypass_next_id;
+    integer cache_before;
+    integer bypass_before;
     wire [63:0] up_resp_line;
 
     assign up_resp_line = up_resp_rdata[63:0];
@@ -343,9 +345,6 @@ module tb_axi_llc_subsystem_mode_contract;
     end
 
     initial begin
-        integer cache_before;
-        integer bypass_before;
-
         clk                   = 1'b0;
         rst_n                 = 1'b0;
         mode_req              = 2'b00;

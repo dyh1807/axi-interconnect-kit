@@ -353,20 +353,23 @@ module tb_axi_llc_subsystem_axi_bypass_write_contract;
 
     task drive_b_resp;
         integer timeout;
+        integer start_b_count;
         begin
             axi_bid = seen_awid;
             axi_bresp = AXI_RESP_SLVERR;
             axi_bvalid = 1'b1;
+            start_b_count = b_count;
             timeout = 40;
             while (timeout > 0) begin
                 @(posedge clk);
-                if (axi_bvalid && axi_bready) begin
+                #1;
+                if (b_count != start_b_count) begin
                     timeout = 0;
                 end else begin
                     timeout = timeout - 1;
                 end
             end
-            if (!(axi_bvalid && axi_bready)) begin
+            if (b_count == start_b_count) begin
                 fail_now("bypass write B handshake timeout");
             end
             #1;

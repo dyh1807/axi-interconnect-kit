@@ -106,6 +106,8 @@ axi_llc_subsystem
 - 接收 `cache_*` 和 `bypass_*` 两类内部 lower 请求
 - 统一仲裁成一组 AXI4 五通道事务
 - 把 AXI `R/B` 响应再还原给 cache/bypass 两类上层路径
+- 维护独立的 read / write pending table 与 AXI `id` remap
+- 维护 cache / bypass 各自的 completion queue
 
 如果要看 `ARLEN/ARSIZE/AWLEN/AWSIZE`、beat 拼接和 AXI `id` 的当前位置，这里是主入口。
 

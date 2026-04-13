@@ -322,21 +322,24 @@ module tb_axi_llc_subsystem_axi_bypass_read_contract;
 
     task drive_single_r;
         integer timeout;
+        integer start_r_count;
         begin
             axi_rid = seen_arid;
             axi_rresp = 2'b00;
             axi_rlast = 1'b1;
             axi_rvalid = 1'b1;
+            start_r_count = r_count;
             timeout = 40;
             while (timeout > 0) begin
                 @(posedge clk);
-                if (axi_rvalid && axi_rready) begin
+                #1;
+                if (r_count != start_r_count) begin
                     timeout = 0;
                 end else begin
                     timeout = timeout - 1;
                 end
             end
-            if (!(axi_rvalid && axi_rready)) begin
+            if (r_count == start_r_count) begin
                 fail_now("bypass read R handshake timeout");
             end
             #1;

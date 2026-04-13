@@ -10,125 +10,185 @@
 // Output side:
 //   - a single AXI4 master AW/W/B/AR/R interface
 //
-// This file owns AXI len/size/burst packing and beat-wise data/strobe assembly.
+// Internal rules:
+//   - source-local req_id stays inside the cache/bypass domains
+//   - lower AXI uses independently allocated read/write axi_id
+//   - read/write completions are queued when the AXI transaction completes,
+//     not when the request is accepted
+//   - write axi_id is released on B handshake, matching the C++ model
 module axi_llc_axi_bridge #(
-    parameter ADDR_BITS      = `AXI_LLC_ADDR_BITS,
-    parameter ID_BITS        = `AXI_LLC_ID_BITS,
-    parameter LINE_BYTES     = `AXI_LLC_LINE_BYTES,
-    parameter LINE_BITS      = `AXI_LLC_LINE_BITS,
-    parameter AXI_ID_BITS    = `AXI_LLC_AXI_ID_BITS,
-    parameter AXI_DATA_BYTES = `AXI_LLC_AXI_DATA_BYTES,
-    parameter AXI_DATA_BITS  = `AXI_LLC_AXI_DATA_BITS,
-    parameter AXI_STRB_BITS  = `AXI_LLC_AXI_STRB_BITS,
+    parameter ADDR_BITS       = `AXI_LLC_ADDR_BITS,
+    parameter ID_BITS         = `AXI_LLC_ID_BITS,
+    parameter LINE_BYTES      = `AXI_LLC_LINE_BYTES,
+    parameter LINE_BITS       = `AXI_LLC_LINE_BITS,
+    parameter AXI_ID_BITS     = `AXI_LLC_AXI_ID_BITS,
+    parameter AXI_DATA_BYTES  = `AXI_LLC_AXI_DATA_BYTES,
+    parameter AXI_DATA_BITS   = `AXI_LLC_AXI_DATA_BITS,
+    parameter AXI_STRB_BITS   = `AXI_LLC_AXI_STRB_BITS,
     parameter READ_RESP_BYTES = `AXI_LLC_READ_RESP_BYTES,
     parameter READ_RESP_BITS  = `AXI_LLC_READ_RESP_BITS
 ) (
-    input                       clk,
-    input                       rst_n,
+    input                           clk,
+    input                           rst_n,
     // Cache lower path.
-    input                       cache_req_valid,
-    output                      cache_req_ready,
-    input                       cache_req_write,
-    input      [ADDR_BITS-1:0]  cache_req_addr,
-    input      [ID_BITS-1:0]    cache_req_id,
-    input      [7:0]            cache_req_size,
-    input      [LINE_BITS-1:0]  cache_req_wdata,
-    input      [LINE_BYTES-1:0] cache_req_wstrb,
-    output                      cache_resp_valid,
-    input                       cache_resp_ready,
+    input                           cache_req_valid,
+    output                          cache_req_ready,
+    input                           cache_req_write,
+    input      [ADDR_BITS-1:0]      cache_req_addr,
+    input      [ID_BITS-1:0]        cache_req_id,
+    input      [7:0]                cache_req_size,
+    input      [LINE_BITS-1:0]      cache_req_wdata,
+    input      [LINE_BYTES-1:0]     cache_req_wstrb,
+    output                          cache_resp_valid,
+    input                           cache_resp_ready,
     output     [READ_RESP_BITS-1:0] cache_resp_rdata,
-    output     [ID_BITS-1:0]    cache_resp_id,
-    output     [1:0]            cache_resp_code,
+    output     [ID_BITS-1:0]        cache_resp_id,
+    output     [1:0]                cache_resp_code,
     // Bypass lower path.
-    input                       bypass_req_valid,
-    output                      bypass_req_ready,
-    input                       bypass_req_write,
-    input      [ADDR_BITS-1:0]  bypass_req_addr,
-    input      [ID_BITS-1:0]    bypass_req_id,
-    input      [7:0]            bypass_req_size,
-    input      [LINE_BITS-1:0]  bypass_req_wdata,
-    input      [LINE_BYTES-1:0] bypass_req_wstrb,
-    output                      bypass_resp_valid,
-    input                       bypass_resp_ready,
+    input                           bypass_req_valid,
+    output                          bypass_req_ready,
+    input                           bypass_req_write,
+    input      [ADDR_BITS-1:0]      bypass_req_addr,
+    input      [ID_BITS-1:0]        bypass_req_id,
+    input      [7:0]                bypass_req_size,
+    input      [LINE_BITS-1:0]      bypass_req_wdata,
+    input      [LINE_BYTES-1:0]     bypass_req_wstrb,
+    output                          bypass_resp_valid,
+    input                           bypass_resp_ready,
     output     [READ_RESP_BITS-1:0] bypass_resp_rdata,
-    output     [ID_BITS-1:0]    bypass_resp_id,
-    output     [1:0]            bypass_resp_code,
+    output     [ID_BITS-1:0]        bypass_resp_id,
+    output     [1:0]                bypass_resp_code,
     // Single AXI4 master port.
-    output                      axi_awvalid,
-    input                       axi_awready,
-    output     [AXI_ID_BITS-1:0] axi_awid,
-    output     [ADDR_BITS-1:0]  axi_awaddr,
-    output     [7:0]            axi_awlen,
-    output     [2:0]            axi_awsize,
-    output     [1:0]            axi_awburst,
-    output                      axi_wvalid,
-    input                       axi_wready,
-    output     [AXI_DATA_BITS-1:0] axi_wdata,
-    output     [AXI_STRB_BITS-1:0] axi_wstrb,
-    output                      axi_wlast,
-    input                       axi_bvalid,
-    output                      axi_bready,
-    input      [AXI_ID_BITS-1:0] axi_bid,
-    input      [1:0]            axi_bresp,
-    output                      axi_arvalid,
-    input                       axi_arready,
-    output     [AXI_ID_BITS-1:0] axi_arid,
-    output     [ADDR_BITS-1:0]  axi_araddr,
-    output     [7:0]            axi_arlen,
-    output     [2:0]            axi_arsize,
-    output     [1:0]            axi_arburst,
-    input                       axi_rvalid,
-    output                      axi_rready,
-    input      [AXI_ID_BITS-1:0] axi_rid,
-    input      [AXI_DATA_BITS-1:0] axi_rdata,
-    input      [1:0]            axi_rresp,
-    input                       axi_rlast
+    output                          axi_awvalid,
+    input                           axi_awready,
+    output     [AXI_ID_BITS-1:0]    axi_awid,
+    output     [ADDR_BITS-1:0]      axi_awaddr,
+    output     [7:0]                axi_awlen,
+    output     [2:0]                axi_awsize,
+    output     [1:0]                axi_awburst,
+    output                          axi_wvalid,
+    input                           axi_wready,
+    output     [AXI_DATA_BITS-1:0]  axi_wdata,
+    output     [AXI_STRB_BITS-1:0]  axi_wstrb,
+    output                          axi_wlast,
+    input                           axi_bvalid,
+    output                          axi_bready,
+    input      [AXI_ID_BITS-1:0]    axi_bid,
+    input      [1:0]                axi_bresp,
+    output                          axi_arvalid,
+    input                           axi_arready,
+    output     [AXI_ID_BITS-1:0]    axi_arid,
+    output     [ADDR_BITS-1:0]      axi_araddr,
+    output     [7:0]                axi_arlen,
+    output     [2:0]                axi_arsize,
+    output     [1:0]                axi_arburst,
+    input                           axi_rvalid,
+    output                          axi_rready,
+    input      [AXI_ID_BITS-1:0]    axi_rid,
+    input      [AXI_DATA_BITS-1:0]  axi_rdata,
+    input      [1:0]                axi_rresp,
+    input                           axi_rlast
 );
 
-    localparam [2:0] ST_IDLE        = 3'd0;
-    localparam [2:0] ST_RD_ADDR     = 3'd1;
-    localparam [2:0] ST_RD_DATA     = 3'd2;
-    localparam [2:0] ST_RD_RESP     = 3'd3;
-    localparam [2:0] ST_WR_ADDR     = 3'd4;
-    localparam [2:0] ST_WR_DATA     = 3'd5;
-    localparam [2:0] ST_WR_B        = 3'd6;
-    localparam [2:0] ST_WR_RESP     = 3'd7;
     localparam [1:0] AXI_BURST_INCR = 2'b01;
-    localparam integer MAX_AXI_BEATS = (LINE_BYTES + AXI_DATA_BYTES - 1) / AXI_DATA_BYTES;
+    localparam [1:0] RESP_OKAY      = 2'b00;
+    localparam integer READ_PENDING_COUNT  = `AXI_LLC_MAX_OUTSTANDING;
+    localparam integer WRITE_PENDING_COUNT = `AXI_LLC_MAX_WRITE_OUTSTANDING;
+    localparam integer AXI_ID_COUNT        = (1 << AXI_ID_BITS);
     localparam [2:0] AXI_SIZE_CODE =
         (AXI_DATA_BYTES == 32) ? 3'd5 :
         (AXI_DATA_BYTES == 16) ? 3'd4 :
         (AXI_DATA_BYTES == 8)  ? 3'd3 : 3'd2;
 
-    // One in-flight AXI transaction at a time. This matches the current
-    // simplified RTL contract, not the full C++ multi-outstanding design.
-    reg [2:0]                 state_r;
-    reg                       txn_from_cache_r;
-    reg                       txn_write_r;
-    reg [ADDR_BITS-1:0]       txn_addr_r;
-    reg [ID_BITS-1:0]         txn_req_id_r;
-    reg [7:0]                 txn_size_r;
-    reg [LINE_BITS-1:0]       txn_wdata_r;
-    reg [LINE_BYTES-1:0]      txn_wstrb_r;
-    reg [READ_RESP_BITS-1:0]  txn_rdata_r;
-    reg [1:0]                 txn_resp_code_r;
-    reg [AXI_ID_BITS-1:0]     txn_axi_id_r;
-    reg [7:0]                 txn_total_beats_r;
-    reg [7:0]                 txn_beats_done_r;
-    reg [AXI_ID_BITS-1:0]     next_axi_id_r;
+    reg                           rd_valid_r [0:READ_PENDING_COUNT-1];
+    reg                           rd_from_cache_r [0:READ_PENDING_COUNT-1];
+    reg [ADDR_BITS-1:0]           rd_addr_r [0:READ_PENDING_COUNT-1];
+    reg [ID_BITS-1:0]             rd_req_id_r [0:READ_PENDING_COUNT-1];
+    reg [7:0]                     rd_size_r [0:READ_PENDING_COUNT-1];
+    reg [AXI_ID_BITS-1:0]         rd_axi_id_r [0:READ_PENDING_COUNT-1];
+    reg [7:0]                     rd_total_beats_r [0:READ_PENDING_COUNT-1];
+    reg [7:0]                     rd_beats_done_r [0:READ_PENDING_COUNT-1];
+    reg                           rd_ar_sent_r [0:READ_PENDING_COUNT-1];
+    reg [READ_RESP_BITS-1:0]      rd_rdata_r [0:READ_PENDING_COUNT-1];
+    reg [1:0]                     rd_resp_code_r [0:READ_PENDING_COUNT-1];
 
-    wire                      select_cache_w;
-    wire                      select_bypass_w;
-    wire                      idle_accept_w;
-    wire [7:0]                cache_beats_w;
-    wire [7:0]                bypass_beats_w;
-    wire [7:0]                selected_beats_w;
-    wire                      rd_target_ready_w;
-    wire                      wr_target_ready_w;
-    wire                      axi_r_match_w;
-    wire                      axi_b_match_w;
+    reg                           wr_valid_r [0:WRITE_PENDING_COUNT-1];
+    reg                           wr_from_cache_r [0:WRITE_PENDING_COUNT-1];
+    reg [ADDR_BITS-1:0]           wr_addr_r [0:WRITE_PENDING_COUNT-1];
+    reg [ID_BITS-1:0]             wr_req_id_r [0:WRITE_PENDING_COUNT-1];
+    reg [7:0]                     wr_size_r [0:WRITE_PENDING_COUNT-1];
+    reg [LINE_BITS-1:0]           wr_wdata_r [0:WRITE_PENDING_COUNT-1];
+    reg [LINE_BYTES-1:0]          wr_wstrb_r [0:WRITE_PENDING_COUNT-1];
+    reg [AXI_ID_BITS-1:0]         wr_axi_id_r [0:WRITE_PENDING_COUNT-1];
+    reg [7:0]                     wr_total_beats_r [0:WRITE_PENDING_COUNT-1];
+    reg [7:0]                     wr_beats_sent_r [0:WRITE_PENDING_COUNT-1];
+    reg                           wr_aw_sent_r [0:WRITE_PENDING_COUNT-1];
+    reg                           wr_w_done_r [0:WRITE_PENDING_COUNT-1];
 
-    // AXI packaging helpers.
+    reg [7:0]                     rd_issue_q_slot_r [0:READ_PENDING_COUNT-1];
+    reg [7:0]                     rd_issue_head_r;
+    reg [7:0]                     rd_issue_tail_r;
+    reg [7:0]                     rd_issue_count_r;
+
+    reg [7:0]                     wr_aw_q_slot_r [0:WRITE_PENDING_COUNT-1];
+    reg [7:0]                     wr_aw_head_r;
+    reg [7:0]                     wr_aw_tail_r;
+    reg [7:0]                     wr_aw_count_r;
+
+    reg [7:0]                     wr_w_q_slot_r [0:WRITE_PENDING_COUNT-1];
+    reg [7:0]                     wr_w_head_r;
+    reg [7:0]                     wr_w_tail_r;
+    reg [7:0]                     wr_w_count_r;
+
+    reg [ID_BITS-1:0]             cache_rd_rsp_id_r [0:READ_PENDING_COUNT-1];
+    reg [1:0]                     cache_rd_rsp_code_r [0:READ_PENDING_COUNT-1];
+    reg [READ_RESP_BITS-1:0]      cache_rd_rsp_data_r [0:READ_PENDING_COUNT-1];
+    reg [7:0]                     cache_rd_rsp_head_r;
+    reg [7:0]                     cache_rd_rsp_tail_r;
+    reg [7:0]                     cache_rd_rsp_count_r;
+
+    reg [ID_BITS-1:0]             bypass_rd_rsp_id_r [0:READ_PENDING_COUNT-1];
+    reg [1:0]                     bypass_rd_rsp_code_r [0:READ_PENDING_COUNT-1];
+    reg [READ_RESP_BITS-1:0]      bypass_rd_rsp_data_r [0:READ_PENDING_COUNT-1];
+    reg [7:0]                     bypass_rd_rsp_head_r;
+    reg [7:0]                     bypass_rd_rsp_tail_r;
+    reg [7:0]                     bypass_rd_rsp_count_r;
+
+    reg [ID_BITS-1:0]             cache_wr_rsp_id_r [0:WRITE_PENDING_COUNT-1];
+    reg [1:0]                     cache_wr_rsp_code_r [0:WRITE_PENDING_COUNT-1];
+    reg [7:0]                     cache_wr_rsp_head_r;
+    reg [7:0]                     cache_wr_rsp_tail_r;
+    reg [7:0]                     cache_wr_rsp_count_r;
+
+    reg [ID_BITS-1:0]             bypass_wr_rsp_id_r [0:WRITE_PENDING_COUNT-1];
+    reg [1:0]                     bypass_wr_rsp_code_r [0:WRITE_PENDING_COUNT-1];
+    reg [7:0]                     bypass_wr_rsp_head_r;
+    reg [7:0]                     bypass_wr_rsp_tail_r;
+    reg [7:0]                     bypass_wr_rsp_count_r;
+
+    reg                           rd_free_found_w;
+    reg [7:0]                     rd_free_slot_w;
+    reg [AXI_ID_COUNT-1:0]        rd_axi_id_used_w;
+    reg                           rd_axi_id_found_w;
+    reg [AXI_ID_BITS-1:0]         rd_axi_id_w;
+    reg                           wr_free_found_w;
+    reg [7:0]                     wr_free_slot_w;
+    reg [AXI_ID_COUNT-1:0]        wr_axi_id_used_w;
+    reg                           wr_axi_id_found_w;
+    reg [AXI_ID_BITS-1:0]         wr_axi_id_w;
+    reg                           accept_cache_w;
+    reg                           accept_bypass_w;
+    reg                           accept_write_w;
+    reg [7:0]                     accept_slot_w;
+    reg [AXI_ID_BITS-1:0]         accept_axi_id_w;
+    reg [7:0]                     accept_total_beats_w;
+    reg [7:0]                     rd_match_slot_w;
+    reg                           rd_match_found_w;
+    reg [7:0]                     wr_match_slot_w;
+    reg                           wr_match_found_w;
+
+    integer                       idx;
+
     function [7:0] calc_total_beats;
         input [7:0] total_size;
         reg [15:0] bytes;
@@ -146,10 +206,8 @@ module axi_llc_axi_bridge #(
 
     function [7:0] calc_burst_len;
         input [7:0] total_size;
-        reg [7:0] beats;
         begin
-            beats = calc_total_beats(total_size);
-            calc_burst_len = beats - 8'd1;
+            calc_burst_len = calc_total_beats(total_size) - 8'd1;
         end
     endfunction
 
@@ -204,157 +262,572 @@ module axi_llc_axi_bridge #(
         end
     endfunction
 
-    // Cache requests win when both sources are ready in the same idle cycle.
-    assign select_cache_w = (state_r == ST_IDLE) && cache_req_valid;
-    assign select_bypass_w = (state_r == ST_IDLE) && !cache_req_valid && bypass_req_valid;
-    assign idle_accept_w = select_cache_w || select_bypass_w;
-    assign cache_beats_w = calc_total_beats(cache_req_size);
-    assign bypass_beats_w = calc_total_beats(bypass_req_size);
-    assign selected_beats_w = select_cache_w ? cache_beats_w : bypass_beats_w;
+    function [7:0] next_ptr;
+        input [7:0] ptr_value;
+        input integer depth;
+        begin
+            if (ptr_value == (depth - 1)) begin
+                next_ptr = 8'd0;
+            end else begin
+                next_ptr = ptr_value + 8'd1;
+            end
+        end
+    endfunction
 
-    assign cache_req_ready = select_cache_w;
-    assign bypass_req_ready = select_bypass_w;
+    wire                      rd_issue_valid_w;
+    wire [7:0]                rd_issue_slot_w;
+    wire [ADDR_BITS-1:0]      rd_issue_addr_w;
+    wire [AXI_ID_BITS-1:0]    rd_issue_axi_id_w;
+    wire [7:0]                rd_issue_size_w;
+    wire                      wr_aw_valid_w;
+    wire [7:0]                wr_aw_slot_w;
+    wire [ADDR_BITS-1:0]      wr_aw_addr_w;
+    wire [AXI_ID_BITS-1:0]    wr_aw_axi_id_w;
+    wire [7:0]                wr_aw_size_w;
+    wire                      wr_w_valid_w;
+    wire [7:0]                wr_w_slot_w;
+    wire [7:0]                wr_w_beat_idx_w;
+    wire [7:0]                wr_w_total_beats_w;
+    wire                      cache_rd_rsp_valid_w;
+    wire                      bypass_rd_rsp_valid_w;
+    wire                      cache_wr_rsp_valid_w;
+    wire                      bypass_wr_rsp_valid_w;
+    wire                      cache_resp_select_read_w;
+    wire                      bypass_resp_select_read_w;
+    wire                      rd_issue_handshake_w;
+    wire                      wr_aw_handshake_w;
+    wire                      wr_w_handshake_w;
+    wire                      cache_resp_handshake_w;
+    wire                      bypass_resp_handshake_w;
+    wire                      rd_issue_pop_w;
+    wire                      rd_issue_push_w;
+    wire                      wr_aw_push_w;
+    wire                      wr_aw_pop_w;
+    wire                      wr_w_push_w;
+    wire                      wr_w_pop_w;
+    wire                      cache_rd_rsp_push_w;
+    wire                      bypass_rd_rsp_push_w;
+    wire                      cache_wr_rsp_push_w;
+    wire                      bypass_wr_rsp_push_w;
+    wire                      cache_rd_rsp_pop_w;
+    wire                      bypass_rd_rsp_pop_w;
+    wire                      cache_wr_rsp_pop_w;
+    wire                      bypass_wr_rsp_pop_w;
+    wire                      rd_last_beat_w;
+    wire                      rd_match_from_cache_w;
+    wire                      wr_match_from_cache_w;
+    wire                      rd_match_rsp_space_w;
+    wire                      wr_match_rsp_space_w;
+    wire [READ_RESP_BITS-1:0] rd_match_merged_data_w;
+    wire [1:0]                rd_match_resp_code_w;
+    wire                      cache_rd_rsp_space_w;
+    wire                      bypass_rd_rsp_space_w;
+    wire                      cache_wr_rsp_space_w;
+    wire                      bypass_wr_rsp_space_w;
+    wire                      rd_resp_accept_w;
+    wire                      wr_resp_accept_w;
 
-    assign rd_target_ready_w = txn_from_cache_r ? cache_resp_ready : bypass_resp_ready;
-    assign wr_target_ready_w = txn_from_cache_r ? cache_resp_ready : bypass_resp_ready;
-    assign axi_r_match_w = axi_rvalid && (axi_rid == txn_axi_id_r);
-    assign axi_b_match_w = axi_bvalid && (axi_bid == txn_axi_id_r);
+    assign rd_issue_valid_w =
+        (rd_issue_count_r != 0) &&
+        rd_valid_r[rd_issue_q_slot_r[rd_issue_head_r]] &&
+        !rd_ar_sent_r[rd_issue_q_slot_r[rd_issue_head_r]];
+    assign rd_issue_slot_w = rd_issue_q_slot_r[rd_issue_head_r];
+    assign rd_issue_addr_w = rd_addr_r[rd_issue_slot_w];
+    assign rd_issue_axi_id_w = rd_axi_id_r[rd_issue_slot_w];
+    assign rd_issue_size_w = rd_size_r[rd_issue_slot_w];
 
-    assign axi_awvalid = (state_r == ST_WR_ADDR);
-    assign axi_awid = txn_axi_id_r;
-    assign axi_awaddr = txn_addr_r;
-    assign axi_awlen = calc_burst_len(txn_size_r);
+    assign wr_aw_valid_w =
+        (wr_aw_count_r != 0) &&
+        wr_valid_r[wr_aw_q_slot_r[wr_aw_head_r]] &&
+        !wr_aw_sent_r[wr_aw_q_slot_r[wr_aw_head_r]];
+    assign wr_aw_slot_w = wr_aw_q_slot_r[wr_aw_head_r];
+    assign wr_aw_addr_w = wr_addr_r[wr_aw_slot_w];
+    assign wr_aw_axi_id_w = wr_axi_id_r[wr_aw_slot_w];
+    assign wr_aw_size_w = wr_size_r[wr_aw_slot_w];
+
+    assign wr_w_valid_w =
+        (wr_w_count_r != 0) &&
+        wr_valid_r[wr_w_q_slot_r[wr_w_head_r]] &&
+        wr_aw_sent_r[wr_w_q_slot_r[wr_w_head_r]] &&
+        !wr_w_done_r[wr_w_q_slot_r[wr_w_head_r]];
+    assign wr_w_slot_w = wr_w_q_slot_r[wr_w_head_r];
+    assign wr_w_beat_idx_w = wr_beats_sent_r[wr_w_slot_w];
+    assign wr_w_total_beats_w = wr_total_beats_r[wr_w_slot_w];
+
+    assign cache_rd_rsp_valid_w = (cache_rd_rsp_count_r != 0);
+    assign bypass_rd_rsp_valid_w = (bypass_rd_rsp_count_r != 0);
+    assign cache_wr_rsp_valid_w = (cache_wr_rsp_count_r != 0);
+    assign bypass_wr_rsp_valid_w = (bypass_wr_rsp_count_r != 0);
+    assign cache_resp_select_read_w = cache_rd_rsp_valid_w;
+    assign bypass_resp_select_read_w = bypass_rd_rsp_valid_w;
+
+    assign rd_issue_handshake_w = axi_arvalid && axi_arready;
+    assign wr_aw_handshake_w = axi_awvalid && axi_awready;
+    assign wr_w_handshake_w = axi_wvalid && axi_wready;
+    assign cache_resp_handshake_w = cache_resp_valid && cache_resp_ready;
+    assign bypass_resp_handshake_w = bypass_resp_valid && bypass_resp_ready;
+
+    assign rd_issue_push_w = (accept_cache_w || accept_bypass_w) && !accept_write_w;
+    assign rd_issue_pop_w = rd_issue_handshake_w;
+    assign wr_aw_push_w = (accept_cache_w || accept_bypass_w) && accept_write_w;
+    assign wr_aw_pop_w = wr_aw_handshake_w;
+    assign wr_w_push_w = (accept_cache_w || accept_bypass_w) && accept_write_w;
+    assign wr_w_pop_w = wr_w_handshake_w && axi_wlast;
+
+    assign rd_match_from_cache_w = rd_from_cache_r[rd_match_slot_w];
+    assign wr_match_from_cache_w = wr_from_cache_r[wr_match_slot_w];
+    assign rd_match_merged_data_w =
+        merge_read_beat(rd_rdata_r[rd_match_slot_w],
+                        axi_rdata,
+                        rd_beats_done_r[rd_match_slot_w]);
+    assign rd_match_resp_code_w =
+        (axi_rresp != RESP_OKAY) ? axi_rresp : rd_resp_code_r[rd_match_slot_w];
+    assign rd_last_beat_w =
+        rd_match_found_w &&
+        (((rd_beats_done_r[rd_match_slot_w] + 8'd1) ==
+          rd_total_beats_r[rd_match_slot_w]) || axi_rlast);
+
+    assign cache_rd_rsp_space_w = (cache_rd_rsp_count_r < READ_PENDING_COUNT);
+    assign bypass_rd_rsp_space_w = (bypass_rd_rsp_count_r < READ_PENDING_COUNT);
+    assign cache_wr_rsp_space_w = (cache_wr_rsp_count_r < WRITE_PENDING_COUNT);
+    assign bypass_wr_rsp_space_w = (bypass_wr_rsp_count_r < WRITE_PENDING_COUNT);
+    assign rd_match_rsp_space_w =
+        rd_match_from_cache_w ? cache_rd_rsp_space_w : bypass_rd_rsp_space_w;
+    assign wr_match_rsp_space_w =
+        wr_match_from_cache_w ? cache_wr_rsp_space_w : bypass_wr_rsp_space_w;
+    assign rd_resp_accept_w =
+        axi_rvalid && rd_match_found_w && (!rd_last_beat_w || rd_match_rsp_space_w);
+    assign wr_resp_accept_w =
+        axi_bvalid && wr_match_found_w && wr_match_rsp_space_w;
+
+    assign cache_rd_rsp_push_w =
+        rd_resp_accept_w &&
+        rd_last_beat_w && rd_match_from_cache_w;
+    assign bypass_rd_rsp_push_w =
+        rd_resp_accept_w &&
+        rd_last_beat_w && !rd_match_from_cache_w;
+    assign cache_wr_rsp_push_w =
+        wr_resp_accept_w && wr_match_from_cache_w;
+    assign bypass_wr_rsp_push_w =
+        wr_resp_accept_w && !wr_match_from_cache_w;
+
+    assign cache_rd_rsp_pop_w = cache_resp_handshake_w && cache_resp_select_read_w;
+    assign cache_wr_rsp_pop_w =
+        cache_resp_handshake_w && !cache_resp_select_read_w && cache_wr_rsp_valid_w;
+    assign bypass_rd_rsp_pop_w = bypass_resp_handshake_w && bypass_resp_select_read_w;
+    assign bypass_wr_rsp_pop_w =
+        bypass_resp_handshake_w && !bypass_resp_select_read_w && bypass_wr_rsp_valid_w;
+
+    always @(*) begin
+        rd_free_found_w = 1'b0;
+        rd_free_slot_w = 8'd0;
+        rd_axi_id_used_w = {AXI_ID_COUNT{1'b0}};
+        rd_axi_id_found_w = 1'b0;
+        rd_axi_id_w = {AXI_ID_BITS{1'b0}};
+        wr_free_found_w = 1'b0;
+        wr_free_slot_w = 8'd0;
+        wr_axi_id_used_w = {AXI_ID_COUNT{1'b0}};
+        wr_axi_id_found_w = 1'b0;
+        wr_axi_id_w = {AXI_ID_BITS{1'b0}};
+        accept_cache_w = 1'b0;
+        accept_bypass_w = 1'b0;
+        accept_write_w = 1'b0;
+        accept_slot_w = 8'd0;
+        accept_axi_id_w = {AXI_ID_BITS{1'b0}};
+        accept_total_beats_w = 8'd0;
+        rd_match_slot_w = 8'd0;
+        rd_match_found_w = 1'b0;
+        wr_match_slot_w = 8'd0;
+        wr_match_found_w = 1'b0;
+
+        for (idx = 0; idx < READ_PENDING_COUNT; idx = idx + 1) begin
+            if (!rd_free_found_w && !rd_valid_r[idx]) begin
+                rd_free_found_w = 1'b1;
+                rd_free_slot_w = idx[7:0];
+            end
+            if (rd_valid_r[idx]) begin
+                rd_axi_id_used_w[rd_axi_id_r[idx]] = 1'b1;
+            end
+            if (!rd_match_found_w &&
+                rd_valid_r[idx] &&
+                (rd_axi_id_r[idx] == axi_rid)) begin
+                rd_match_found_w = 1'b1;
+                rd_match_slot_w = idx[7:0];
+            end
+        end
+        for (idx = 0; idx < AXI_ID_COUNT; idx = idx + 1) begin
+            if (!rd_axi_id_found_w && !rd_axi_id_used_w[idx]) begin
+                rd_axi_id_found_w = 1'b1;
+                rd_axi_id_w = idx[AXI_ID_BITS-1:0];
+            end
+        end
+
+        for (idx = 0; idx < WRITE_PENDING_COUNT; idx = idx + 1) begin
+            if (!wr_free_found_w && !wr_valid_r[idx]) begin
+                wr_free_found_w = 1'b1;
+                wr_free_slot_w = idx[7:0];
+            end
+            if (wr_valid_r[idx]) begin
+                wr_axi_id_used_w[wr_axi_id_r[idx]] = 1'b1;
+            end
+            if (!wr_match_found_w &&
+                wr_valid_r[idx] &&
+                (wr_axi_id_r[idx] == axi_bid)) begin
+                wr_match_found_w = 1'b1;
+                wr_match_slot_w = idx[7:0];
+            end
+        end
+        for (idx = 0; idx < AXI_ID_COUNT; idx = idx + 1) begin
+            if (!wr_axi_id_found_w && !wr_axi_id_used_w[idx]) begin
+                wr_axi_id_found_w = 1'b1;
+                wr_axi_id_w = idx[AXI_ID_BITS-1:0];
+            end
+        end
+
+        if (cache_req_valid) begin
+            if (cache_req_write) begin
+                if (wr_free_found_w &&
+                    wr_axi_id_found_w &&
+                    (wr_aw_count_r < WRITE_PENDING_COUNT) &&
+                    (wr_w_count_r < WRITE_PENDING_COUNT)) begin
+                    accept_cache_w = 1'b1;
+                    accept_write_w = 1'b1;
+                    accept_slot_w = wr_free_slot_w;
+                    accept_axi_id_w = wr_axi_id_w;
+                    accept_total_beats_w = calc_total_beats(cache_req_size);
+                end
+            end else begin
+                if (rd_free_found_w &&
+                    rd_axi_id_found_w &&
+                    (rd_issue_count_r < READ_PENDING_COUNT)) begin
+                    accept_cache_w = 1'b1;
+                    accept_write_w = 1'b0;
+                    accept_slot_w = rd_free_slot_w;
+                    accept_axi_id_w = rd_axi_id_w;
+                    accept_total_beats_w = calc_total_beats(cache_req_size);
+                end
+            end
+        end else if (bypass_req_valid) begin
+            if (bypass_req_write) begin
+                if (wr_free_found_w &&
+                    wr_axi_id_found_w &&
+                    (wr_aw_count_r < WRITE_PENDING_COUNT) &&
+                    (wr_w_count_r < WRITE_PENDING_COUNT)) begin
+                    accept_bypass_w = 1'b1;
+                    accept_write_w = 1'b1;
+                    accept_slot_w = wr_free_slot_w;
+                    accept_axi_id_w = wr_axi_id_w;
+                    accept_total_beats_w = calc_total_beats(bypass_req_size);
+                end
+            end else begin
+                if (rd_free_found_w &&
+                    rd_axi_id_found_w &&
+                    (rd_issue_count_r < READ_PENDING_COUNT)) begin
+                    accept_bypass_w = 1'b1;
+                    accept_write_w = 1'b0;
+                    accept_slot_w = rd_free_slot_w;
+                    accept_axi_id_w = rd_axi_id_w;
+                    accept_total_beats_w = calc_total_beats(bypass_req_size);
+                end
+            end
+        end
+    end
+
+    assign cache_req_ready = accept_cache_w;
+    assign bypass_req_ready = accept_bypass_w;
+
+    assign axi_arvalid = rd_issue_valid_w;
+    assign axi_arid = rd_issue_axi_id_w;
+    assign axi_araddr = rd_issue_addr_w;
+    assign axi_arlen = calc_burst_len(rd_issue_size_w);
+    assign axi_arsize = AXI_SIZE_CODE;
+    assign axi_arburst = AXI_BURST_INCR;
+    assign axi_rready = rd_match_found_w && (!rd_last_beat_w || rd_match_rsp_space_w);
+
+    assign axi_awvalid = wr_aw_valid_w;
+    assign axi_awid = wr_aw_axi_id_w;
+    assign axi_awaddr = wr_aw_addr_w;
+    assign axi_awlen = calc_burst_len(wr_aw_size_w);
     assign axi_awsize = AXI_SIZE_CODE;
     assign axi_awburst = AXI_BURST_INCR;
 
-    assign axi_wvalid = (state_r == ST_WR_DATA);
-    assign axi_wdata = pack_write_beat(txn_wdata_r, txn_beats_done_r);
-    assign axi_wstrb = pack_write_strobe(txn_wstrb_r, txn_beats_done_r);
-    assign axi_wlast = (txn_beats_done_r + 8'd1 == txn_total_beats_r);
+    assign axi_wvalid = wr_w_valid_w;
+    assign axi_wdata = pack_write_beat(wr_wdata_r[wr_w_slot_w], wr_w_beat_idx_w);
+    assign axi_wstrb = pack_write_strobe(wr_wstrb_r[wr_w_slot_w], wr_w_beat_idx_w);
+    assign axi_wlast = (wr_w_beat_idx_w + 8'd1 == wr_w_total_beats_w);
+    assign axi_bready = wr_match_found_w && wr_match_rsp_space_w;
 
-    assign axi_bready = (state_r == ST_WR_B);
+    assign cache_resp_valid = cache_rd_rsp_valid_w || cache_wr_rsp_valid_w;
+    assign cache_resp_rdata = cache_resp_select_read_w ?
+                              cache_rd_rsp_data_r[cache_rd_rsp_head_r] :
+                              {READ_RESP_BITS{1'b0}};
+    assign cache_resp_id = cache_resp_select_read_w ?
+                           cache_rd_rsp_id_r[cache_rd_rsp_head_r] :
+                           cache_wr_rsp_id_r[cache_wr_rsp_head_r];
+    assign cache_resp_code = cache_resp_select_read_w ?
+                             cache_rd_rsp_code_r[cache_rd_rsp_head_r] :
+                             cache_wr_rsp_code_r[cache_wr_rsp_head_r];
 
-    assign axi_arvalid = (state_r == ST_RD_ADDR);
-    assign axi_arid = txn_axi_id_r;
-    assign axi_araddr = txn_addr_r;
-    assign axi_arlen = calc_burst_len(txn_size_r);
-    assign axi_arsize = AXI_SIZE_CODE;
-    assign axi_arburst = AXI_BURST_INCR;
+    assign bypass_resp_valid = bypass_rd_rsp_valid_w || bypass_wr_rsp_valid_w;
+    assign bypass_resp_rdata = bypass_resp_select_read_w ?
+                               bypass_rd_rsp_data_r[bypass_rd_rsp_head_r] :
+                               {READ_RESP_BITS{1'b0}};
+    assign bypass_resp_id = bypass_resp_select_read_w ?
+                            bypass_rd_rsp_id_r[bypass_rd_rsp_head_r] :
+                            bypass_wr_rsp_id_r[bypass_wr_rsp_head_r];
+    assign bypass_resp_code = bypass_resp_select_read_w ?
+                              bypass_rd_rsp_code_r[bypass_rd_rsp_head_r] :
+                              bypass_wr_rsp_code_r[bypass_wr_rsp_head_r];
 
-    assign axi_rready = (state_r == ST_RD_DATA);
-
-    assign cache_resp_valid = txn_from_cache_r &&
-                              ((state_r == ST_RD_RESP) || (state_r == ST_WR_RESP));
-    assign cache_resp_rdata = txn_rdata_r;
-    assign cache_resp_id = txn_req_id_r;
-    assign cache_resp_code = txn_resp_code_r;
-    assign bypass_resp_valid = !txn_from_cache_r &&
-                               ((state_r == ST_RD_RESP) || (state_r == ST_WR_RESP));
-    assign bypass_resp_rdata = txn_rdata_r;
-    assign bypass_resp_id = txn_req_id_r;
-    assign bypass_resp_code = txn_resp_code_r;
-
-    // Transaction capture, beat accumulation and AXI response retirement.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state_r <= ST_IDLE;
-            txn_from_cache_r <= 1'b0;
-            txn_write_r <= 1'b0;
-            txn_addr_r <= {ADDR_BITS{1'b0}};
-            txn_req_id_r <= {ID_BITS{1'b0}};
-            txn_size_r <= 8'd0;
-            txn_wdata_r <= {LINE_BITS{1'b0}};
-            txn_wstrb_r <= {LINE_BYTES{1'b0}};
-            txn_rdata_r <= {READ_RESP_BITS{1'b0}};
-            txn_resp_code_r <= 2'b00;
-            txn_axi_id_r <= {{(AXI_ID_BITS-1){1'b0}}, 1'b1};
-            txn_total_beats_r <= 8'd0;
-            txn_beats_done_r <= 8'd0;
-            next_axi_id_r <= {{(AXI_ID_BITS-1){1'b0}}, 1'b1};
+            rd_issue_head_r <= 8'd0;
+            rd_issue_tail_r <= 8'd0;
+            rd_issue_count_r <= 8'd0;
+            wr_aw_head_r <= 8'd0;
+            wr_aw_tail_r <= 8'd0;
+            wr_aw_count_r <= 8'd0;
+            wr_w_head_r <= 8'd0;
+            wr_w_tail_r <= 8'd0;
+            wr_w_count_r <= 8'd0;
+            cache_rd_rsp_head_r <= 8'd0;
+            cache_rd_rsp_tail_r <= 8'd0;
+            cache_rd_rsp_count_r <= 8'd0;
+            bypass_rd_rsp_head_r <= 8'd0;
+            bypass_rd_rsp_tail_r <= 8'd0;
+            bypass_rd_rsp_count_r <= 8'd0;
+            cache_wr_rsp_head_r <= 8'd0;
+            cache_wr_rsp_tail_r <= 8'd0;
+            cache_wr_rsp_count_r <= 8'd0;
+            bypass_wr_rsp_head_r <= 8'd0;
+            bypass_wr_rsp_tail_r <= 8'd0;
+            bypass_wr_rsp_count_r <= 8'd0;
+            for (idx = 0; idx < READ_PENDING_COUNT; idx = idx + 1) begin
+                rd_valid_r[idx] <= 1'b0;
+                rd_from_cache_r[idx] <= 1'b0;
+                rd_addr_r[idx] <= {ADDR_BITS{1'b0}};
+                rd_req_id_r[idx] <= {ID_BITS{1'b0}};
+                rd_size_r[idx] <= 8'd0;
+                rd_axi_id_r[idx] <= {AXI_ID_BITS{1'b0}};
+                rd_total_beats_r[idx] <= 8'd0;
+                rd_beats_done_r[idx] <= 8'd0;
+                rd_ar_sent_r[idx] <= 1'b0;
+                rd_rdata_r[idx] <= {READ_RESP_BITS{1'b0}};
+                rd_resp_code_r[idx] <= RESP_OKAY;
+                rd_issue_q_slot_r[idx] <= 8'd0;
+                cache_rd_rsp_id_r[idx] <= {ID_BITS{1'b0}};
+                cache_rd_rsp_code_r[idx] <= RESP_OKAY;
+                cache_rd_rsp_data_r[idx] <= {READ_RESP_BITS{1'b0}};
+                bypass_rd_rsp_id_r[idx] <= {ID_BITS{1'b0}};
+                bypass_rd_rsp_code_r[idx] <= RESP_OKAY;
+                bypass_rd_rsp_data_r[idx] <= {READ_RESP_BITS{1'b0}};
+            end
+            for (idx = 0; idx < WRITE_PENDING_COUNT; idx = idx + 1) begin
+                wr_valid_r[idx] <= 1'b0;
+                wr_from_cache_r[idx] <= 1'b0;
+                wr_addr_r[idx] <= {ADDR_BITS{1'b0}};
+                wr_req_id_r[idx] <= {ID_BITS{1'b0}};
+                wr_size_r[idx] <= 8'd0;
+                wr_wdata_r[idx] <= {LINE_BITS{1'b0}};
+                wr_wstrb_r[idx] <= {LINE_BYTES{1'b0}};
+                wr_axi_id_r[idx] <= {AXI_ID_BITS{1'b0}};
+                wr_total_beats_r[idx] <= 8'd0;
+                wr_beats_sent_r[idx] <= 8'd0;
+                wr_aw_sent_r[idx] <= 1'b0;
+                wr_w_done_r[idx] <= 1'b0;
+                wr_aw_q_slot_r[idx] <= 8'd0;
+                wr_w_q_slot_r[idx] <= 8'd0;
+                cache_wr_rsp_id_r[idx] <= {ID_BITS{1'b0}};
+                cache_wr_rsp_code_r[idx] <= RESP_OKAY;
+                bypass_wr_rsp_id_r[idx] <= {ID_BITS{1'b0}};
+                bypass_wr_rsp_code_r[idx] <= RESP_OKAY;
+            end
         end else begin
-            case (state_r)
-                ST_IDLE: begin
-                    if (idle_accept_w) begin
-                        txn_from_cache_r <= select_cache_w;
-                        txn_write_r <= select_cache_w ? cache_req_write : bypass_req_write;
-                        txn_addr_r <= select_cache_w ? cache_req_addr : bypass_req_addr;
-                        txn_req_id_r <= select_cache_w ? cache_req_id : bypass_req_id;
-                        txn_size_r <= select_cache_w ? cache_req_size : bypass_req_size;
-                        txn_wdata_r <= select_cache_w ? cache_req_wdata : bypass_req_wdata;
-                        txn_wstrb_r <= select_cache_w ? cache_req_wstrb : bypass_req_wstrb;
-                        txn_rdata_r <= {READ_RESP_BITS{1'b0}};
-                        txn_resp_code_r <= 2'b00;
-                        txn_axi_id_r <= next_axi_id_r;
-                        txn_total_beats_r <= selected_beats_w;
-                        txn_beats_done_r <= 8'd0;
-                        next_axi_id_r <= next_axi_id_r + {{(AXI_ID_BITS-1){1'b0}}, 1'b1};
-                        if (select_cache_w ? cache_req_write : bypass_req_write) begin
-                            state_r <= ST_WR_ADDR;
-                        end else begin
-                            state_r <= ST_RD_ADDR;
-                        end
-                    end
+            if (accept_cache_w || accept_bypass_w) begin
+                if (accept_write_w) begin
+                    wr_valid_r[accept_slot_w] <= 1'b1;
+                    wr_from_cache_r[accept_slot_w] <= accept_cache_w;
+                    wr_addr_r[accept_slot_w] <= accept_cache_w ? cache_req_addr : bypass_req_addr;
+                    wr_req_id_r[accept_slot_w] <= accept_cache_w ? cache_req_id : bypass_req_id;
+                    wr_size_r[accept_slot_w] <= accept_cache_w ? cache_req_size : bypass_req_size;
+                    wr_wdata_r[accept_slot_w] <= accept_cache_w ? cache_req_wdata : bypass_req_wdata;
+                    wr_wstrb_r[accept_slot_w] <= accept_cache_w ? cache_req_wstrb : bypass_req_wstrb;
+                    wr_axi_id_r[accept_slot_w] <= accept_axi_id_w;
+                    wr_total_beats_r[accept_slot_w] <= accept_total_beats_w;
+                    wr_beats_sent_r[accept_slot_w] <= 8'd0;
+                    wr_aw_sent_r[accept_slot_w] <= 1'b0;
+                    wr_w_done_r[accept_slot_w] <= 1'b0;
+                end else begin
+                    rd_valid_r[accept_slot_w] <= 1'b1;
+                    rd_from_cache_r[accept_slot_w] <= accept_cache_w;
+                    rd_addr_r[accept_slot_w] <= accept_cache_w ? cache_req_addr : bypass_req_addr;
+                    rd_req_id_r[accept_slot_w] <= accept_cache_w ? cache_req_id : bypass_req_id;
+                    rd_size_r[accept_slot_w] <= accept_cache_w ? cache_req_size : bypass_req_size;
+                    rd_axi_id_r[accept_slot_w] <= accept_axi_id_w;
+                    rd_total_beats_r[accept_slot_w] <= accept_total_beats_w;
+                    rd_beats_done_r[accept_slot_w] <= 8'd0;
+                    rd_ar_sent_r[accept_slot_w] <= 1'b0;
+                    rd_rdata_r[accept_slot_w] <= {READ_RESP_BITS{1'b0}};
+                    rd_resp_code_r[accept_slot_w] <= RESP_OKAY;
                 end
+            end
 
-                ST_RD_ADDR: begin
-                    if (axi_arvalid && axi_arready) begin
-                        state_r <= ST_RD_DATA;
-                    end
-                end
+            if (rd_issue_push_w && rd_issue_pop_w) begin
+                rd_issue_q_slot_r[rd_issue_tail_r] <= accept_slot_w;
+                rd_issue_head_r <= next_ptr(rd_issue_head_r, READ_PENDING_COUNT);
+                rd_issue_tail_r <= next_ptr(rd_issue_tail_r, READ_PENDING_COUNT);
+            end else if (rd_issue_push_w) begin
+                rd_issue_q_slot_r[rd_issue_tail_r] <= accept_slot_w;
+                rd_issue_tail_r <= next_ptr(rd_issue_tail_r, READ_PENDING_COUNT);
+                rd_issue_count_r <= rd_issue_count_r + 8'd1;
+            end else if (rd_issue_pop_w) begin
+                rd_issue_head_r <= next_ptr(rd_issue_head_r, READ_PENDING_COUNT);
+                rd_issue_count_r <= rd_issue_count_r - 8'd1;
+            end
 
-                ST_RD_DATA: begin
-                    if (axi_r_match_w) begin
-                        txn_rdata_r <= merge_read_beat(txn_rdata_r, axi_rdata, txn_beats_done_r);
-                        if ((txn_beats_done_r + 8'd1 == txn_total_beats_r) || axi_rlast) begin
-                            txn_beats_done_r <= 8'd0;
-                            state_r <= ST_RD_RESP;
-                        end else begin
-                            txn_beats_done_r <= txn_beats_done_r + 8'd1;
-                        end
-                    end
-                end
+            if (wr_aw_push_w && wr_aw_pop_w) begin
+                wr_aw_q_slot_r[wr_aw_tail_r] <= accept_slot_w;
+                wr_aw_head_r <= next_ptr(wr_aw_head_r, WRITE_PENDING_COUNT);
+                wr_aw_tail_r <= next_ptr(wr_aw_tail_r, WRITE_PENDING_COUNT);
+            end else if (wr_aw_push_w) begin
+                wr_aw_q_slot_r[wr_aw_tail_r] <= accept_slot_w;
+                wr_aw_tail_r <= next_ptr(wr_aw_tail_r, WRITE_PENDING_COUNT);
+                wr_aw_count_r <= wr_aw_count_r + 8'd1;
+            end else if (wr_aw_pop_w) begin
+                wr_aw_head_r <= next_ptr(wr_aw_head_r, WRITE_PENDING_COUNT);
+                wr_aw_count_r <= wr_aw_count_r - 8'd1;
+            end
 
-                ST_RD_RESP: begin
-                    if (rd_target_ready_w) begin
-                        state_r <= ST_IDLE;
-                    end
-                end
+            if (wr_w_push_w && wr_w_pop_w) begin
+                wr_w_q_slot_r[wr_w_tail_r] <= accept_slot_w;
+                wr_w_head_r <= next_ptr(wr_w_head_r, WRITE_PENDING_COUNT);
+                wr_w_tail_r <= next_ptr(wr_w_tail_r, WRITE_PENDING_COUNT);
+            end else if (wr_w_push_w) begin
+                wr_w_q_slot_r[wr_w_tail_r] <= accept_slot_w;
+                wr_w_tail_r <= next_ptr(wr_w_tail_r, WRITE_PENDING_COUNT);
+                wr_w_count_r <= wr_w_count_r + 8'd1;
+            end else if (wr_w_pop_w) begin
+                wr_w_head_r <= next_ptr(wr_w_head_r, WRITE_PENDING_COUNT);
+                wr_w_count_r <= wr_w_count_r - 8'd1;
+            end
 
-                ST_WR_ADDR: begin
-                    if (axi_awvalid && axi_awready) begin
-                        state_r <= ST_WR_DATA;
-                    end
-                end
+            if (cache_rd_rsp_push_w && cache_rd_rsp_pop_w) begin
+                cache_rd_rsp_id_r[cache_rd_rsp_tail_r] <= rd_req_id_r[rd_match_slot_w];
+                cache_rd_rsp_code_r[cache_rd_rsp_tail_r] <= rd_match_resp_code_w;
+                cache_rd_rsp_data_r[cache_rd_rsp_tail_r] <= rd_match_merged_data_w;
+                cache_rd_rsp_head_r <= next_ptr(cache_rd_rsp_head_r, READ_PENDING_COUNT);
+                cache_rd_rsp_tail_r <= next_ptr(cache_rd_rsp_tail_r, READ_PENDING_COUNT);
+            end else if (cache_rd_rsp_push_w) begin
+                cache_rd_rsp_id_r[cache_rd_rsp_tail_r] <= rd_req_id_r[rd_match_slot_w];
+                cache_rd_rsp_code_r[cache_rd_rsp_tail_r] <= rd_match_resp_code_w;
+                cache_rd_rsp_data_r[cache_rd_rsp_tail_r] <= rd_match_merged_data_w;
+                cache_rd_rsp_tail_r <= next_ptr(cache_rd_rsp_tail_r, READ_PENDING_COUNT);
+                cache_rd_rsp_count_r <= cache_rd_rsp_count_r + 8'd1;
+            end else if (cache_rd_rsp_pop_w) begin
+                cache_rd_rsp_head_r <= next_ptr(cache_rd_rsp_head_r, READ_PENDING_COUNT);
+                cache_rd_rsp_count_r <= cache_rd_rsp_count_r - 8'd1;
+            end
 
-                ST_WR_DATA: begin
-                    if (axi_wvalid && axi_wready) begin
-                        if (txn_beats_done_r + 8'd1 == txn_total_beats_r) begin
-                            txn_beats_done_r <= 8'd0;
-                            state_r <= ST_WR_B;
-                        end else begin
-                            txn_beats_done_r <= txn_beats_done_r + 8'd1;
-                        end
-                    end
-                end
+            if (bypass_rd_rsp_push_w && bypass_rd_rsp_pop_w) begin
+                bypass_rd_rsp_id_r[bypass_rd_rsp_tail_r] <= rd_req_id_r[rd_match_slot_w];
+                bypass_rd_rsp_code_r[bypass_rd_rsp_tail_r] <= rd_match_resp_code_w;
+                bypass_rd_rsp_data_r[bypass_rd_rsp_tail_r] <= rd_match_merged_data_w;
+                bypass_rd_rsp_head_r <= next_ptr(bypass_rd_rsp_head_r, READ_PENDING_COUNT);
+                bypass_rd_rsp_tail_r <= next_ptr(bypass_rd_rsp_tail_r, READ_PENDING_COUNT);
+            end else if (bypass_rd_rsp_push_w) begin
+                bypass_rd_rsp_id_r[bypass_rd_rsp_tail_r] <= rd_req_id_r[rd_match_slot_w];
+                bypass_rd_rsp_code_r[bypass_rd_rsp_tail_r] <= rd_match_resp_code_w;
+                bypass_rd_rsp_data_r[bypass_rd_rsp_tail_r] <= rd_match_merged_data_w;
+                bypass_rd_rsp_tail_r <= next_ptr(bypass_rd_rsp_tail_r, READ_PENDING_COUNT);
+                bypass_rd_rsp_count_r <= bypass_rd_rsp_count_r + 8'd1;
+            end else if (bypass_rd_rsp_pop_w) begin
+                bypass_rd_rsp_head_r <= next_ptr(bypass_rd_rsp_head_r, READ_PENDING_COUNT);
+                bypass_rd_rsp_count_r <= bypass_rd_rsp_count_r - 8'd1;
+            end
 
-                ST_WR_B: begin
-                    if (axi_b_match_w) begin
-                        txn_rdata_r <= {READ_RESP_BITS{1'b0}};
-                        txn_resp_code_r <= axi_bresp;
-                        state_r <= ST_WR_RESP;
-                    end
-                end
+            if (cache_wr_rsp_push_w && cache_wr_rsp_pop_w) begin
+                cache_wr_rsp_id_r[cache_wr_rsp_tail_r] <= wr_req_id_r[wr_match_slot_w];
+                cache_wr_rsp_code_r[cache_wr_rsp_tail_r] <= axi_bresp;
+                cache_wr_rsp_head_r <= next_ptr(cache_wr_rsp_head_r, WRITE_PENDING_COUNT);
+                cache_wr_rsp_tail_r <= next_ptr(cache_wr_rsp_tail_r, WRITE_PENDING_COUNT);
+            end else if (cache_wr_rsp_push_w) begin
+                cache_wr_rsp_id_r[cache_wr_rsp_tail_r] <= wr_req_id_r[wr_match_slot_w];
+                cache_wr_rsp_code_r[cache_wr_rsp_tail_r] <= axi_bresp;
+                cache_wr_rsp_tail_r <= next_ptr(cache_wr_rsp_tail_r, WRITE_PENDING_COUNT);
+                cache_wr_rsp_count_r <= cache_wr_rsp_count_r + 8'd1;
+            end else if (cache_wr_rsp_pop_w) begin
+                cache_wr_rsp_head_r <= next_ptr(cache_wr_rsp_head_r, WRITE_PENDING_COUNT);
+                cache_wr_rsp_count_r <= cache_wr_rsp_count_r - 8'd1;
+            end
 
-                ST_WR_RESP: begin
-                    if (wr_target_ready_w) begin
-                        state_r <= ST_IDLE;
-                    end
-                end
+            if (bypass_wr_rsp_push_w && bypass_wr_rsp_pop_w) begin
+                bypass_wr_rsp_id_r[bypass_wr_rsp_tail_r] <= wr_req_id_r[wr_match_slot_w];
+                bypass_wr_rsp_code_r[bypass_wr_rsp_tail_r] <= axi_bresp;
+                bypass_wr_rsp_head_r <= next_ptr(bypass_wr_rsp_head_r, WRITE_PENDING_COUNT);
+                bypass_wr_rsp_tail_r <= next_ptr(bypass_wr_rsp_tail_r, WRITE_PENDING_COUNT);
+            end else if (bypass_wr_rsp_push_w) begin
+                bypass_wr_rsp_id_r[bypass_wr_rsp_tail_r] <= wr_req_id_r[wr_match_slot_w];
+                bypass_wr_rsp_code_r[bypass_wr_rsp_tail_r] <= axi_bresp;
+                bypass_wr_rsp_tail_r <= next_ptr(bypass_wr_rsp_tail_r, WRITE_PENDING_COUNT);
+                bypass_wr_rsp_count_r <= bypass_wr_rsp_count_r + 8'd1;
+            end else if (bypass_wr_rsp_pop_w) begin
+                bypass_wr_rsp_head_r <= next_ptr(bypass_wr_rsp_head_r, WRITE_PENDING_COUNT);
+                bypass_wr_rsp_count_r <= bypass_wr_rsp_count_r - 8'd1;
+            end
 
-                default: begin
-                    state_r <= ST_IDLE;
+            if (rd_issue_handshake_w) begin
+                rd_ar_sent_r[rd_issue_slot_w] <= 1'b1;
+            end
+
+            if (rd_resp_accept_w) begin
+                if (rd_last_beat_w) begin
+                    rd_valid_r[rd_match_slot_w] <= 1'b0;
+                    rd_from_cache_r[rd_match_slot_w] <= 1'b0;
+                    rd_addr_r[rd_match_slot_w] <= {ADDR_BITS{1'b0}};
+                    rd_req_id_r[rd_match_slot_w] <= {ID_BITS{1'b0}};
+                    rd_size_r[rd_match_slot_w] <= 8'd0;
+                    rd_axi_id_r[rd_match_slot_w] <= {AXI_ID_BITS{1'b0}};
+                    rd_total_beats_r[rd_match_slot_w] <= 8'd0;
+                    rd_beats_done_r[rd_match_slot_w] <= 8'd0;
+                    rd_ar_sent_r[rd_match_slot_w] <= 1'b0;
+                    rd_rdata_r[rd_match_slot_w] <= {READ_RESP_BITS{1'b0}};
+                    rd_resp_code_r[rd_match_slot_w] <= RESP_OKAY;
+                end else begin
+                    rd_rdata_r[rd_match_slot_w] <= rd_match_merged_data_w;
+                    rd_resp_code_r[rd_match_slot_w] <= rd_match_resp_code_w;
+                    rd_beats_done_r[rd_match_slot_w] <=
+                        rd_beats_done_r[rd_match_slot_w] + 8'd1;
                 end
-            endcase
+            end
+
+            if (wr_aw_handshake_w) begin
+                wr_aw_sent_r[wr_aw_slot_w] <= 1'b1;
+            end
+
+            if (wr_w_handshake_w) begin
+                if (axi_wlast) begin
+                    wr_beats_sent_r[wr_w_slot_w] <= 8'd0;
+                    wr_w_done_r[wr_w_slot_w] <= 1'b1;
+                end else begin
+                    wr_beats_sent_r[wr_w_slot_w] <=
+                        wr_beats_sent_r[wr_w_slot_w] + 8'd1;
+                end
+            end
+
+            if (wr_resp_accept_w) begin
+                wr_valid_r[wr_match_slot_w] <= 1'b0;
+                wr_from_cache_r[wr_match_slot_w] <= 1'b0;
+                wr_addr_r[wr_match_slot_w] <= {ADDR_BITS{1'b0}};
+                wr_req_id_r[wr_match_slot_w] <= {ID_BITS{1'b0}};
+                wr_size_r[wr_match_slot_w] <= 8'd0;
+                wr_wdata_r[wr_match_slot_w] <= {LINE_BITS{1'b0}};
+                wr_wstrb_r[wr_match_slot_w] <= {LINE_BYTES{1'b0}};
+                wr_axi_id_r[wr_match_slot_w] <= {AXI_ID_BITS{1'b0}};
+                wr_total_beats_r[wr_match_slot_w] <= 8'd0;
+                wr_beats_sent_r[wr_match_slot_w] <= 8'd0;
+                wr_aw_sent_r[wr_match_slot_w] <= 1'b0;
+                wr_w_done_r[wr_match_slot_w] <= 1'b0;
+            end
         end
     end
 

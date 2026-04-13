@@ -195,9 +195,9 @@
 当前限制：
 
 - 外部 custom master 接口合同已经补齐
-- 但 lower-memory issue 当前仍由单流核心串行化
-- 下游 AXI 侧没有把 C++ 的多 outstanding / `orig_id / mem_id / axi_id`
-  remap table 原样搬进 RTL
+- 但 lower-memory issue 进入 bridge 之前，当前仍由单流核心串行化
+- 下游 AXI 侧已经补成多 outstanding / 独立 `axi_id` remap
+- 整个子模块的总并发度仍受 compat/core 单 inflight 收敛限制
 
 ### `axi_llc_axi_bridge`
 
@@ -214,6 +214,12 @@
   - `burst` 固定 `INCR`
   - 写 `data/strb` 按低地址连续切片
 - 读 beat 也按低地址连续拼回 `READ_RESP_BITS=256B` 缓冲
+- 当前 bridge 已具备：
+  - read / write 各自独立的 pending table
+  - read / write 各自独立的 `axi_id` 分配
+  - cache / bypass 两类 source-local completion queue
+  - write `axi_id` 在 `B` 返回后立即释放
+  - bridge-local read/write outstanding 与 write-id-reuse contract bench
 
 ### `axi_llc_subsystem`
 
@@ -241,7 +247,7 @@ DDR/MMIO 地址分流属于外部系统功能，不在本 RTL 顶层重复展开
 
 ### 当前保留的微架构差异
 
-- lower AXI 路径仍是串行化实现
+- compat/core 仍是单流收敛结构，因此不是“整个子模块全路径多发射”
 - 带 timing-check 的外部宏模型直连时序隔离未接入
 - `prefetch` 仍然保持关闭
 
@@ -269,8 +275,8 @@ contract bench：
 
 这套合同在 `axi_llc_subsystem_core` 内仍是单流实现；`axi_llc_subsystem_compat`
 已经把多 master 的 `accepted/resp` 接口补回；`axi_llc_subsystem` 再把 lower 请求
-收敛成单组 AXI4。当前剩余差异主要是下游 AXI 侧仍未引入 C++ 那套完整多 outstanding
-/ remap table。
+收敛成单组 AXI4。当前剩余差异主要在 compat/core 的单 inflight 收敛，而不是 bridge
+层的 AXI remap。
 
 ## `prefetch` 状态
 
