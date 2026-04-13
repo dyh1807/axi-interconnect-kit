@@ -206,6 +206,15 @@
 - `invalidate_line` 在 same-line write 仍停留于 compat queue / response slot 期间不能被 accepted
 - 所有 same-line write hazard 清空后，`invalidate_line` 才允许被 accepted
 
+### `tb_axi_llc_subsystem_invalidate_line_read_hazard_contract.v`
+
+覆盖：
+
+- `invalidate_line` 在 same-line lookup 仍未结束时不能被 accepted
+- `invalidate_line` 在 same-line read miss / refill 仍挂起时不能被 accepted
+- `invalidate_line` 在 pending dirty victim 仍归属该 line 时不能被 accepted
+- 上述 read-side hazard 清空后，`invalidate_line` 才允许被 accepted
+
 ### `tb_axi_llc_subsystem_read_master_timing_contract.v`
 
 覆盖：
@@ -293,6 +302,7 @@
   - `tb_axi_llc_subsystem_mode_contract`
   - `tb_axi_llc_subsystem_cache_contract`
   - `tb_axi_llc_subsystem_invalidate_line_contract`
+  - `tb_axi_llc_subsystem_invalidate_line_read_hazard_contract`
   - `tb_axi_llc_subsystem_size_contract`
   - `tb_axi_llc_subsystem_invalidate_all_contract`
   - `tb_axi_llc_subsystem_id_contract`

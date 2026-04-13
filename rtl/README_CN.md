@@ -202,6 +202,7 @@ axi_llc_subsystem
 - `tb/tb_axi_llc_subsystem_mode_contract.v`
 - `tb/tb_axi_llc_subsystem_cache_contract.v`
 - `tb/tb_axi_llc_subsystem_invalidate_line_contract.v`
+- `tb/tb_axi_llc_subsystem_invalidate_line_read_hazard_contract.v`
 - `tb/tb_axi_llc_subsystem_size_contract.v`
 - `tb/tb_axi_llc_subsystem_invalidate_all_contract.v`
 - `tb/tb_axi_llc_subsystem_id_contract.v`
@@ -259,6 +260,8 @@ axi_llc_subsystem
   - `mode=2` direct-window resident line 仍不复用这条 maintenance 语义
   - compat 层会先挡住新的 write 接受，并等待同 line 的本地 write hazard 消失后，
     才把 `invalidate_line` 交给 core
+  - core 内部还会继续挡住 same-line read miss / refill / dirty victim hazard，
+    避免旧 resident line 在 `invalidate_line` accepted 之后被回装
 - 当前 `id` 采用单个 `4-bit` 平面：
   - 直接路径返回捕获的 `up_req_id`
   - bypass lower 路径当前仍向下传 `bypass_req_id`，响应需带回匹配 id

@@ -187,6 +187,9 @@ module llc_cache_ctrl #(
     reg [SET_BITS-1:0] mshr_set_r [0:MSHR_COUNT-1];
     reg [TAG_BITS-1:0] mshr_tag_r [0:MSHR_COUNT-1];
     reg [WAY_BITS-1:0] mshr_way_r [0:MSHR_COUNT-1];
+    // Keep the original write metadata per slot so a partial write miss can
+    // merge the refill line and still retire as a write response.
+    reg                mshr_is_write_r [0:MSHR_COUNT-1];
     reg                mshr_victim_dirty_r [0:MSHR_COUNT-1];
     reg                mshr_wb_done_r [0:MSHR_COUNT-1];
     reg                mshr_wb_issued_r [0:MSHR_COUNT-1];
@@ -195,11 +198,15 @@ module llc_cache_ctrl #(
     reg [ADDR_BITS-1:0] mshr_victim_addr_r [0:MSHR_COUNT-1];
     reg [LINE_BITS-1:0] mshr_victim_data_r [0:MSHR_COUNT-1];
     reg [LINE_BITS-1:0] mshr_refill_line_r [0:MSHR_COUNT-1];
+    reg [LINE_BITS-1:0] mshr_wdata_r [0:MSHR_COUNT-1];
+    reg [LINE_BYTES-1:0] mshr_wstrb_r [0:MSHR_COUNT-1];
     reg [7:0]          mshr_total_size_r [0:MSHR_COUNT-1];
 
     reg                req_line_mshr_pending_r;
     reg                req_master_mshr_pending_r;
     reg                mshr_any_valid_r;
+    reg                invalidate_line_mshr_pending_r;
+    reg                invalidate_line_victim_pending_r;
     reg                mshr_issue_found_r;
     reg                mshr_issue_write_r;
     reg [ID_BITS-1:0]  mshr_issue_slot_r;
@@ -377,6 +384,8 @@ module llc_cache_ctrl #(
         req_line_mshr_pending_r = 1'b0;
         req_master_mshr_pending_r = 1'b0;
         mshr_any_valid_r = 1'b0;
+        invalidate_line_mshr_pending_r = 1'b0;
+        invalidate_line_victim_pending_r = 1'b0;
         for (mshr_idx = 0; mshr_idx < MSHR_COUNT; mshr_idx = mshr_idx + 1) begin
             if (mshr_valid_r[mshr_idx]) begin
                 mshr_any_valid_r = 1'b1;
@@ -388,6 +397,18 @@ module llc_cache_ctrl #(
             if (mshr_valid_r[mshr_idx] &&
                 (req_id == mshr_idx[ID_BITS-1:0])) begin
                 req_master_mshr_pending_r = 1'b1;
+            end
+            if (mshr_valid_r[mshr_idx] &&
+                (line_align_addr(mshr_addr_r[mshr_idx]) ==
+                 line_align_addr(invalidate_line_addr))) begin
+                invalidate_line_mshr_pending_r = 1'b1;
+            end
+            if (mshr_valid_r[mshr_idx] &&
+                mshr_victim_dirty_r[mshr_idx] &&
+                !mshr_wb_done_r[mshr_idx] &&
+                (line_align_addr(mshr_victim_addr_r[mshr_idx]) ==
+                 line_align_addr(invalidate_line_addr))) begin
+                invalidate_line_victim_pending_r = 1'b1;
             end
         end
     end
@@ -496,10 +517,16 @@ module llc_cache_ctrl #(
                                     !mshr_commit_found_r &&
                                     !req_line_mshr_pending_r)
                                  : can_accept_read_w;
+    // Align invalidate_line acceptance with the C++ LLC contract: the same
+    // line must not be invalidated while an inflight read miss/refill still
+    // owns it, or while a pending dirty victim writeback still carries it.
     assign accept_invalidate_line_w = (state_r == ST_IDLE) &&
                                       !resp_valid_r &&
                                       !flush_start &&
                                       !store_write_busy_w &&
+                                      !mshr_commit_found_r &&
+                                      !invalidate_line_mshr_pending_r &&
+                                      !invalidate_line_victim_pending_r &&
                                       invalidate_line_valid;
     assign invalidate_line_accepted = accept_invalidate_line_w;
     assign quiescent = (state_r == ST_IDLE) && !resp_valid_r &&
@@ -760,6 +787,7 @@ module llc_cache_ctrl #(
                 mshr_set_r[mshr_idx] <= {SET_BITS{1'b0}};
                 mshr_tag_r[mshr_idx] <= {TAG_BITS{1'b0}};
                 mshr_way_r[mshr_idx] <= {WAY_BITS{1'b0}};
+                mshr_is_write_r[mshr_idx] <= 1'b0;
                 mshr_victim_dirty_r[mshr_idx] <= 1'b0;
                 mshr_wb_done_r[mshr_idx] <= 1'b0;
                 mshr_wb_issued_r[mshr_idx] <= 1'b0;
@@ -768,6 +796,8 @@ module llc_cache_ctrl #(
                 mshr_victim_addr_r[mshr_idx] <= {ADDR_BITS{1'b0}};
                 mshr_victim_data_r[mshr_idx] <= {LINE_BITS{1'b0}};
                 mshr_refill_line_r[mshr_idx] <= {LINE_BITS{1'b0}};
+                mshr_wdata_r[mshr_idx] <= {LINE_BITS{1'b0}};
+                mshr_wstrb_r[mshr_idx] <= {LINE_BYTES{1'b0}};
                 mshr_total_size_r[mshr_idx] <= 8'd0;
             end
         end else begin
@@ -806,19 +836,29 @@ module llc_cache_ctrl #(
                         state_r <= ST_FLUSH_SCAN_REQ;
                     end else if (mshr_commit_found_r && !store_write_busy_w &&
                                  !resp_valid_r) begin
-                        req_write_r <= 1'b0;
+                        req_write_r <= mshr_is_write_r[mshr_commit_slot_r];
                         req_bypass_r <= 1'b0;
                         req_addr_r <= mshr_addr_r[mshr_commit_slot_r];
                         req_id_r <= mshr_commit_slot_r;
                         req_total_size_r <= mshr_total_size_r[mshr_commit_slot_r];
-                        req_wdata_r <= {LINE_BITS{1'b0}};
-                        req_wstrb_r <= {LINE_BYTES{1'b0}};
+                        req_wdata_r <= mshr_wdata_r[mshr_commit_slot_r];
+                        req_wstrb_r <= mshr_wstrb_r[mshr_commit_slot_r];
                         req_set_r <= mshr_set_r[mshr_commit_slot_r];
                         req_tag_r <= mshr_tag_r[mshr_commit_slot_r];
                         req_invalidate_r <= 1'b0;
                         install_way_r <= mshr_way_r[mshr_commit_slot_r];
-                        install_line_r <= mshr_refill_line_r[mshr_commit_slot_r];
-                        install_dirty_r <= 1'b0;
+                        if (mshr_is_write_r[mshr_commit_slot_r]) begin
+                            install_line_r <= merge_line(
+                                mshr_refill_line_r[mshr_commit_slot_r],
+                                mshr_addr_r[mshr_commit_slot_r],
+                                mshr_wdata_r[mshr_commit_slot_r],
+                                mshr_wstrb_r[mshr_commit_slot_r]
+                            );
+                            install_dirty_r <= 1'b1;
+                        end else begin
+                            install_line_r <= mshr_refill_line_r[mshr_commit_slot_r];
+                            install_dirty_r <= 1'b0;
+                        end
                         replace_dirty_r <= mshr_victim_dirty_r[mshr_commit_slot_r];
                         install_from_mshr_r <= 1'b1;
                         install_mshr_slot_r <= mshr_commit_slot_r;
@@ -907,6 +947,7 @@ module llc_cache_ctrl #(
                                 mshr_set_r[req_id_r] <= req_set_r;
                                 mshr_tag_r[req_id_r] <= req_tag_r;
                                 mshr_way_r[req_id_r] <= lookup_select_way_r;
+                                mshr_is_write_r[req_id_r] <= req_write_r;
                                 mshr_victim_dirty_r[req_id_r] <= lookup_victim_dirty_r;
                                 mshr_wb_done_r[req_id_r] <= !lookup_victim_dirty_r;
                                 mshr_wb_issued_r[req_id_r] <= 1'b0;
@@ -915,6 +956,8 @@ module llc_cache_ctrl #(
                                 mshr_victim_addr_r[req_id_r] <= lookup_victim_addr_r;
                                 mshr_victim_data_r[req_id_r] <= lookup_victim_line_r;
                                 mshr_refill_line_r[req_id_r] <= {LINE_BITS{1'b0}};
+                                mshr_wdata_r[req_id_r] <= req_wdata_r;
+                                mshr_wstrb_r[req_id_r] <= req_wstrb_r;
                                 mshr_total_size_r[req_id_r] <= req_total_size_r;
                                 install_from_mshr_r <= 1'b0;
                                 install_mshr_slot_r <= {ID_BITS{1'b0}};
@@ -985,6 +1028,7 @@ module llc_cache_ctrl #(
                     end
                     if (install_from_mshr_r) begin
                         mshr_valid_r[install_mshr_slot_r] <= 1'b0;
+                        mshr_is_write_r[install_mshr_slot_r] <= 1'b0;
                         mshr_victim_dirty_r[install_mshr_slot_r] <= 1'b0;
                         mshr_wb_done_r[install_mshr_slot_r] <= 1'b0;
                         mshr_wb_issued_r[install_mshr_slot_r] <= 1'b0;
@@ -997,6 +1041,8 @@ module llc_cache_ctrl #(
                         mshr_victim_addr_r[install_mshr_slot_r] <= {ADDR_BITS{1'b0}};
                         mshr_victim_data_r[install_mshr_slot_r] <= {LINE_BITS{1'b0}};
                         mshr_refill_line_r[install_mshr_slot_r] <= {LINE_BITS{1'b0}};
+                        mshr_wdata_r[install_mshr_slot_r] <= {LINE_BITS{1'b0}};
+                        mshr_wstrb_r[install_mshr_slot_r] <= {LINE_BYTES{1'b0}};
                         mshr_total_size_r[install_mshr_slot_r] <= 8'd0;
                         install_from_mshr_r <= 1'b0;
                     end

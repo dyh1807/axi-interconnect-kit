@@ -160,6 +160,7 @@
   - idle 时接受 maintenance 请求
   - 复用一次 resident lookup
   - hit 时只清 valid；若该 line 为 dirty，同时更新 dirty 计数
+  - same-line read miss / refill / dirty victim hazard 仍在时不会 accepted
 - `invalidate_all` 通过顶层维护控制面触发，不在 `llc_cache_ctrl` 内单独实现 whole-array
   reset
 - read hit / refill response 当前都按请求地址的 32-bit word offset 做提取，对齐 C++
@@ -189,6 +190,8 @@
   再把维护请求交给 core
 - `invalidate_line` 期间，compat 会拦住新的 write 接受，并等待同 line 的本地 write hazard
   消失后才把 maintenance 请求交给 core
+- core 内部的 `llc_cache_ctrl` 还会继续检查 same-line read miss / victim hazard；
+  只有这层也通过时，`invalidate_line_accepted` 才会拉高
 - `MASTER_DCACHE_R` 保留 same-cycle accept，其它 read master 仍保持 ready-first
 - `ready` 采用 sticky-grant 语义：一次只对一个 read master、一个 write master 发放 ready，
   在握手或请求撤销前保持
