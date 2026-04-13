@@ -438,6 +438,7 @@ module tb_axi_llc_subsystem_compat_contract;
         integer timeout;
         reg read_seen;
         reg write_seen;
+        reg [ID_BITS-1:0] read_seen_accept_id;
         begin
             @(negedge clk);
             read_req_valid[read_master] = 1'b1;
@@ -452,24 +453,20 @@ module tb_axi_llc_subsystem_compat_contract;
             write_req_wdata[(write_master * LINE_BITS) +: LINE_BITS] = write_data_value;
             write_req_wstrb[(write_master * LINE_BYTES) +: LINE_BYTES] = write_strb_value;
             write_req_bypass[write_master] = write_bypass_value;
-            timeout = 100;
-            while ((!read_req_ready[read_master] || !write_req_ready[write_master]) &&
-                   (timeout > 0)) begin
-                @(posedge clk);
-                timeout = timeout - 1;
-            end
-            if (timeout == 0) begin
-                fail_now("timeout waiting parallel read/write ready");
-            end
             #1;
             timeout = 100;
             read_seen = (read_req_accepted[read_master] === 1'b1);
             write_seen = (write_req_accepted[write_master] === 1'b1);
+            read_seen_accept_id = {ID_BITS{1'b0}};
+            if (read_seen) begin
+                read_seen_accept_id = get_read_accept_id(read_master);
+            end
             while ((!read_seen || !write_seen) && (timeout > 0)) begin
                 @(posedge clk);
                 #1;
                 if (read_req_accepted[read_master] === 1'b1) begin
                     read_seen = 1'b1;
+                    read_seen_accept_id = get_read_accept_id(read_master);
                 end
                 if (write_req_accepted[write_master] === 1'b1) begin
                     write_seen = 1'b1;
@@ -479,7 +476,7 @@ module tb_axi_llc_subsystem_compat_contract;
             if (timeout == 0) begin
                 fail_now("parallel read/write accepted pulse missing");
             end
-            if (get_read_accept_id(read_master) !== read_id_value) begin
+            if (read_seen_accept_id !== read_id_value) begin
                 fail_now("parallel read accepted_id mismatch");
             end
             @(negedge clk);

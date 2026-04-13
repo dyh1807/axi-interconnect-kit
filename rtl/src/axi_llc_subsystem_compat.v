@@ -5,9 +5,10 @@
 // and the single-flow RTL core.
 //
 // Responsibilities:
-//   - Hold one queued request per upstream master
+//   - Hold per-master queued upstream requests
 //   - Return accepted / accepted_id / independent write responses
 //   - Serialize requests into axi_llc_subsystem_core
+//   - Drain local queues before reconfiguration / invalidate-all reaches core
 //
 // This layer does not translate to AXI and does not own resident storage.
 module axi_llc_subsystem_compat #(
@@ -115,6 +116,9 @@ module axi_llc_subsystem_compat #(
     localparam integer RD_SLOT_COUNT = NUM_READ_MASTERS * READ_FIFO_DEPTH;
     localparam integer WR_SLOT_COUNT = NUM_WRITE_MASTERS * WRITE_FIFO_DEPTH;
     localparam [1:0] WRITE_RESP_OKAY = 2'b00;
+    localparam [MODE_BITS-1:0] MODE_MAPPED =
+        {{(MODE_BITS-2){1'b0}}, 2'b10};
+    localparam integer MASTER_DCACHE_R = 1;
 
     // Flattened per-master FIFOs so the module stays plain Verilog.
     reg [RD_SLOT_COUNT-1:0]      rd_q_valid;
@@ -146,6 +150,7 @@ module axi_llc_subsystem_compat #(
     reg                          wr_resp_valid_r [0:NUM_WRITE_MASTERS-1];
     reg [ID_BITS-1:0]            wr_resp_id_r [0:NUM_WRITE_MASTERS-1];
     reg [1:0]                    wr_resp_code_r [0:NUM_WRITE_MASTERS-1];
+    reg [ADDR_BITS-1:0]          wr_resp_addr_r [0:NUM_WRITE_MASTERS-1];
     reg [NUM_WRITE_MASTERS-1:0]  write_req_accepted_r;
     reg [NUM_READ_MASTERS-1:0]   read_req_ready_r;
     reg [NUM_WRITE_MASTERS-1:0]  write_req_ready_r;
@@ -157,6 +162,7 @@ module axi_llc_subsystem_compat #(
     reg                          inflight_is_write_r;
     reg [7:0]                    inflight_master_r;
     reg [ID_BITS-1:0]            inflight_id_r;
+    reg [ADDR_BITS-1:0]          inflight_addr_r;
 
     // Single request presented to the core in the current cycle.
     reg                          core_up_req_valid_w;
@@ -189,9 +195,26 @@ module axi_llc_subsystem_compat #(
     reg [7:0]                    rd_select_master_w;
     reg                          wr_select_found_w;
     reg [7:0]                    wr_select_master_w;
+    reg                          compat_quiescent_w;
+    reg                          line_write_hazard_w;
+    reg                          accept_blocked_w;
+    reg                          dcache_same_cycle_accept_w;
+    reg [MODE_BITS-1:0]          core_mode_req_w;
+    reg [ADDR_BITS-1:0]          core_offset_req_w;
+    reg                          core_invalidate_all_valid_w;
+    reg                          core_invalidate_line_valid_w;
 
     wire target_read_resp_ready_w;
     wire target_write_resp_ready_w;
+    wire reconfig_req_pending_w;
+    wire maintenance_pending_w;
+
+    assign reconfig_req_pending_w =
+        (mode_req != active_mode) ||
+        ((mode_req == MODE_MAPPED) &&
+         (llc_mapped_offset_req != active_offset));
+    assign maintenance_pending_w =
+        reconfig_req_pending_w || invalidate_all_valid || invalidate_line_valid;
 
     function integer rd_slot_index;
         input integer master_idx;
@@ -287,11 +310,24 @@ module axi_llc_subsystem_compat #(
         rd_select_master_w = 8'd0;
         wr_select_found_w = 1'b0;
         wr_select_master_w = 8'd0;
+        compat_quiescent_w = !inflight_valid_r;
+        line_write_hazard_w = 1'b0;
+        accept_blocked_w = reconfig_busy || maintenance_pending_w;
+        dcache_same_cycle_accept_w = 1'b0;
+        core_mode_req_w = active_mode;
+        core_offset_req_w = active_offset;
+        core_invalidate_all_valid_w = 1'b0;
+        core_invalidate_line_valid_w = 1'b0;
 
         for (flat_idx = 0; flat_idx < NUM_READ_MASTERS; flat_idx = flat_idx + 1) begin
             total_read_outstanding_w = total_read_outstanding_w + rd_q_count[flat_idx];
             if (rd_resp_valid_r[flat_idx]) begin
                 total_read_outstanding_w = total_read_outstanding_w + 1;
+            end
+            if ((rd_q_count[flat_idx] != 0) ||
+                rd_resp_valid_r[flat_idx] ||
+                read_req_ready_r[flat_idx]) begin
+                compat_quiescent_w = 1'b0;
             end
         end
         if (inflight_valid_r && !inflight_is_write_r) begin
@@ -302,12 +338,44 @@ module axi_llc_subsystem_compat #(
             if (wr_resp_valid_r[flat_idx]) begin
                 total_write_outstanding_w = total_write_outstanding_w + 1;
             end
+            if ((wr_q_count[flat_idx] != 0) ||
+                wr_resp_valid_r[flat_idx] ||
+                write_req_ready_r[flat_idx]) begin
+                compat_quiescent_w = 1'b0;
+            end
+            if (invalidate_line_valid &&
+                write_req_valid[flat_idx] &&
+                ((write_req_addr[(flat_idx * ADDR_BITS) +: ADDR_BITS] >> LINE_OFFSET_BITS) ==
+                 (invalidate_line_addr >> LINE_OFFSET_BITS))) begin
+                line_write_hazard_w = 1'b1;
+            end
+            if (invalidate_line_valid &&
+                wr_resp_valid_r[flat_idx] &&
+                ((wr_resp_addr_r[flat_idx] >> LINE_OFFSET_BITS) ==
+                 (invalidate_line_addr >> LINE_OFFSET_BITS))) begin
+                line_write_hazard_w = 1'b1;
+            end
         end
         if (inflight_valid_r && inflight_is_write_r) begin
             total_write_outstanding_w = total_write_outstanding_w + 1;
         end
+        if (invalidate_line_valid &&
+            inflight_valid_r &&
+            inflight_is_write_r &&
+            ((inflight_addr_r >> LINE_OFFSET_BITS) ==
+             (invalidate_line_addr >> LINE_OFFSET_BITS))) begin
+            line_write_hazard_w = 1'b1;
+        end
+        for (flat_idx = 0; flat_idx < WR_SLOT_COUNT; flat_idx = flat_idx + 1) begin
+            if (invalidate_line_valid &&
+                wr_q_valid[flat_idx] &&
+                ((wr_q_addr[flat_idx] >> LINE_OFFSET_BITS) ==
+                 (invalidate_line_addr >> LINE_OFFSET_BITS))) begin
+                line_write_hazard_w = 1'b1;
+            end
+        end
 
-        if ((read_req_ready_r == {NUM_READ_MASTERS{1'b0}}) && !reconfig_busy) begin
+        if ((read_req_ready_r == {NUM_READ_MASTERS{1'b0}}) && !accept_blocked_w) begin
             for (rr_off = 0; rr_off < NUM_READ_MASTERS; rr_off = rr_off + 1) begin
                 next_port = rd_capture_rr_r + rr_off;
                 if (next_port >= NUM_READ_MASTERS) begin
@@ -325,7 +393,7 @@ module axi_llc_subsystem_compat #(
             end
         end
 
-        if ((write_req_ready_r == {NUM_WRITE_MASTERS{1'b0}}) && !reconfig_busy) begin
+        if ((write_req_ready_r == {NUM_WRITE_MASTERS{1'b0}}) && !accept_blocked_w) begin
             for (rr_off = 0; rr_off < NUM_WRITE_MASTERS; rr_off = rr_off + 1) begin
                 next_port = wr_capture_rr_r + rr_off;
                 if (next_port >= NUM_WRITE_MASTERS) begin
@@ -339,6 +407,28 @@ module axi_llc_subsystem_compat #(
                     wr_select_master_w = next_port[7:0];
                 end
             end
+        end
+
+        // Match the C++ interconnect contract: reconfiguration / invalidate-all
+        // first drains compat-local queueing, then the request is forwarded to
+        // the core so the core only sees maintenance after the outer boundary is
+        // already quiescent.
+        if (maintenance_pending_w && compat_quiescent_w) begin
+            core_mode_req_w = mode_req;
+            core_offset_req_w = (mode_req == MODE_MAPPED) ?
+                                llc_mapped_offset_req : active_offset;
+            core_invalidate_all_valid_w = invalidate_all_valid;
+            core_invalidate_line_valid_w = invalidate_line_valid &&
+                                           !line_write_hazard_w;
+        end
+
+        // Keep the C++ dcache-read same-cycle accept behavior. Other read
+        // masters still use ready-first sticky-grant semantics.
+        if (!accept_blocked_w &&
+            rd_select_found_w &&
+            (rd_select_master_w == MASTER_DCACHE_R) &&
+            read_req_valid[MASTER_DCACHE_R]) begin
+            dcache_same_cycle_accept_w = 1'b1;
         end
 
         if (!inflight_valid_r) begin
@@ -397,8 +487,10 @@ module axi_llc_subsystem_compat #(
         read_resp_data = {(NUM_READ_MASTERS*READ_RESP_BITS){1'b0}};
         read_resp_id = {(NUM_READ_MASTERS*ID_BITS){1'b0}};
         for (flat_idx = 0; flat_idx < NUM_READ_MASTERS; flat_idx = flat_idx + 1) begin
-            read_req_ready[flat_idx] = read_req_ready_r[flat_idx] &&
-                                       !reconfig_busy &&
+            read_req_ready[flat_idx] = (read_req_ready_r[flat_idx] ||
+                                       (dcache_same_cycle_accept_w &&
+                                        (flat_idx == MASTER_DCACHE_R))) &&
+                                       !accept_blocked_w &&
                                        (rd_q_count[flat_idx] < READ_FIFO_DEPTH) &&
                                        (total_read_outstanding_w < MAX_OUTSTANDING) &&
                                        !read_id_conflict(flat_idx,
@@ -417,7 +509,7 @@ module axi_llc_subsystem_compat #(
         write_resp_code = {(NUM_WRITE_MASTERS*2){1'b0}};
         for (flat_idx = 0; flat_idx < NUM_WRITE_MASTERS; flat_idx = flat_idx + 1) begin
             write_req_ready[flat_idx] = write_req_ready_r[flat_idx] &&
-                                        !reconfig_busy &&
+                                        !accept_blocked_w &&
                                         (wr_q_count[flat_idx] < WRITE_FIFO_DEPTH) &&
                                         (total_write_outstanding_w < MAX_WRITE_OUTSTANDING);
             write_resp_valid[flat_idx] = wr_resp_valid_r[flat_idx];
@@ -455,8 +547,8 @@ module axi_llc_subsystem_compat #(
     ) core (
         .clk                   (clk),
         .rst_n                 (rst_n),
-        .mode_req              (mode_req),
-        .llc_mapped_offset_req (llc_mapped_offset_req),
+        .mode_req              (core_mode_req_w),
+        .llc_mapped_offset_req (core_offset_req_w),
         .up_req_valid          (core_up_req_valid_w),
         .up_req_ready          (core_up_req_ready_w),
         .up_req_write          (core_up_req_write_w),
@@ -497,10 +589,10 @@ module axi_llc_subsystem_compat #(
         .bypass_resp_rdata     (bypass_resp_rdata),
         .bypass_resp_id        (bypass_resp_id),
         .bypass_resp_code      (bypass_resp_code),
-        .invalidate_line_valid (invalidate_line_valid),
+        .invalidate_line_valid (core_invalidate_line_valid_w),
         .invalidate_line_addr  (invalidate_line_addr),
         .invalidate_line_accepted(invalidate_line_accepted),
-        .invalidate_all_valid  (invalidate_all_valid),
+        .invalidate_all_valid  (core_invalidate_all_valid_w),
         .invalidate_all_accepted(invalidate_all_accepted),
         .active_mode           (active_mode),
         .active_offset         (active_offset),
@@ -519,6 +611,7 @@ module axi_llc_subsystem_compat #(
             inflight_is_write_r <= 1'b0;
             inflight_master_r <= 8'd0;
             inflight_id_r <= {ID_BITS{1'b0}};
+            inflight_addr_r <= {ADDR_BITS{1'b0}};
             read_req_accepted_r <= {NUM_READ_MASTERS{1'b0}};
             read_req_accepted_id_r <= {(NUM_READ_MASTERS*ID_BITS){1'b0}};
             write_req_accepted_r <= {NUM_WRITE_MASTERS{1'b0}};
@@ -539,6 +632,7 @@ module axi_llc_subsystem_compat #(
                 wr_resp_valid_r[idx] <= 1'b0;
                 wr_resp_id_r[idx] <= {ID_BITS{1'b0}};
                 wr_resp_code_r[idx] <= WRITE_RESP_OKAY;
+                wr_resp_addr_r[idx] <= {ADDR_BITS{1'b0}};
             end
             for (idx = 0; idx < RD_SLOT_COUNT; idx = idx + 1) begin
                 rd_q_valid[idx] <= 1'b0;
@@ -561,7 +655,7 @@ module axi_llc_subsystem_compat #(
             read_req_accepted_id_r <= {(NUM_READ_MASTERS*ID_BITS){1'b0}};
             write_req_accepted_r <= {NUM_WRITE_MASTERS{1'b0}};
 
-            if (reconfig_busy) begin
+            if (accept_blocked_w) begin
                 read_req_ready_r <= {NUM_READ_MASTERS{1'b0}};
                 write_req_ready_r <= {NUM_WRITE_MASTERS{1'b0}};
             end
@@ -614,11 +708,13 @@ module axi_llc_subsystem_compat #(
                 end
             end
 
-            if (!reconfig_busy && (read_req_ready_r == {NUM_READ_MASTERS{1'b0}}) &&
+            if (!accept_blocked_w &&
+                !dcache_same_cycle_accept_w &&
+                (read_req_ready_r == {NUM_READ_MASTERS{1'b0}}) &&
                 rd_select_found_w) begin
                 read_req_ready_r[rd_select_master_w] <= 1'b1;
             end
-            if (!reconfig_busy && (write_req_ready_r == {NUM_WRITE_MASTERS{1'b0}}) &&
+            if (!accept_blocked_w && (write_req_ready_r == {NUM_WRITE_MASTERS{1'b0}}) &&
                 wr_select_found_w) begin
                 write_req_ready_r[wr_select_master_w] <= 1'b1;
             end
@@ -628,6 +724,7 @@ module axi_llc_subsystem_compat #(
                 inflight_is_write_r <= dispatch_is_write_w;
                 inflight_master_r <= dispatch_master_w;
                 inflight_id_r <= core_up_req_id_w;
+                inflight_addr_r <= core_up_req_addr_w;
                 rr_ptr_r <= dispatch_slot_w[7:0] + 8'd1;
                 if (dispatch_is_write_w) begin
                     wr_q_valid[dispatch_fifo_slot_w] <= 1'b0;
@@ -647,12 +744,14 @@ module axi_llc_subsystem_compat #(
                     wr_resp_valid_r[inflight_master_r] <= 1'b1;
                     wr_resp_id_r[inflight_master_r] <= inflight_id_r;
                     wr_resp_code_r[inflight_master_r] <= core_up_resp_code_w;
+                    wr_resp_addr_r[inflight_master_r] <= inflight_addr_r;
                 end else begin
                     rd_resp_valid_r[inflight_master_r] <= 1'b1;
                     rd_resp_data_r[inflight_master_r] <= core_up_resp_rdata_w;
                     rd_resp_id_r[inflight_master_r] <= core_up_resp_id_w;
                 end
                 inflight_valid_r <= 1'b0;
+                inflight_addr_r <= {ADDR_BITS{1'b0}};
             end
         end
     end

@@ -181,6 +181,30 @@
 - 场景中显式覆盖 `master0` 上两笔不同 `req_id` 的连续入队。
 - 该 bench 不约束 queued read 的全局调度顺序，只要求每个已接受请求最终都能被正确下发并回到正确 master。
 
+### `tb_axi_llc_subsystem_compat_reconfig_drain_contract.v`
+
+覆盖：
+
+- compat 层在 mode change / `invalidate_all` 时先排空本地 queue / inflight / response slot
+- drain 期间旧模式下已经入队的请求仍按旧模式继续下发
+- `invalidate_all_accepted` 只能在 compat 本地排空后出现
+
+### `tb_axi_llc_subsystem_compat_invalidate_line_hazard_contract.v`
+
+覆盖：
+
+- `invalidate_line` 在 same-line write inflight 期间不能被 accepted
+- `invalidate_line` 在 same-line write 仍停留于 compat queue / response slot 期间不能被 accepted
+- 所有 same-line write hazard 清空后，`invalidate_line` 才允许被 accepted
+
+### `tb_axi_llc_subsystem_read_master_timing_contract.v`
+
+覆盖：
+
+- `MASTER_DCACHE_R` 保留 same-cycle accept
+- `MASTER_ICACHE` 仍保持 ready-first
+- 上游 `accepted / accepted_id`、下游 AXI `AR`、以及最终 read response 的闭环一致性
+
 ### `tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 
 覆盖：
@@ -239,8 +263,8 @@
 
 ## 当前限制
 
-- 当前 bench 仍以 directed contract 为主，`ready/valid` 背压与 mode1 cache 细节需要独立 bench 继续补强。
-- `invalidate_all` 与 SMIC12 宏封装路径正在补独立 bench。
+- 当前 bench 仍以 directed contract 为主，更大规模的 randomized / long-run backpressure 还没有接入。
+- lower AXI 多 outstanding / remap table 仍保持 RTL 当前的简化实现，因此验证重点放在外部可见合同，而不是强行约束内部发射并发度。
 - 当前已在 `eda-10` 上确认 VCS 可用，并实际跑通：
   - `tb_llc_data_store`
   - `tb_llc_meta_store`
@@ -259,4 +283,7 @@
   - `tb_axi_llc_subsystem_id_contract`
   - `tb_axi_llc_subsystem_compat_contract`
   - `tb_axi_llc_subsystem_compat_read_queue_contract`
+  - `tb_axi_llc_subsystem_compat_reconfig_drain_contract`
+  - `tb_axi_llc_subsystem_compat_invalidate_line_hazard_contract`
+  - `tb_axi_llc_subsystem_read_master_timing_contract`
   - `tb_llc_smic12_store_contract`

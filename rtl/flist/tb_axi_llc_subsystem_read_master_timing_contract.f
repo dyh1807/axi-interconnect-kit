@@ -1,0 +1,3 @@
+-f flist/rtl.f
+-top tb_axi_llc_subsystem_read_master_timing_contract
+tb/tb_axi_llc_subsystem_read_master_timing_contract.v

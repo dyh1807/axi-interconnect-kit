@@ -72,7 +72,7 @@
 独立 replacement 表：
 
 - `repl[set] = next victim way`
-- 组合读 + 同步写
+- 带显式 `rd_valid` 的同步读 + 同步写
 - 当前采用 round-robin next-way 语义
 - 不做整表 reset
 
@@ -184,6 +184,11 @@
 - write `ready/accepted`
 - 独立 write response `id/code`
 - per-master request FIFO + 独立 response 槽位
+- reconfig / `invalidate_all` 期间，先由 compat 排空本地 queue / inflight / response slot，
+  再把维护请求交给 core
+- `invalidate_line` 期间，compat 会拦住新的 write 接受，并等待同 line 的本地 write hazard
+  消失后才把 maintenance 请求交给 core
+- `MASTER_DCACHE_R` 保留 same-cycle accept，其它 read master 仍保持 ready-first
 - `ready` 采用 sticky-grant 语义：一次只对一个 read master、一个 write master 发放 ready，
   在握手或请求撤销前保持
 

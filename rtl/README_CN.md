@@ -81,6 +81,7 @@ axi_llc_subsystem
 - `mode=1`：正常 LLC cache path
 - `mode=2`：direct-mapped 本地 LLC window
 - `mode=0/3`：请求仍先进入 LLC resident lookup，但按 bypass 语义处理
+- `mode=1` 命中 `MMIO_BASE/MMIO_SIZE` 窗口的请求会被强制按 bypass 语义处理
 - 模式切换统一走 `block accepts -> drain -> valid-sweep invalidate -> activate`
 - `invalidate_all` 只有在 cache 已 quiescent 且没有 dirty resident line 时才会被接受，
   不主动触发 dirty flush
@@ -139,6 +140,9 @@ axi_llc_subsystem
   - 多读/多写 master 兼容层
   - 补回 `accepted/accepted_id`、独立写响应槽位
   - 当前通过 per-master request FIFO 把外部接口收敛到单流核心
+  - reconfig / `invalidate_all` 会先在 compat 层排空本地 queue / inflight / response slot，
+    之后再把维护请求交给 core
+  - `MASTER_DCACHE_R` 保留 same-cycle accept；其它 read master 仍保持 ready-first
   - `ready` 采用 sticky-grant 语义：一次只对一个 read master、一个 write master
     给出 ready，并在握手或请求撤销前保持
 - `src/axi_llc_axi_bridge.v`
@@ -235,6 +239,8 @@ axi_llc_subsystem
 - `invalidate_line` 当前已经接入：
   - 所有非 direct-window 请求都通过 `llc_cache_ctrl` 复用 resident lookup 做 maintenance
   - `mode=2` direct-window resident line 仍不复用这条 maintenance 语义
+  - compat 层会先挡住新的 write 接受，并等待同 line 的本地 write hazard 消失后，
+    才把 `invalidate_line` 交给 core
 - 当前 `id` 采用单个 `4-bit` 平面：
   - 直接路径返回捕获的 `up_req_id`
   - bypass lower 路径当前仍向下传 `bypass_req_id`，响应需带回匹配 id

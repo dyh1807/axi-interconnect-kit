@@ -67,9 +67,11 @@ axi_llc_subsystem
 职责：
 
 - 接收多 `read_masters[] / write_masters[]`
-- 每个 master 保留单深度请求队列
+- 每个 master 保留参数化 request FIFO
 - 维护独立 read/write response 槽位
 - 对单流核心提供统一的 `up_req_* / up_resp_*`
+- 在 reconfig / `invalidate_all` 时先排空本地 queue / inflight / response slot，再把维护请求交给 core
+- 为 `MASTER_DCACHE_R` 保留 same-cycle accept，其它 read master 仍保持 ready-first
 
 这一层不负责 AXI，也不直接碰共享 store。
 
@@ -117,7 +119,9 @@ axi_llc_subsystem
 - `llc_mapped_offset_req`
 - `invalidate_line_valid`
 - `invalidate_line_addr`
+- `invalidate_line_accepted`
 - `invalidate_all_valid`
+- `invalidate_all_accepted`
 - `active_mode`
 - `active_offset`
 - `reconfig_busy`

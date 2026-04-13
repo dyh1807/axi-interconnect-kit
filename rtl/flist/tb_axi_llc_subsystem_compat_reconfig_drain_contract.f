@@ -1,0 +1,3 @@
+-f flist/rtl.f
+-top tb_axi_llc_subsystem_compat_reconfig_drain_contract
+tb/tb_axi_llc_subsystem_compat_reconfig_drain_contract.v
