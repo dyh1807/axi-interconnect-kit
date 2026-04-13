@@ -15,7 +15,7 @@
    - 同时能看到上游自定义接口和下游 AXI 接口
 2. `src/axi_llc_subsystem_compat.v`
    - 多 master 兼容层
-   - 负责把 cacheable/direct-mapped 请求收敛到单流核心
+   - 负责把 cacheable/direct-mapped 请求收敛到 core，并为 core-path 请求保留内部 slot
    - 同时给 bypass 风格请求提供 direct side path
 3. `src/axi_llc_subsystem_core.v`
    - 单流核心
@@ -71,6 +71,8 @@ axi_llc_subsystem
 - 每个 master 保留参数化 request FIFO
 - 维护独立 read/write response 槽位
 - 对 cacheable/direct-mapped 请求提供统一的 `up_req_* / up_resp_*`
+- cacheable core-path 请求会先占用 compat 内部 slot，再进入 core
+- 同一 read master 的多笔 core read response 会先进入 per-master queue，再从前台 response slot 依次对外可见
 - 对 bypass 风格请求提供 direct lower bypass side path
 - 在 reconfig / `invalidate_all` 时先排空本地 queue / inflight / response slot，再把维护请求交给 core
 - 为 `MASTER_DCACHE_R` 保留 same-cycle accept，其它 read master 仍保持 ready-first

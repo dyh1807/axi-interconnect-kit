@@ -140,7 +140,11 @@ axi_llc_subsystem
 - `src/axi_llc_subsystem_compat.v`
   - 多读/多写 master 兼容层
   - 补回 `accepted/accepted_id`、独立写响应槽位
-  - 当前通过 per-master request FIFO 把 cacheable/direct-mapped 请求收敛到单流核心
+  - 当前通过 per-master request FIFO 把请求收敛到 core
+  - 对 cacheable/direct-mapped 请求，compat 现在会为 core-path 请求预留内部 slot，
+    支持多个 read miss 同时在 core / lower AXI 中挂起
+  - 同一 read master 也支持多笔在途 read response，通过前台 response slot +
+    per-master response queue 依次回传
   - `mode=1` bypass、`mode=0/3`、以及 `mode=2` 窗口外请求可直接走 bypass side path
   - reconfig / `invalidate_all` 会先在 compat 层排空本地 queue / inflight / response slot，
     之后再把维护请求交给 core
@@ -162,9 +166,11 @@ axi_llc_subsystem
 
 ## 当前保留的微架构差异
 
-- `axi_llc_subsystem_core` 的 cacheable/direct-mapped 路径仍然是单流核心
-- 但 `axi_llc_subsystem_compat` 已不再是“所有请求统一单 inflight”：
-  bypass 风格请求现在可以绕开单流核心，与 cacheable miss 并发推进
+- `axi_llc_subsystem_core` 里 resident lookup / install / invalidate 仍是单发射路径，
+  不是整个子模块全路径多发射
+- 但 `axi_llc_subsystem_core + llc_cache_ctrl` 现在已经支持多个 cacheable read miss
+  同时挂起；compat 也支持同一 master 的多 read response 排队回传
+- bypass 风格请求现在可以绕开单发射 lookup 路径，与 cacheable miss 并发推进
 - 但 `axi_llc_axi_bridge` 已经补成 lower AXI 多 outstanding / 独立 `axi_id` remap：
   - read / write 各自独立分配 `axi_id`
   - `req_id` 保持 source-local，不直接暴露到 AXI
@@ -205,6 +211,8 @@ axi_llc_subsystem
 - `tb/tb_axi_llc_subsystem_axi_bypass_read_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_bypass_write_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_mode1_multiflow_contract.v`
+- `tb/tb_axi_llc_subsystem_axi_cache_multiread_contract.v`
+- `tb/tb_axi_llc_subsystem_axi_same_master_multiread_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_direct_bypass_contract.v`
 - `tb/tb_axi_llc_axi_bridge_read_outstanding_contract.v`
 - `tb/tb_axi_llc_axi_bridge_write_outstanding_contract.v`
@@ -263,10 +271,13 @@ axi_llc_subsystem
   - read `accepted_id`
   - 独立 write response `id/code`
   - per-master request FIFO
+  - per-master read response queue
   - sticky-grant `ready`
   - bypass 风格请求当前可绕开单流核心，与 cache miss 并发推进
-  - 但 cacheable/direct-mapped 路径的 lower-issue 仍由单流核心串行化，因此并发度
-    仍不等价于 C++ interconnect 的完整多事务发射
+  - cacheable read miss 当前已经能通过 core-path 内部 slot + lower AXI 多 outstanding
+    并发推进
+  - 但 resident lookup / install / invalidate 仍是单发射，因此并发度仍不等价于
+    C++ interconnect 的完整全路径多事务发射
 - `axi_llc_axi_bridge` 当前已补回 lower AXI 多 outstanding / remap：
   - read pending table 与 write pending table 分离
   - AXI `R/B` 完成后再进入 cache / bypass 各自的 completion queue

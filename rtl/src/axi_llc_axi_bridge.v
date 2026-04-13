@@ -109,6 +109,7 @@ module axi_llc_axi_bridge #(
     reg [7:0]                     rd_total_beats_r [0:READ_PENDING_COUNT-1];
     reg [7:0]                     rd_beats_done_r [0:READ_PENDING_COUNT-1];
     reg                           rd_ar_sent_r [0:READ_PENDING_COUNT-1];
+    reg                           rd_complete_r [0:READ_PENDING_COUNT-1];
     reg [READ_RESP_BITS-1:0]      rd_rdata_r [0:READ_PENDING_COUNT-1];
     reg [1:0]                     rd_resp_code_r [0:READ_PENDING_COUNT-1];
 
@@ -184,6 +185,8 @@ module axi_llc_axi_bridge #(
     reg [7:0]                     accept_total_beats_w;
     reg [7:0]                     rd_match_slot_w;
     reg                           rd_match_found_w;
+    reg [7:0]                     rd_complete_slot_w;
+    reg                           rd_complete_found_w;
     reg [7:0]                     wr_match_slot_w;
     reg                           wr_match_found_w;
 
@@ -315,8 +318,9 @@ module axi_llc_axi_bridge #(
     wire                      bypass_wr_rsp_pop_w;
     wire                      rd_last_beat_w;
     wire                      rd_match_from_cache_w;
+    wire                      rd_complete_from_cache_w;
     wire                      wr_match_from_cache_w;
-    wire                      rd_match_rsp_space_w;
+    wire                      rd_complete_rsp_space_w;
     wire                      wr_match_rsp_space_w;
     wire [READ_RESP_BITS-1:0] rd_match_merged_data_w;
     wire [1:0]                rd_match_resp_code_w;
@@ -325,6 +329,7 @@ module axi_llc_axi_bridge #(
     wire                      cache_wr_rsp_space_w;
     wire                      bypass_wr_rsp_space_w;
     wire                      rd_resp_accept_w;
+    wire                      rd_complete_push_w;
     wire                      wr_resp_accept_w;
 
     assign rd_issue_valid_w =
@@ -391,21 +396,23 @@ module axi_llc_axi_bridge #(
     assign bypass_rd_rsp_space_w = (bypass_rd_rsp_count_r < READ_PENDING_COUNT);
     assign cache_wr_rsp_space_w = (cache_wr_rsp_count_r < WRITE_PENDING_COUNT);
     assign bypass_wr_rsp_space_w = (bypass_wr_rsp_count_r < WRITE_PENDING_COUNT);
-    assign rd_match_rsp_space_w =
-        rd_match_from_cache_w ? cache_rd_rsp_space_w : bypass_rd_rsp_space_w;
+    assign rd_complete_from_cache_w = rd_from_cache_r[rd_complete_slot_w];
+    assign rd_complete_rsp_space_w =
+        rd_complete_from_cache_w ? cache_rd_rsp_space_w : bypass_rd_rsp_space_w;
     assign wr_match_rsp_space_w =
         wr_match_from_cache_w ? cache_wr_rsp_space_w : bypass_wr_rsp_space_w;
-    assign rd_resp_accept_w =
-        axi_rvalid && rd_match_found_w && (!rd_last_beat_w || rd_match_rsp_space_w);
+    // Accept the last AXI R beat as soon as the matching pending slot is
+    // found, then push the assembled line into the source-local response queue
+    // one cycle later via rd_complete_push_w.
+    assign rd_resp_accept_w = axi_rvalid && rd_match_found_w;
+    assign rd_complete_push_w = rd_complete_found_w && rd_complete_rsp_space_w;
     assign wr_resp_accept_w =
         axi_bvalid && wr_match_found_w && wr_match_rsp_space_w;
 
     assign cache_rd_rsp_push_w =
-        rd_resp_accept_w &&
-        rd_last_beat_w && rd_match_from_cache_w;
+        rd_complete_push_w && rd_complete_from_cache_w;
     assign bypass_rd_rsp_push_w =
-        rd_resp_accept_w &&
-        rd_last_beat_w && !rd_match_from_cache_w;
+        rd_complete_push_w && !rd_complete_from_cache_w;
     assign cache_wr_rsp_push_w =
         wr_resp_accept_w && wr_match_from_cache_w;
     assign bypass_wr_rsp_push_w =
@@ -437,6 +444,8 @@ module axi_llc_axi_bridge #(
         accept_total_beats_w = 8'd0;
         rd_match_slot_w = 8'd0;
         rd_match_found_w = 1'b0;
+        rd_complete_slot_w = 8'd0;
+        rd_complete_found_w = 1'b0;
         wr_match_slot_w = 8'd0;
         wr_match_found_w = 1'b0;
 
@@ -453,6 +462,10 @@ module axi_llc_axi_bridge #(
                 (rd_axi_id_r[idx] == axi_rid)) begin
                 rd_match_found_w = 1'b1;
                 rd_match_slot_w = idx[7:0];
+            end
+            if (!rd_complete_found_w && rd_valid_r[idx] && rd_complete_r[idx]) begin
+                rd_complete_found_w = 1'b1;
+                rd_complete_slot_w = idx[7:0];
             end
         end
         for (idx = 0; idx < AXI_ID_COUNT; idx = idx + 1) begin
@@ -542,7 +555,7 @@ module axi_llc_axi_bridge #(
     assign axi_arlen = calc_burst_len(rd_issue_size_w);
     assign axi_arsize = AXI_SIZE_CODE;
     assign axi_arburst = AXI_BURST_INCR;
-    assign axi_rready = rd_match_found_w && (!rd_last_beat_w || rd_match_rsp_space_w);
+    assign axi_rready = rd_match_found_w;
 
     assign axi_awvalid = wr_aw_valid_w;
     assign axi_awid = wr_aw_axi_id_w;
@@ -612,6 +625,7 @@ module axi_llc_axi_bridge #(
                 rd_total_beats_r[idx] <= 8'd0;
                 rd_beats_done_r[idx] <= 8'd0;
                 rd_ar_sent_r[idx] <= 1'b0;
+                rd_complete_r[idx] <= 1'b0;
                 rd_rdata_r[idx] <= {READ_RESP_BITS{1'b0}};
                 rd_resp_code_r[idx] <= RESP_OKAY;
                 rd_issue_q_slot_r[idx] <= 8'd0;
@@ -667,6 +681,7 @@ module axi_llc_axi_bridge #(
                     rd_total_beats_r[accept_slot_w] <= accept_total_beats_w;
                     rd_beats_done_r[accept_slot_w] <= 8'd0;
                     rd_ar_sent_r[accept_slot_w] <= 1'b0;
+                    rd_complete_r[accept_slot_w] <= 1'b0;
                     rd_rdata_r[accept_slot_w] <= {READ_RESP_BITS{1'b0}};
                     rd_resp_code_r[accept_slot_w] <= RESP_OKAY;
                 end
@@ -712,15 +727,15 @@ module axi_llc_axi_bridge #(
             end
 
             if (cache_rd_rsp_push_w && cache_rd_rsp_pop_w) begin
-                cache_rd_rsp_id_r[cache_rd_rsp_tail_r] <= rd_req_id_r[rd_match_slot_w];
-                cache_rd_rsp_code_r[cache_rd_rsp_tail_r] <= rd_match_resp_code_w;
-                cache_rd_rsp_data_r[cache_rd_rsp_tail_r] <= rd_match_merged_data_w;
+                cache_rd_rsp_id_r[cache_rd_rsp_tail_r] <= rd_req_id_r[rd_complete_slot_w];
+                cache_rd_rsp_code_r[cache_rd_rsp_tail_r] <= rd_resp_code_r[rd_complete_slot_w];
+                cache_rd_rsp_data_r[cache_rd_rsp_tail_r] <= rd_rdata_r[rd_complete_slot_w];
                 cache_rd_rsp_head_r <= next_ptr(cache_rd_rsp_head_r, READ_PENDING_COUNT);
                 cache_rd_rsp_tail_r <= next_ptr(cache_rd_rsp_tail_r, READ_PENDING_COUNT);
             end else if (cache_rd_rsp_push_w) begin
-                cache_rd_rsp_id_r[cache_rd_rsp_tail_r] <= rd_req_id_r[rd_match_slot_w];
-                cache_rd_rsp_code_r[cache_rd_rsp_tail_r] <= rd_match_resp_code_w;
-                cache_rd_rsp_data_r[cache_rd_rsp_tail_r] <= rd_match_merged_data_w;
+                cache_rd_rsp_id_r[cache_rd_rsp_tail_r] <= rd_req_id_r[rd_complete_slot_w];
+                cache_rd_rsp_code_r[cache_rd_rsp_tail_r] <= rd_resp_code_r[rd_complete_slot_w];
+                cache_rd_rsp_data_r[cache_rd_rsp_tail_r] <= rd_rdata_r[rd_complete_slot_w];
                 cache_rd_rsp_tail_r <= next_ptr(cache_rd_rsp_tail_r, READ_PENDING_COUNT);
                 cache_rd_rsp_count_r <= cache_rd_rsp_count_r + 8'd1;
             end else if (cache_rd_rsp_pop_w) begin
@@ -729,15 +744,15 @@ module axi_llc_axi_bridge #(
             end
 
             if (bypass_rd_rsp_push_w && bypass_rd_rsp_pop_w) begin
-                bypass_rd_rsp_id_r[bypass_rd_rsp_tail_r] <= rd_req_id_r[rd_match_slot_w];
-                bypass_rd_rsp_code_r[bypass_rd_rsp_tail_r] <= rd_match_resp_code_w;
-                bypass_rd_rsp_data_r[bypass_rd_rsp_tail_r] <= rd_match_merged_data_w;
+                bypass_rd_rsp_id_r[bypass_rd_rsp_tail_r] <= rd_req_id_r[rd_complete_slot_w];
+                bypass_rd_rsp_code_r[bypass_rd_rsp_tail_r] <= rd_resp_code_r[rd_complete_slot_w];
+                bypass_rd_rsp_data_r[bypass_rd_rsp_tail_r] <= rd_rdata_r[rd_complete_slot_w];
                 bypass_rd_rsp_head_r <= next_ptr(bypass_rd_rsp_head_r, READ_PENDING_COUNT);
                 bypass_rd_rsp_tail_r <= next_ptr(bypass_rd_rsp_tail_r, READ_PENDING_COUNT);
             end else if (bypass_rd_rsp_push_w) begin
-                bypass_rd_rsp_id_r[bypass_rd_rsp_tail_r] <= rd_req_id_r[rd_match_slot_w];
-                bypass_rd_rsp_code_r[bypass_rd_rsp_tail_r] <= rd_match_resp_code_w;
-                bypass_rd_rsp_data_r[bypass_rd_rsp_tail_r] <= rd_match_merged_data_w;
+                bypass_rd_rsp_id_r[bypass_rd_rsp_tail_r] <= rd_req_id_r[rd_complete_slot_w];
+                bypass_rd_rsp_code_r[bypass_rd_rsp_tail_r] <= rd_resp_code_r[rd_complete_slot_w];
+                bypass_rd_rsp_data_r[bypass_rd_rsp_tail_r] <= rd_rdata_r[rd_complete_slot_w];
                 bypass_rd_rsp_tail_r <= next_ptr(bypass_rd_rsp_tail_r, READ_PENDING_COUNT);
                 bypass_rd_rsp_count_r <= bypass_rd_rsp_count_r + 8'd1;
             end else if (bypass_rd_rsp_pop_w) begin
@@ -781,23 +796,30 @@ module axi_llc_axi_bridge #(
 
             if (rd_resp_accept_w) begin
                 if (rd_last_beat_w) begin
-                    rd_valid_r[rd_match_slot_w] <= 1'b0;
-                    rd_from_cache_r[rd_match_slot_w] <= 1'b0;
-                    rd_addr_r[rd_match_slot_w] <= {ADDR_BITS{1'b0}};
-                    rd_req_id_r[rd_match_slot_w] <= {ID_BITS{1'b0}};
-                    rd_size_r[rd_match_slot_w] <= 8'd0;
-                    rd_axi_id_r[rd_match_slot_w] <= {AXI_ID_BITS{1'b0}};
-                    rd_total_beats_r[rd_match_slot_w] <= 8'd0;
-                    rd_beats_done_r[rd_match_slot_w] <= 8'd0;
-                    rd_ar_sent_r[rd_match_slot_w] <= 1'b0;
-                    rd_rdata_r[rd_match_slot_w] <= {READ_RESP_BITS{1'b0}};
-                    rd_resp_code_r[rd_match_slot_w] <= RESP_OKAY;
+                    rd_rdata_r[rd_match_slot_w] <= rd_match_merged_data_w;
+                    rd_resp_code_r[rd_match_slot_w] <= rd_match_resp_code_w;
+                    rd_complete_r[rd_match_slot_w] <= 1'b1;
                 end else begin
                     rd_rdata_r[rd_match_slot_w] <= rd_match_merged_data_w;
                     rd_resp_code_r[rd_match_slot_w] <= rd_match_resp_code_w;
                     rd_beats_done_r[rd_match_slot_w] <=
                         rd_beats_done_r[rd_match_slot_w] + 8'd1;
                 end
+            end
+
+            if (rd_complete_push_w) begin
+                rd_valid_r[rd_complete_slot_w] <= 1'b0;
+                rd_from_cache_r[rd_complete_slot_w] <= 1'b0;
+                rd_addr_r[rd_complete_slot_w] <= {ADDR_BITS{1'b0}};
+                rd_req_id_r[rd_complete_slot_w] <= {ID_BITS{1'b0}};
+                rd_size_r[rd_complete_slot_w] <= 8'd0;
+                rd_axi_id_r[rd_complete_slot_w] <= {AXI_ID_BITS{1'b0}};
+                rd_total_beats_r[rd_complete_slot_w] <= 8'd0;
+                rd_beats_done_r[rd_complete_slot_w] <= 8'd0;
+                rd_ar_sent_r[rd_complete_slot_w] <= 1'b0;
+                rd_complete_r[rd_complete_slot_w] <= 1'b0;
+                rd_rdata_r[rd_complete_slot_w] <= {READ_RESP_BITS{1'b0}};
+                rd_resp_code_r[rd_complete_slot_w] <= RESP_OKAY;
             end
 
             if (wr_aw_handshake_w) begin

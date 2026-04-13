@@ -116,9 +116,11 @@ module llc_cache_ctrl #(
     localparam [3:0] ST_FLUSH_WB_WAIT   = 4'd11;
     localparam [3:0] ST_BYPASS_REQ      = 4'd12;
     localparam [3:0] ST_BYPASS_WAIT     = 4'd13;
-    localparam [ID_BITS-1:0] WRITEBACK_MEM_ID = {ID_BITS{1'b0}};
+    localparam integer MSHR_COUNT = `AXI_LLC_MAX_OUTSTANDING;
+    localparam integer MASTER_DCACHE_R = 1;
+    localparam [ID_BITS-1:0] WRITEBACK_MEM_ID = {ID_BITS{1'b1}};
     localparam [ID_BITS-1:0] DEMAND_MEM_ID =
-        {{(ID_BITS-1){1'b0}}, 1'b1};
+        {ID_BITS{1'b1}} - {{(ID_BITS-1){1'b0}}, 1'b1};
     localparam integer RESP_WORD_BITS = 32;
     localparam integer RESP_WORDS = READ_RESP_BITS / RESP_WORD_BITS;
     localparam integer LINE_WORDS = LINE_BITS / RESP_WORD_BITS;
@@ -174,9 +176,42 @@ module llc_cache_ctrl #(
     reg [SET_BITS-1:0] flush_next_set_r;
     reg [WAY_BITS-1:0] flush_next_way_r;
     wire [LINE_BITS-1:0] mem_resp_line_w;
+    reg                install_from_mshr_r;
+    reg [ID_BITS-1:0]  install_mshr_slot_r;
+
+    // Read misses now decouple from the single lookup FSM: a miss allocates an
+    // internal slot keyed by req_id, lower memory traffic is issued later, and
+    // refill/install is committed back through ST_INSTALL one slot at a time.
+    reg                mshr_valid_r [0:MSHR_COUNT-1];
+    reg [ADDR_BITS-1:0] mshr_addr_r [0:MSHR_COUNT-1];
+    reg [SET_BITS-1:0] mshr_set_r [0:MSHR_COUNT-1];
+    reg [TAG_BITS-1:0] mshr_tag_r [0:MSHR_COUNT-1];
+    reg [WAY_BITS-1:0] mshr_way_r [0:MSHR_COUNT-1];
+    reg                mshr_victim_dirty_r [0:MSHR_COUNT-1];
+    reg                mshr_wb_done_r [0:MSHR_COUNT-1];
+    reg                mshr_wb_issued_r [0:MSHR_COUNT-1];
+    reg                mshr_refill_issued_r [0:MSHR_COUNT-1];
+    reg                mshr_refill_valid_r [0:MSHR_COUNT-1];
+    reg [ADDR_BITS-1:0] mshr_victim_addr_r [0:MSHR_COUNT-1];
+    reg [LINE_BITS-1:0] mshr_victim_data_r [0:MSHR_COUNT-1];
+    reg [LINE_BITS-1:0] mshr_refill_line_r [0:MSHR_COUNT-1];
+    reg [7:0]          mshr_total_size_r [0:MSHR_COUNT-1];
+
+    reg                req_line_mshr_pending_r;
+    reg                req_master_mshr_pending_r;
+    reg                mshr_any_valid_r;
+    reg                mshr_issue_found_r;
+    reg                mshr_issue_write_r;
+    reg [ID_BITS-1:0]  mshr_issue_slot_r;
+    reg                mshr_resp_match_r;
+    reg                mshr_resp_is_wb_r;
+    reg [ID_BITS-1:0]  mshr_resp_slot_r;
+    reg                mshr_commit_found_r;
+    reg [ID_BITS-1:0]  mshr_commit_slot_r;
 
     integer lookup_way_idx;
     integer flush_way_idx;
+    integer mshr_idx;
 
     function [META_BITS-1:0] make_meta;
         input [TAG_BITS-1:0] tag_value;
@@ -338,8 +373,89 @@ module llc_cache_ctrl #(
         end
     endfunction
 
+    always @(*) begin
+        req_line_mshr_pending_r = 1'b0;
+        req_master_mshr_pending_r = 1'b0;
+        mshr_any_valid_r = 1'b0;
+        for (mshr_idx = 0; mshr_idx < MSHR_COUNT; mshr_idx = mshr_idx + 1) begin
+            if (mshr_valid_r[mshr_idx]) begin
+                mshr_any_valid_r = 1'b1;
+            end
+            if (mshr_valid_r[mshr_idx] &&
+                (line_align_addr(mshr_addr_r[mshr_idx]) == line_align_addr(req_addr))) begin
+                req_line_mshr_pending_r = 1'b1;
+            end
+            if (mshr_valid_r[mshr_idx] &&
+                (req_id == mshr_idx[ID_BITS-1:0])) begin
+                req_master_mshr_pending_r = 1'b1;
+            end
+        end
+    end
+
+    always @(*) begin
+        mshr_issue_found_r = 1'b0;
+        mshr_issue_write_r = 1'b0;
+        mshr_issue_slot_r = {ID_BITS{1'b0}};
+        for (mshr_idx = 0; mshr_idx < MSHR_COUNT; mshr_idx = mshr_idx + 1) begin
+            if (!mshr_issue_found_r && mshr_valid_r[mshr_idx]) begin
+                if (mshr_victim_dirty_r[mshr_idx] &&
+                    !mshr_wb_done_r[mshr_idx] &&
+                    !mshr_wb_issued_r[mshr_idx]) begin
+                    mshr_issue_found_r = 1'b1;
+                    mshr_issue_write_r = 1'b1;
+                    mshr_issue_slot_r = mshr_idx[ID_BITS-1:0];
+                end else if (mshr_wb_done_r[mshr_idx] &&
+                             !mshr_refill_issued_r[mshr_idx] &&
+                             !mshr_refill_valid_r[mshr_idx]) begin
+                    mshr_issue_found_r = 1'b1;
+                    mshr_issue_write_r = 1'b0;
+                    mshr_issue_slot_r = mshr_idx[ID_BITS-1:0];
+                end
+            end
+        end
+    end
+
+    always @(*) begin
+        mshr_resp_match_r = 1'b0;
+        mshr_resp_is_wb_r = 1'b0;
+        mshr_resp_slot_r = {ID_BITS{1'b0}};
+        if (mem_resp_valid) begin
+            for (mshr_idx = 0; mshr_idx < MSHR_COUNT; mshr_idx = mshr_idx + 1) begin
+                if (!mshr_resp_match_r &&
+                    mshr_valid_r[mshr_idx] &&
+                    (mem_resp_id == mshr_idx[ID_BITS-1:0])) begin
+                    if (mshr_victim_dirty_r[mshr_idx] &&
+                        !mshr_wb_done_r[mshr_idx] &&
+                        mshr_wb_issued_r[mshr_idx]) begin
+                        mshr_resp_match_r = 1'b1;
+                        mshr_resp_is_wb_r = 1'b1;
+                        mshr_resp_slot_r = mshr_idx[ID_BITS-1:0];
+                    end else if (mshr_wb_done_r[mshr_idx] &&
+                                 mshr_refill_issued_r[mshr_idx]) begin
+                        mshr_resp_match_r = 1'b1;
+                        mshr_resp_is_wb_r = 1'b0;
+                        mshr_resp_slot_r = mshr_idx[ID_BITS-1:0];
+                    end
+                end
+            end
+        end
+    end
+
+    always @(*) begin
+        mshr_commit_found_r = 1'b0;
+        mshr_commit_slot_r = {ID_BITS{1'b0}};
+        for (mshr_idx = 0; mshr_idx < MSHR_COUNT; mshr_idx = mshr_idx + 1) begin
+            if (!mshr_commit_found_r && mshr_valid_r[mshr_idx] &&
+                mshr_refill_valid_r[mshr_idx]) begin
+                mshr_commit_found_r = 1'b1;
+                mshr_commit_slot_r = mshr_idx[ID_BITS-1:0];
+            end
+        end
+    end
+
     wire [SET_BITS-1:0] req_set_w;
     wire [TAG_BITS-1:0] req_tag_w;
+    wire [ADDR_BITS-1:0] req_line_addr_w;
     wire                full_write_w;
     wire                store_write_busy_w;
     wire                launch_lookup_w;
@@ -354,22 +470,41 @@ module llc_cache_ctrl #(
     wire                mem_resp_match_w;
     wire                bypass_resp_match_w;
     wire                hit_write_dirty_w;
+    wire                state_mem_req_valid_w;
+    wire                state_mem_req_write_w;
+    wire [ADDR_BITS-1:0] state_mem_req_addr_w;
+    wire [ID_BITS-1:0]  state_mem_req_id_w;
+    wire [LINE_BITS-1:0] state_mem_req_wdata_w;
+    wire [LINE_BYTES-1:0] state_mem_req_wstrb_w;
+    wire [7:0]         state_mem_req_size_w;
+    wire               can_accept_read_w;
 
     assign req_set_w = req_addr[LINE_OFFSET_BITS + SET_BITS - 1:LINE_OFFSET_BITS];
     assign req_tag_w = req_addr[ADDR_BITS-1:LINE_OFFSET_BITS + SET_BITS];
+    assign req_line_addr_w = line_align_addr(req_addr);
     assign full_write_w = (req_addr_r[LINE_OFFSET_BITS-1:0] == {LINE_OFFSET_BITS{1'b0}}) &&
                           ((req_total_size_r + 8'd1) == LINE_BYTES[7:0]) &&
                           (&req_wstrb_r);
     assign store_write_busy_w = data_busy | meta_busy;
-    assign req_ready = (state_r == ST_IDLE) && !resp_valid_r && !flush_start &&
-                       !store_write_busy_w;
+    assign can_accept_read_w = (state_r == ST_IDLE) && !resp_valid_r &&
+                               !flush_start && !store_write_busy_w &&
+                               !req_line_mshr_pending_r &&
+                               !req_master_mshr_pending_r &&
+                               !mshr_commit_found_r;
+    assign req_ready = req_write ? ((state_r == ST_IDLE) && !resp_valid_r &&
+                                    !flush_start && !store_write_busy_w &&
+                                    !mshr_commit_found_r &&
+                                    !req_line_mshr_pending_r)
+                                 : can_accept_read_w;
     assign accept_invalidate_line_w = (state_r == ST_IDLE) &&
                                       !resp_valid_r &&
                                       !flush_start &&
                                       !store_write_busy_w &&
                                       invalidate_line_valid;
     assign invalidate_line_accepted = accept_invalidate_line_w;
-    assign quiescent = (state_r == ST_IDLE) && !resp_valid_r;
+    assign quiescent = (state_r == ST_IDLE) && !resp_valid_r &&
+                       !mshr_any_valid_r && !mshr_commit_found_r &&
+                       !mshr_issue_found_r && !mshr_resp_match_r;
     assign flush_busy = (state_r == ST_FLUSH_SCAN_REQ) ||
                         (state_r == ST_FLUSH_SCAN_WAIT) ||
                         (state_r == ST_FLUSH_WB_REQ) ||
@@ -441,26 +576,43 @@ module llc_cache_ctrl #(
     assign resp_id = req_id_r;
     assign resp_code = resp_code_r;
 
-    assign mem_req_valid = (state_r == ST_MISS_WB_REQ) ||
-                           (state_r == ST_REFILL_REQ) ||
-                           (state_r == ST_FLUSH_WB_REQ);
-    assign mem_req_write = (state_r == ST_MISS_WB_REQ) || (state_r == ST_FLUSH_WB_REQ);
-    assign mem_req_addr = (state_r == ST_MISS_WB_REQ) ? victim_addr_r :
-                          (state_r == ST_FLUSH_WB_REQ) ? flush_wb_addr_r :
-                          line_align_addr(req_addr_r);
-    assign mem_req_id = (state_r == ST_REFILL_REQ) ? DEMAND_MEM_ID
-                                                   : WRITEBACK_MEM_ID;
-    assign mem_req_wdata = (state_r == ST_MISS_WB_REQ) ? victim_data_r : flush_wb_data_r;
-    assign mem_req_wstrb = {LINE_BYTES{1'b1}};
-    assign mem_req_size = LINE_BYTES[7:0] - 8'd1;
+    assign state_mem_req_valid_w = (state_r == ST_MISS_WB_REQ) ||
+                                   (state_r == ST_REFILL_REQ) ||
+                                   (state_r == ST_FLUSH_WB_REQ);
+    assign state_mem_req_write_w = (state_r == ST_MISS_WB_REQ) ||
+                                   (state_r == ST_FLUSH_WB_REQ);
+    assign state_mem_req_addr_w = (state_r == ST_MISS_WB_REQ) ? victim_addr_r :
+                                  (state_r == ST_FLUSH_WB_REQ) ? flush_wb_addr_r :
+                                  line_align_addr(req_addr_r);
+    assign state_mem_req_id_w = (state_r == ST_REFILL_REQ) ? DEMAND_MEM_ID
+                                                           : WRITEBACK_MEM_ID;
+    assign state_mem_req_wdata_w = (state_r == ST_MISS_WB_REQ) ? victim_data_r :
+                                   flush_wb_data_r;
+    assign state_mem_req_wstrb_w = {LINE_BYTES{1'b1}};
+    assign state_mem_req_size_w = LINE_BYTES[7:0] - 8'd1;
+    assign mem_req_valid = state_mem_req_valid_w || mshr_issue_found_r;
+    assign mem_req_write = state_mem_req_valid_w ? state_mem_req_write_w
+                                                 : mshr_issue_write_r;
+    assign mem_req_addr = state_mem_req_valid_w ? state_mem_req_addr_w :
+                          (mshr_issue_write_r ? mshr_victim_addr_r[mshr_issue_slot_r]
+                                              : line_align_addr(mshr_addr_r[mshr_issue_slot_r]));
+    assign mem_req_id = state_mem_req_valid_w ? state_mem_req_id_w
+                                              : mshr_issue_slot_r;
+    assign mem_req_wdata = state_mem_req_valid_w ? state_mem_req_wdata_w
+                                                 : mshr_victim_data_r[mshr_issue_slot_r];
+    assign mem_req_wstrb = state_mem_req_valid_w ? state_mem_req_wstrb_w
+                                                 : {LINE_BYTES{1'b1}};
+    assign mem_req_size = state_mem_req_valid_w ? state_mem_req_size_w
+                                                : (LINE_BYTES[7:0] - 8'd1);
     assign mem_resp_line_w = mem_resp_rdata[LINE_BITS-1:0];
     assign expected_mem_resp_id_w = (state_r == ST_REFILL_WAIT) ? DEMAND_MEM_ID
                                                                 : WRITEBACK_MEM_ID;
     assign mem_resp_match_w = mem_resp_valid && (mem_resp_id == expected_mem_resp_id_w);
-    assign mem_resp_ready = ((state_r == ST_MISS_WB_WAIT) ||
-                             (state_r == ST_REFILL_WAIT) ||
-                             (state_r == ST_FLUSH_WB_WAIT)) &&
-                            (mem_resp_id == expected_mem_resp_id_w);
+    assign mem_resp_ready = (((state_r == ST_MISS_WB_WAIT) ||
+                              (state_r == ST_REFILL_WAIT) ||
+                              (state_r == ST_FLUSH_WB_WAIT)) &&
+                             (mem_resp_id == expected_mem_resp_id_w)) ||
+                            mshr_resp_match_r;
     assign bypass_req_valid = (state_r == ST_BYPASS_REQ);
     assign bypass_req_write = req_write_r;
     assign bypass_req_addr = req_addr_r;
@@ -600,10 +752,50 @@ module llc_cache_ctrl #(
             resp_valid_r <= 1'b0;
             resp_rdata_r <= {READ_RESP_BITS{1'b0}};
             resp_code_r <= 2'b00;
+            install_from_mshr_r <= 1'b0;
+            install_mshr_slot_r <= {ID_BITS{1'b0}};
+            for (mshr_idx = 0; mshr_idx < MSHR_COUNT; mshr_idx = mshr_idx + 1) begin
+                mshr_valid_r[mshr_idx] <= 1'b0;
+                mshr_addr_r[mshr_idx] <= {ADDR_BITS{1'b0}};
+                mshr_set_r[mshr_idx] <= {SET_BITS{1'b0}};
+                mshr_tag_r[mshr_idx] <= {TAG_BITS{1'b0}};
+                mshr_way_r[mshr_idx] <= {WAY_BITS{1'b0}};
+                mshr_victim_dirty_r[mshr_idx] <= 1'b0;
+                mshr_wb_done_r[mshr_idx] <= 1'b0;
+                mshr_wb_issued_r[mshr_idx] <= 1'b0;
+                mshr_refill_issued_r[mshr_idx] <= 1'b0;
+                mshr_refill_valid_r[mshr_idx] <= 1'b0;
+                mshr_victim_addr_r[mshr_idx] <= {ADDR_BITS{1'b0}};
+                mshr_victim_data_r[mshr_idx] <= {LINE_BITS{1'b0}};
+                mshr_refill_line_r[mshr_idx] <= {LINE_BITS{1'b0}};
+                mshr_total_size_r[mshr_idx] <= 8'd0;
+            end
         end else begin
             if (resp_valid_r && resp_ready) begin
                 resp_valid_r <= 1'b0;
                 resp_code_r <= 2'b00;
+            end
+
+            if (!state_mem_req_valid_w && mshr_issue_found_r && mem_req_ready) begin
+                if (mshr_issue_write_r) begin
+                    mshr_wb_issued_r[mshr_issue_slot_r] <= 1'b1;
+                end else begin
+                    mshr_refill_issued_r[mshr_issue_slot_r] <= 1'b1;
+                end
+            end
+
+            if (mshr_resp_match_r && !state_mem_req_valid_w) begin
+                if (mshr_resp_is_wb_r) begin
+                    mshr_wb_done_r[mshr_resp_slot_r] <= 1'b1;
+                    mshr_wb_issued_r[mshr_resp_slot_r] <= 1'b0;
+                    if (dirty_count_r != 0) begin
+                        dirty_count_r <= dirty_count_r - 32'd1;
+                    end
+                end else begin
+                    mshr_refill_issued_r[mshr_resp_slot_r] <= 1'b0;
+                    mshr_refill_valid_r[mshr_resp_slot_r] <= 1'b1;
+                    mshr_refill_line_r[mshr_resp_slot_r] <= mem_resp_line_w;
+                end
             end
 
             case (state_r)
@@ -612,6 +804,25 @@ module llc_cache_ctrl #(
                         flush_set_r <= {SET_BITS{1'b0}};
                         flush_way_start_r <= {WAY_BITS{1'b0}};
                         state_r <= ST_FLUSH_SCAN_REQ;
+                    end else if (mshr_commit_found_r && !store_write_busy_w &&
+                                 !resp_valid_r) begin
+                        req_write_r <= 1'b0;
+                        req_bypass_r <= 1'b0;
+                        req_addr_r <= mshr_addr_r[mshr_commit_slot_r];
+                        req_id_r <= mshr_commit_slot_r;
+                        req_total_size_r <= mshr_total_size_r[mshr_commit_slot_r];
+                        req_wdata_r <= {LINE_BITS{1'b0}};
+                        req_wstrb_r <= {LINE_BYTES{1'b0}};
+                        req_set_r <= mshr_set_r[mshr_commit_slot_r];
+                        req_tag_r <= mshr_tag_r[mshr_commit_slot_r];
+                        req_invalidate_r <= 1'b0;
+                        install_way_r <= mshr_way_r[mshr_commit_slot_r];
+                        install_line_r <= mshr_refill_line_r[mshr_commit_slot_r];
+                        install_dirty_r <= 1'b0;
+                        replace_dirty_r <= mshr_victim_dirty_r[mshr_commit_slot_r];
+                        install_from_mshr_r <= 1'b1;
+                        install_mshr_slot_r <= mshr_commit_slot_r;
+                        state_r <= ST_INSTALL;
                     end else if (accept_invalidate_line_w) begin
                         req_write_r <= 1'b0;
                         req_bypass_r <= 1'b0;
@@ -691,11 +902,23 @@ module llc_cache_ctrl #(
                                     state_r <= ST_INSTALL;
                                 end
                             end else begin
-                                if (lookup_victim_dirty_r) begin
-                                    state_r <= ST_MISS_WB_REQ;
-                                end else begin
-                                    state_r <= ST_REFILL_REQ;
-                                end
+                                mshr_valid_r[req_id_r] <= 1'b1;
+                                mshr_addr_r[req_id_r] <= req_addr_r;
+                                mshr_set_r[req_id_r] <= req_set_r;
+                                mshr_tag_r[req_id_r] <= req_tag_r;
+                                mshr_way_r[req_id_r] <= lookup_select_way_r;
+                                mshr_victim_dirty_r[req_id_r] <= lookup_victim_dirty_r;
+                                mshr_wb_done_r[req_id_r] <= !lookup_victim_dirty_r;
+                                mshr_wb_issued_r[req_id_r] <= 1'b0;
+                                mshr_refill_issued_r[req_id_r] <= 1'b0;
+                                mshr_refill_valid_r[req_id_r] <= 1'b0;
+                                mshr_victim_addr_r[req_id_r] <= lookup_victim_addr_r;
+                                mshr_victim_data_r[req_id_r] <= lookup_victim_line_r;
+                                mshr_refill_line_r[req_id_r] <= {LINE_BITS{1'b0}};
+                                mshr_total_size_r[req_id_r] <= req_total_size_r;
+                                install_from_mshr_r <= 1'b0;
+                                install_mshr_slot_r <= {ID_BITS{1'b0}};
+                                state_r <= ST_IDLE;
                             end
                         end
                     end
@@ -759,6 +982,23 @@ module llc_cache_ctrl #(
                 ST_INSTALL: begin
                     if (install_dirty_r && !replace_dirty_r) begin
                         dirty_count_r <= dirty_count_r + 32'd1;
+                    end
+                    if (install_from_mshr_r) begin
+                        mshr_valid_r[install_mshr_slot_r] <= 1'b0;
+                        mshr_victim_dirty_r[install_mshr_slot_r] <= 1'b0;
+                        mshr_wb_done_r[install_mshr_slot_r] <= 1'b0;
+                        mshr_wb_issued_r[install_mshr_slot_r] <= 1'b0;
+                        mshr_refill_issued_r[install_mshr_slot_r] <= 1'b0;
+                        mshr_refill_valid_r[install_mshr_slot_r] <= 1'b0;
+                        mshr_addr_r[install_mshr_slot_r] <= {ADDR_BITS{1'b0}};
+                        mshr_set_r[install_mshr_slot_r] <= {SET_BITS{1'b0}};
+                        mshr_tag_r[install_mshr_slot_r] <= {TAG_BITS{1'b0}};
+                        mshr_way_r[install_mshr_slot_r] <= {WAY_BITS{1'b0}};
+                        mshr_victim_addr_r[install_mshr_slot_r] <= {ADDR_BITS{1'b0}};
+                        mshr_victim_data_r[install_mshr_slot_r] <= {LINE_BITS{1'b0}};
+                        mshr_refill_line_r[install_mshr_slot_r] <= {LINE_BITS{1'b0}};
+                        mshr_total_size_r[install_mshr_slot_r] <= 8'd0;
+                        install_from_mshr_r <= 1'b0;
                     end
                     resp_valid_r <= 1'b1;
                     if (req_write_r) begin

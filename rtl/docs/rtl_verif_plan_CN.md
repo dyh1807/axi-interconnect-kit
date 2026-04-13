@@ -165,6 +165,22 @@
   当前实现已不再满足这两条旧合同，因此改由本 bench 与下面的
   `tb_axi_llc_subsystem_compat_direct_bypass_contract.v` 共同替换。
 
+### `tb_axi_llc_subsystem_axi_cache_multiread_contract.v`
+
+覆盖：
+
+- 不同 read master 的两笔 cacheable read miss 都能在 `mode=1` 下进入 core/read-miss slot
+- lower AXI 在看到任何 `R` 之前，已经发出两笔对应的 `AR`
+- 两笔 read response 最终都按原始 master / `req_id` 回到上游
+
+### `tb_axi_llc_subsystem_axi_same_master_multiread_contract.v`
+
+覆盖：
+
+- `MASTER_DCACHE_R` 同一 master 的两笔 cacheable read miss 都能发出各自的 AXI `AR`
+- lower `R` 返回后，两笔 response 会通过 compat 的 per-master read response queue 依次回到前台 response slot
+- 同一 master 的 `req_id` 在 read response 回到上游时保持不变
+
 ### `tb_axi_llc_subsystem_compat_direct_bypass_contract.v`
 
 覆盖：

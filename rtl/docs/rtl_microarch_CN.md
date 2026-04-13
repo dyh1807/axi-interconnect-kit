@@ -196,10 +196,12 @@
 当前限制：
 
 - 外部 custom master 接口合同已经补齐
-- cacheable/direct-mapped 请求进入 lower-memory 之前，当前仍由单流核心串行化
-- bypass 风格请求已可绕开单流核心，与 cacheable miss 并发推进
+- resident lookup / install / invalidate 仍是单发射路径
+- 但 cacheable read miss 已经支持多 slot 挂起，并通过 lower AXI 多 outstanding 推进
+- bypass 风格请求已可绕开单发射 lookup 路径，与 cacheable miss 并发推进
+- compat 侧已经补成 per-master read response queue，因此同一 master 可连续回收多笔 cacheable read
 - 下游 AXI 侧已经补成多 outstanding / 独立 `axi_id` remap
-- 整个子模块的并发度仍不等价于 C++ 全量 MSHR 版本，但已经不再是“所有请求统一单 inflight”
+- 整个子模块的并发度仍不等价于 C++ 全量 MSHR 版本，当前差距主要在 cacheable write / victim / prefetch 的全量并发化
 
 ### `axi_llc_axi_bridge`
 
@@ -220,6 +222,7 @@
   - read / write 各自独立的 pending table
   - read / write 各自独立的 `axi_id` 分配
   - cache / bypass 两类 source-local completion queue
+  - read side 的“最后一个 AXI R beat 先落 slot、下一拍再入 response queue”完成路径
   - write `axi_id` 在 `B` 返回后立即释放
   - bridge-local read/write outstanding 与 write-id-reuse contract bench
 
@@ -249,8 +252,8 @@ DDR/MMIO 地址分流属于外部系统功能，不在本 RTL 顶层重复展开
 
 ### 当前保留的微架构差异
 
-- cacheable/direct-mapped 请求仍由单流核心处理，因此不是“整个子模块全路径多发射”
-- bypass 风格请求已经可以绕开单流核心，与 cache miss 并发推进
+- resident lookup / install / invalidate 仍由单发射 core 处理，因此不是“整个子模块全路径多发射”
+- bypass 风格请求已经可以绕开单发射 lookup 路径，与 cache miss 并发推进
 - 带 timing-check 的外部宏模型直连时序隔离未接入
 - `prefetch` 仍然保持关闭
 
@@ -276,11 +279,12 @@ contract bench：
   - flush 写回同样使用维护 id `0`
   - 上游 `up_resp_id` 仍保持原始请求 `req_id`
 
-这套合同在 `axi_llc_subsystem_core` 内仍是单流实现；`axi_llc_subsystem_compat`
-已经把多 master 的 `accepted/resp` 接口补回，并让 bypass 风格请求可以直接进入
-lower bypass side path；`axi_llc_subsystem` 再把 lower 请求收敛成单组 AXI4。
-当前剩余差异主要在 cacheable/direct-mapped 路径仍未做成 C++ 那种完整 MSHR 化，
-而不是 bridge 层的 AXI remap。
+这套合同在 `axi_llc_subsystem_core` 内的 resident lookup 仍是单发射实现；但
+`llc_cache_ctrl` 已经补成“lookup 单发射 + read miss 多挂起”的结构，
+`axi_llc_subsystem_compat` 也已经把多 master 的 `accepted/resp` 接口补回，并为
+cacheable core-path 请求补上内部 slot / per-master read response queue；`axi_llc_subsystem`
+再把 lower 请求收敛成单组 AXI4。当前剩余差异主要在 cacheable write / victim /
+prefetch 还没有做成 C++ 那种全量并发化，而不是 lower AXI remap。
 
 ## `prefetch` 状态
 
