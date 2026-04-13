@@ -36,15 +36,12 @@ module axi_reconfig_ctrl #(
     reg [MODE_BITS-1:0] target_mode_r;
     reg [ADDR_BITS-1:0] target_offset_r;
     reg                 sweep_started_r;
-    reg                 invalidate_all_pending_r;
-
     reg [1:0]           next_state;
     reg [MODE_BITS-1:0] next_active_mode;
     reg [ADDR_BITS-1:0] next_active_offset;
     reg [MODE_BITS-1:0] next_target_mode;
     reg [ADDR_BITS-1:0] next_target_offset;
     reg                 next_sweep_started;
-    reg                 next_invalidate_all_pending;
     reg                 invalidate_all_accepted_r;
 
     assign active_mode   = active_mode_r;
@@ -62,16 +59,11 @@ module axi_reconfig_ctrl #(
         next_target_mode   = target_mode_r;
         next_target_offset = target_offset_r;
         next_sweep_started = sweep_started_r;
-        next_invalidate_all_pending = invalidate_all_pending_r;
         sweep_start        = 1'b0;
         invalidate_all_accepted_r = 1'b0;
 
         case (state)
             RCFG_IDLE: begin
-                if (invalidate_all_valid) begin
-                    next_invalidate_all_pending = 1'b1;
-                end
-
                 if ((req_mode != active_mode_r) ||
                     (req_offset != active_offset_r) ||
                     invalidate_all_valid) begin
@@ -85,13 +77,9 @@ module axi_reconfig_ctrl #(
                 next_target_mode   = req_mode;
                 next_target_offset = req_offset;
 
-                if (invalidate_all_valid && !invalidate_all_pending_r) begin
-                    next_invalidate_all_pending = 1'b1;
-                end
-
                 if ((req_mode == active_mode_r) &&
                     (req_offset == active_offset_r) &&
-                    !invalidate_all_pending_r) begin
+                    !invalidate_all_valid) begin
                     next_state = RCFG_IDLE;
                 end else if (global_quiescent) begin
                     next_state         = RCFG_INV_SWEEP;
@@ -103,10 +91,6 @@ module axi_reconfig_ctrl #(
                 next_target_mode   = req_mode;
                 next_target_offset = req_offset;
 
-                if (invalidate_all_valid && !invalidate_all_pending_r && !sweep_done) begin
-                    next_invalidate_all_pending = 1'b1;
-                end
-
                 if (!sweep_busy && !sweep_started_r) begin
                     sweep_start        = 1'b1;
                     next_sweep_started = 1'b1;
@@ -115,7 +99,6 @@ module axi_reconfig_ctrl #(
                 if (sweep_done) begin
                     next_state         = RCFG_ACTIVATE;
                     next_sweep_started = 1'b0;
-                    next_invalidate_all_pending = 1'b0;
                 end
             end
 
@@ -124,12 +107,10 @@ module axi_reconfig_ctrl #(
                 next_active_mode   = target_mode_r;
                 next_active_offset = target_offset_r;
                 next_state         = RCFG_IDLE;
-                next_invalidate_all_pending = 1'b0;
             end
 
             default: begin
                 next_state = RCFG_IDLE;
-                next_invalidate_all_pending = 1'b0;
             end
         endcase
     end
@@ -142,7 +123,6 @@ module axi_reconfig_ctrl #(
             target_mode_r   <= RESET_MODE;
             target_offset_r <= RESET_OFFSET;
             sweep_started_r <= 1'b0;
-            invalidate_all_pending_r <= 1'b0;
         end else begin
             state           <= next_state;
             active_mode_r   <= next_active_mode;
@@ -150,7 +130,6 @@ module axi_reconfig_ctrl #(
             target_mode_r   <= next_target_mode;
             target_offset_r <= next_target_offset;
             sweep_started_r <= next_sweep_started;
-            invalidate_all_pending_r <= next_invalidate_all_pending;
         end
     end
 

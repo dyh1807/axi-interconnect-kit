@@ -38,6 +38,7 @@ module axi_llc_axi_bridge #(
     input                       cache_resp_ready,
     output     [READ_RESP_BITS-1:0] cache_resp_rdata,
     output     [ID_BITS-1:0]    cache_resp_id,
+    output     [1:0]            cache_resp_code,
     // Bypass lower path.
     input                       bypass_req_valid,
     output                      bypass_req_ready,
@@ -51,6 +52,7 @@ module axi_llc_axi_bridge #(
     input                       bypass_resp_ready,
     output     [READ_RESP_BITS-1:0] bypass_resp_rdata,
     output     [ID_BITS-1:0]    bypass_resp_id,
+    output     [1:0]            bypass_resp_code,
     // Single AXI4 master port.
     output                      axi_awvalid,
     input                       axi_awready,
@@ -109,6 +111,7 @@ module axi_llc_axi_bridge #(
     reg [LINE_BITS-1:0]       txn_wdata_r;
     reg [LINE_BYTES-1:0]      txn_wstrb_r;
     reg [READ_RESP_BITS-1:0]  txn_rdata_r;
+    reg [1:0]                 txn_resp_code_r;
     reg [AXI_ID_BITS-1:0]     txn_axi_id_r;
     reg [7:0]                 txn_total_beats_r;
     reg [7:0]                 txn_beats_done_r;
@@ -244,10 +247,12 @@ module axi_llc_axi_bridge #(
                               ((state_r == ST_RD_RESP) || (state_r == ST_WR_RESP));
     assign cache_resp_rdata = txn_rdata_r;
     assign cache_resp_id = txn_req_id_r;
+    assign cache_resp_code = txn_resp_code_r;
     assign bypass_resp_valid = !txn_from_cache_r &&
                                ((state_r == ST_RD_RESP) || (state_r == ST_WR_RESP));
     assign bypass_resp_rdata = txn_rdata_r;
     assign bypass_resp_id = txn_req_id_r;
+    assign bypass_resp_code = txn_resp_code_r;
 
     // Transaction capture, beat accumulation and AXI response retirement.
     always @(posedge clk or negedge rst_n) begin
@@ -261,6 +266,7 @@ module axi_llc_axi_bridge #(
             txn_wdata_r <= {LINE_BITS{1'b0}};
             txn_wstrb_r <= {LINE_BYTES{1'b0}};
             txn_rdata_r <= {READ_RESP_BITS{1'b0}};
+            txn_resp_code_r <= 2'b00;
             txn_axi_id_r <= {{(AXI_ID_BITS-1){1'b0}}, 1'b1};
             txn_total_beats_r <= 8'd0;
             txn_beats_done_r <= 8'd0;
@@ -277,6 +283,7 @@ module axi_llc_axi_bridge #(
                         txn_wdata_r <= select_cache_w ? cache_req_wdata : bypass_req_wdata;
                         txn_wstrb_r <= select_cache_w ? cache_req_wstrb : bypass_req_wstrb;
                         txn_rdata_r <= {READ_RESP_BITS{1'b0}};
+                        txn_resp_code_r <= 2'b00;
                         txn_axi_id_r <= next_axi_id_r;
                         txn_total_beats_r <= selected_beats_w;
                         txn_beats_done_r <= 8'd0;
@@ -332,7 +339,8 @@ module axi_llc_axi_bridge #(
 
                 ST_WR_B: begin
                     if (axi_b_match_w) begin
-            txn_rdata_r <= {READ_RESP_BITS{1'b0}};
+                        txn_rdata_r <= {READ_RESP_BITS{1'b0}};
+                        txn_resp_code_r <= axi_bresp;
                         state_r <= ST_WR_RESP;
                     end
                 end

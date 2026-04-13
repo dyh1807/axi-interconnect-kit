@@ -58,6 +58,7 @@ module axi_llc_subsystem_core #(
     input                       up_resp_ready,
     output     [READ_RESP_BITS-1:0] up_resp_rdata,
     output     [ID_BITS-1:0]    up_resp_id,
+    output     [1:0]            up_resp_code,
     // Internal lower line-memory path used by the cache controller.
     output                      cache_req_valid,
     input                       cache_req_ready,
@@ -71,6 +72,7 @@ module axi_llc_subsystem_core #(
     output                      cache_resp_ready,
     input      [READ_RESP_BITS-1:0] cache_resp_rdata,
     input      [ID_BITS-1:0]    cache_resp_id,
+    input      [1:0]            cache_resp_code,
     // Internal lower bypass path.
     output                      bypass_req_valid,
     input                       bypass_req_ready,
@@ -84,6 +86,7 @@ module axi_llc_subsystem_core #(
     output                      bypass_resp_ready,
     input      [READ_RESP_BITS-1:0] bypass_resp_rdata,
     input      [ID_BITS-1:0]    bypass_resp_id,
+    input      [1:0]            bypass_resp_code,
     // Explicit maintenance control.
     input                       invalidate_line_valid,
     input      [ADDR_BITS-1:0]  invalidate_line_addr,
@@ -112,6 +115,7 @@ module axi_llc_subsystem_core #(
     reg                       resp_pending_r;
     reg [READ_RESP_BITS-1:0]  resp_data_r;
     reg [ID_BITS-1:0]         resp_id_r;
+    reg [1:0]                 resp_code_r;
 
     // Reconfiguration controller outputs.
     wire [MODE_BITS-1:0]      active_mode_w;
@@ -158,6 +162,7 @@ module axi_llc_subsystem_core #(
     wire                      cache_up_resp_visible_w;
     wire [READ_RESP_BITS-1:0] cache_up_resp_rdata_w;
     wire [ID_BITS-1:0]        cache_up_resp_id_w;
+    wire [1:0]                cache_up_resp_code_w;
     wire                      cache_mem_req_valid_w;
     wire                      cache_mem_req_write_w;
     wire [ADDR_BITS-1:0]      cache_mem_req_addr_w;
@@ -421,6 +426,7 @@ module axi_llc_subsystem_core #(
     assign up_resp_valid = resp_pending_r | cache_up_resp_visible_w;
     assign up_resp_rdata = resp_pending_r ? resp_data_r : cache_up_resp_rdata_w;
     assign up_resp_id = resp_pending_r ? resp_id_r : cache_up_resp_id_w;
+    assign up_resp_code = resp_pending_r ? resp_code_r : cache_up_resp_code_w;
 
     assign cache_req_valid = cache_mem_req_valid_w;
     assign cache_req_write = cache_mem_req_write_w;
@@ -599,6 +605,7 @@ module axi_llc_subsystem_core #(
         .resp_ready   (up_resp_ready && !resp_pending_r),
         .resp_rdata   (cache_up_resp_rdata_w),
         .resp_id      (cache_up_resp_id_w),
+        .resp_code    (cache_up_resp_code_w),
         .invalidate_line_valid(invalidate_line_valid && !direct_wait_rd_r),
         .invalidate_line_addr({
             invalidate_line_addr[ADDR_BITS-1:LINE_OFFSET_BITS],
@@ -654,6 +661,7 @@ module axi_llc_subsystem_core #(
         .mem_resp_ready(cache_mem_resp_ready_w),
         .mem_resp_rdata(cache_resp_rdata),
         .mem_resp_id  (cache_resp_id),
+        .mem_resp_code(cache_resp_code),
         .bypass_req_valid(bypass_mem_req_valid_w),
         .bypass_req_ready(bypass_req_ready),
         .bypass_req_write(bypass_mem_req_write_w),
@@ -665,7 +673,8 @@ module axi_llc_subsystem_core #(
         .bypass_resp_valid(bypass_resp_valid),
         .bypass_resp_ready(bypass_mem_resp_ready_w),
         .bypass_resp_rdata(bypass_resp_rdata),
-        .bypass_resp_id(bypass_resp_id)
+        .bypass_resp_id(bypass_resp_id),
+        .bypass_resp_code(bypass_resp_code)
     );
 
     // Mode2 direct-mapped local window controller.
@@ -712,6 +721,7 @@ module axi_llc_subsystem_core #(
             resp_pending_r <= 1'b0;
             resp_data_r <= {READ_RESP_BITS{1'b0}};
             resp_id_r <= {ID_BITS{1'b0}};
+            resp_code_r <= 2'b00;
         end else begin
             if (resp_pending_r && up_resp_ready) begin
                 resp_pending_r <= 1'b0;
@@ -731,6 +741,7 @@ module axi_llc_subsystem_core #(
                 direct_wait_rd_r <= 1'b0;
                 resp_pending_r <= 1'b1;
                 resp_id_r <= direct_id_r;
+                resp_code_r <= 2'b00;
                 if (direct_write_r) begin
                     resp_data_r <= {READ_RESP_BITS{1'b0}};
                 end else begin

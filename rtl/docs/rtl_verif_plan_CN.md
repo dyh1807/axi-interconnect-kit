@@ -153,7 +153,8 @@
 - 兼容层的 read / write `accepted` 单拍脉冲
 - read `accepted_id` 与被接受请求 `id` 一致
 - 不同 read / write master 可先入队，再按各自 slot 收到 response
-- write response code 当前固定为 `OKAY`
+- bypass write 的 `write response code` 透传 lower response
+- 非 bypass write 当前返回 `OKAY`
 - 兼容层不破坏既有 lower 路由合同：
   - `mode=1` cache miss 走 `cache_req`
   - `mode=1` bypass 走 `bypass_req`

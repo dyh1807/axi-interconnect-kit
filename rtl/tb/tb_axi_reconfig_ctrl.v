@@ -59,6 +59,27 @@ module tb_axi_reconfig_ctrl;
         end
     endtask
 
+    task complete_sweep_once;
+        integer guard;
+        begin
+            guard = 0;
+            while (!sweep_start) begin
+                @(posedge clk);
+                guard = guard + 1;
+                if (guard > 32) begin
+                    $display("tb_axi_reconfig_ctrl FAIL: timeout waiting sweep_start");
+                    $finish;
+                end
+            end
+            sweep_busy <= 1'b1;
+            @(posedge clk);
+            sweep_busy <= 1'b0;
+            sweep_done <= 1'b1;
+            @(posedge clk);
+            sweep_done <= 1'b0;
+        end
+    endtask
+
     initial begin
         clk              = 1'b0;
         rst_n            = 1'b0;
@@ -72,7 +93,11 @@ module tb_axi_reconfig_ctrl;
         repeat (2) @(posedge clk);
         rst_n <= 1'b1;
 
+        complete_sweep_once();
+        wait_state(2'b11);
         @(posedge clk);
+
+        wait_state(2'b00);
         if (active_mode !== 2'b01 || active_offset !== 32'h0000_0000) begin
             $display("tb_axi_reconfig_ctrl FAIL: reset default mismatch");
             $finish;
@@ -106,21 +131,7 @@ module tb_axi_reconfig_ctrl;
             $finish;
         end
 
-        while (!sweep_start) begin
-            @(posedge clk);
-        end
-        if (!sweep_start) begin
-            $display("tb_axi_reconfig_ctrl FAIL: expected sweep_start pulse");
-            $finish;
-        end
-
-        sweep_busy <= 1'b1;
-        repeat (2) @(posedge clk);
-        sweep_busy <= 1'b0;
-        sweep_done <= 1'b1;
-
-        @(posedge clk);
-        sweep_done <= 1'b0;
+        complete_sweep_once();
         wait_state(2'b11);
         if (state !== 2'b11) begin
             $display("tb_axi_reconfig_ctrl FAIL: expected ACTIVATE");

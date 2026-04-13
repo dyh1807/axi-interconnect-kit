@@ -189,9 +189,10 @@
 
 当前限制：
 
-- 该兼容层还不是 C++ interconnect 的完整等价物
-- 内部 lower-memory issue 仍由单流核心串行化
-- 还没有 C++ 那套 `orig_id / mem_id / axi_id` 三层 remap table
+- 外部 custom master 接口合同已经补齐
+- 但 lower-memory issue 当前仍由单流核心串行化
+- 下游 AXI 侧没有把 C++ 的多 outstanding / `orig_id / mem_id / axi_id`
+  remap table 原样搬进 RTL
 
 ### `axi_llc_axi_bridge`
 
@@ -233,12 +234,11 @@ DDR/MMIO 地址分流属于外部系统功能，不在本 RTL 顶层重复展开
 - `data`
 - `valid`
 
-### 当前仍未落地
+### 当前保留的微架构差异
 
-- 与 C++ 原型同等级的多请求并发状态
-- 与 C++ 原型完全对齐的更完整 `id` / tag / 多 outstanding 语义
-- 带 timing-check 的外部宏模型直连时序隔离
-- 重新验证后的 prefetch 控制面与预取状态机
+- lower AXI 路径仍是串行化实现
+- 带 timing-check 的外部宏模型直连时序隔离未接入
+- `prefetch` 仍然保持关闭
 
 ## `id` 合同
 
@@ -262,9 +262,10 @@ contract bench：
   - flush 写回同样使用维护 id `0`
   - 上游 `up_resp_id` 仍保持原始请求 `req_id`
 
-这套合同在 `axi_llc_subsystem_core` 内仍是单流简化版；`axi_llc_subsystem_compat`
+这套合同在 `axi_llc_subsystem_core` 内仍是单流实现；`axi_llc_subsystem_compat`
 已经把多 master 的 `accepted/resp` 接口补回；`axi_llc_subsystem` 再把 lower 请求
-收敛成单组 AXI4。但它们还没有做到 C++ 的完整多 outstanding / AXI remap 语义。
+收敛成单组 AXI4。当前剩余差异主要是下游 AXI 侧仍未引入 C++ 那套完整多 outstanding
+/ remap table。
 
 ## `prefetch` 状态
 

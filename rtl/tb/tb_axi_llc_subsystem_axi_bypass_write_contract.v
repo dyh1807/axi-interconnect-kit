@@ -29,6 +29,7 @@ module tb_axi_llc_subsystem_axi_bypass_write_contract;
     localparam [1:0] AXI_BURST_INCR = 2'b01;
     localparam [2:0] AXI_SIZE_32B = 3'd5;
     localparam [1:0] AXI_RESP_OKAY = 2'b00;
+    localparam [1:0] AXI_RESP_SLVERR = 2'b10;
 
     localparam [ADDR_BITS-1:0] BYPASS_ADDR = 32'h1000_0008;
     localparam [ID_BITS-1:0] WRITE_ID = 4'hA;
@@ -354,7 +355,7 @@ module tb_axi_llc_subsystem_axi_bypass_write_contract;
         integer timeout;
         begin
             axi_bid = seen_awid;
-            axi_bresp = AXI_RESP_OKAY;
+            axi_bresp = AXI_RESP_SLVERR;
             axi_bvalid = 1'b1;
             timeout = 40;
             while (timeout > 0) begin
@@ -387,7 +388,7 @@ module tb_axi_llc_subsystem_axi_bypass_write_contract;
             if (write_resp_id_w !== WRITE_ID) begin
                 fail_now("bypass write response id mismatch");
             end
-            if (write_resp_code_w !== AXI_RESP_OKAY) begin
+            if (write_resp_code_w !== AXI_RESP_SLVERR) begin
                 fail_now("bypass write response code mismatch");
             end
             @(posedge clk);

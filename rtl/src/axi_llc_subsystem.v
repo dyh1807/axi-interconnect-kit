@@ -132,6 +132,7 @@ module axi_llc_subsystem #(
     wire                     cache_resp_ready_w;
     wire [READ_RESP_BITS-1:0] cache_resp_rdata_w;
     wire [ID_BITS-1:0]       cache_resp_id_w;
+    wire [1:0]               cache_resp_code_w;
 
     wire                     bypass_req_valid_w;
     wire                     bypass_req_ready_w;
@@ -145,6 +146,7 @@ module axi_llc_subsystem #(
     wire                     bypass_resp_ready_w;
     wire [READ_RESP_BITS-1:0] bypass_resp_rdata_w;
     wire [ID_BITS-1:0]       bypass_resp_id_w;
+    wire [1:0]               bypass_resp_code_w;
 
     // Multi-master compatibility layer around the single-flow core.
     axi_llc_subsystem_compat #(
@@ -214,6 +216,7 @@ module axi_llc_subsystem #(
         .cache_resp_ready      (cache_resp_ready_w),
         .cache_resp_rdata      (cache_resp_rdata_w),
         .cache_resp_id         (cache_resp_id_w),
+        .cache_resp_code       (cache_resp_code_w),
         .bypass_req_valid      (bypass_req_valid_w),
         .bypass_req_ready      (bypass_req_ready_w),
         .bypass_req_write      (bypass_req_write_w),
@@ -226,6 +229,7 @@ module axi_llc_subsystem #(
         .bypass_resp_ready     (bypass_resp_ready_w),
         .bypass_resp_rdata     (bypass_resp_rdata_w),
         .bypass_resp_id        (bypass_resp_id_w),
+        .bypass_resp_code      (bypass_resp_code_w),
         .invalidate_line_valid (invalidate_line_valid),
         .invalidate_line_addr  (invalidate_line_addr),
         .invalidate_line_accepted(invalidate_line_accepted),
@@ -265,6 +269,7 @@ module axi_llc_subsystem #(
         .cache_resp_ready  (cache_resp_ready_w),
         .cache_resp_rdata  (cache_resp_rdata_w),
         .cache_resp_id     (cache_resp_id_w),
+        .cache_resp_code   (cache_resp_code_w),
         .bypass_req_valid  (bypass_req_valid_w),
         .bypass_req_ready  (bypass_req_ready_w),
         .bypass_req_write  (bypass_req_write_w),
@@ -277,6 +282,7 @@ module axi_llc_subsystem #(
         .bypass_resp_ready (bypass_resp_ready_w),
         .bypass_resp_rdata (bypass_resp_rdata_w),
         .bypass_resp_id    (bypass_resp_id_w),
+        .bypass_resp_code  (bypass_resp_code_w),
         .axi_awvalid       (axi_awvalid),
         .axi_awready       (axi_awready),
         .axi_awid          (axi_awid),

@@ -81,6 +81,7 @@ module axi_llc_subsystem_compat #(
     output                                  cache_resp_ready,
     input      [READ_RESP_BITS-1:0]         cache_resp_rdata,
     input      [ID_BITS-1:0]                cache_resp_id,
+    input      [1:0]                        cache_resp_code,
     output                                  bypass_req_valid,
     input                                   bypass_req_ready,
     output                                  bypass_req_write,
@@ -93,6 +94,7 @@ module axi_llc_subsystem_compat #(
     output                                  bypass_resp_ready,
     input      [READ_RESP_BITS-1:0]         bypass_resp_rdata,
     input      [ID_BITS-1:0]                bypass_resp_id,
+    input      [1:0]                        bypass_resp_code,
     input                                   invalidate_line_valid,
     input      [ADDR_BITS-1:0]              invalidate_line_addr,
     output                                  invalidate_line_accepted,
@@ -170,6 +172,7 @@ module axi_llc_subsystem_compat #(
     wire                         core_up_resp_ready_w;
     wire [READ_RESP_BITS-1:0]    core_up_resp_rdata_w;
     wire [ID_BITS-1:0]           core_up_resp_id_w;
+    wire [1:0]                   core_up_resp_code_w;
 
     reg                          dispatch_found_w;
     reg                          dispatch_is_write_w;
@@ -467,6 +470,7 @@ module axi_llc_subsystem_compat #(
         .up_resp_ready         (core_up_resp_ready_w),
         .up_resp_rdata         (core_up_resp_rdata_w),
         .up_resp_id            (core_up_resp_id_w),
+        .up_resp_code          (core_up_resp_code_w),
         .cache_req_valid       (cache_req_valid),
         .cache_req_ready       (cache_req_ready),
         .cache_req_write       (cache_req_write),
@@ -479,6 +483,7 @@ module axi_llc_subsystem_compat #(
         .cache_resp_ready      (cache_resp_ready),
         .cache_resp_rdata      (cache_resp_rdata),
         .cache_resp_id         (cache_resp_id),
+        .cache_resp_code       (cache_resp_code),
         .bypass_req_valid      (bypass_req_valid),
         .bypass_req_ready      (bypass_req_ready),
         .bypass_req_write      (bypass_req_write),
@@ -491,6 +496,7 @@ module axi_llc_subsystem_compat #(
         .bypass_resp_ready     (bypass_resp_ready),
         .bypass_resp_rdata     (bypass_resp_rdata),
         .bypass_resp_id        (bypass_resp_id),
+        .bypass_resp_code      (bypass_resp_code),
         .invalidate_line_valid (invalidate_line_valid),
         .invalidate_line_addr  (invalidate_line_addr),
         .invalidate_line_accepted(invalidate_line_accepted),
@@ -640,7 +646,7 @@ module axi_llc_subsystem_compat #(
                 if (inflight_is_write_r) begin
                     wr_resp_valid_r[inflight_master_r] <= 1'b1;
                     wr_resp_id_r[inflight_master_r] <= inflight_id_r;
-                    wr_resp_code_r[inflight_master_r] <= WRITE_RESP_OKAY;
+                    wr_resp_code_r[inflight_master_r] <= core_up_resp_code_w;
                 end else begin
                     rd_resp_valid_r[inflight_master_r] <= 1'b1;
                     rd_resp_data_r[inflight_master_r] <= core_up_resp_rdata_w;

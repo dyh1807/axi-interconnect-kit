@@ -33,6 +33,7 @@ module llc_cache_ctrl #(
     input                       resp_ready,
     output     [READ_RESP_BITS-1:0] resp_rdata,
     output     [ID_BITS-1:0]    resp_id,
+    output     [1:0]            resp_code,
     input                       invalidate_line_valid,
     input      [ADDR_BITS-1:0]  invalidate_line_addr,
     output                      invalidate_line_accepted,
@@ -85,6 +86,7 @@ module llc_cache_ctrl #(
     output                      mem_resp_ready,
     input      [READ_RESP_BITS-1:0] mem_resp_rdata,
     input      [ID_BITS-1:0]    mem_resp_id,
+    input      [1:0]            mem_resp_code,
     output                      bypass_req_valid,
     input                       bypass_req_ready,
     output                      bypass_req_write,
@@ -96,7 +98,8 @@ module llc_cache_ctrl #(
     input                       bypass_resp_valid,
     output                      bypass_resp_ready,
     input      [READ_RESP_BITS-1:0] bypass_resp_rdata,
-    input      [ID_BITS-1:0]    bypass_resp_id
+    input      [ID_BITS-1:0]    bypass_resp_id,
+    input      [1:0]            bypass_resp_code
 );
 
     localparam [3:0] ST_IDLE            = 4'd0;
@@ -151,6 +154,7 @@ module llc_cache_ctrl #(
 
     reg                resp_valid_r;
     reg [READ_RESP_BITS-1:0] resp_rdata_r;
+    reg [1:0]          resp_code_r;
 
     reg                lookup_hit_r;
     reg [WAY_BITS-1:0] lookup_hit_way_r;
@@ -435,6 +439,7 @@ module llc_cache_ctrl #(
     assign resp_valid = resp_valid_r;
     assign resp_rdata = resp_rdata_r;
     assign resp_id = req_id_r;
+    assign resp_code = resp_code_r;
 
     assign mem_req_valid = (state_r == ST_MISS_WB_REQ) ||
                            (state_r == ST_REFILL_REQ) ||
@@ -594,9 +599,11 @@ module llc_cache_ctrl #(
             dirty_count_r <= 32'd0;
             resp_valid_r <= 1'b0;
             resp_rdata_r <= {READ_RESP_BITS{1'b0}};
+            resp_code_r <= 2'b00;
         end else begin
             if (resp_valid_r && resp_ready) begin
                 resp_valid_r <= 1'b0;
+                resp_code_r <= 2'b00;
             end
 
             case (state_r)
@@ -658,11 +665,13 @@ module llc_cache_ctrl #(
                                 resp_valid_r <= 1'b1;
                                 resp_rdata_r <= extract_read_response(req_addr_r,
                                                                       lookup_hit_line_r);
+                                resp_code_r <= 2'b00;
                                 state_r <= ST_IDLE;
                             end else begin
                                 resp_valid_r <= 1'b1;
                                 resp_rdata_r <= extract_read_response(req_addr_r,
                                                                       lookup_hit_line_r);
+                                resp_code_r <= 2'b00;
                                 state_r <= ST_IDLE;
                             end
                         end else begin
@@ -701,6 +710,7 @@ module llc_cache_ctrl #(
                     end else begin
                         resp_valid_r <= 1'b1;
                         resp_rdata_r <= {READ_RESP_BITS{1'b0}};
+                        resp_code_r <= 2'b00;
                         state_r <= ST_IDLE;
                     end
                 end
@@ -753,9 +763,11 @@ module llc_cache_ctrl #(
                     resp_valid_r <= 1'b1;
                     if (req_write_r) begin
                         resp_rdata_r <= {READ_RESP_BITS{1'b0}};
+                        resp_code_r <= 2'b00;
                     end else begin
                         resp_rdata_r <= extract_read_response(req_addr_r,
                                                               install_line_r);
+                        resp_code_r <= 2'b00;
                     end
                     state_r <= ST_IDLE;
                 end
@@ -815,8 +827,10 @@ module llc_cache_ctrl #(
                         resp_valid_r <= 1'b1;
                         if (req_write_r) begin
                             resp_rdata_r <= {READ_RESP_BITS{1'b0}};
+                            resp_code_r <= bypass_resp_code;
                         end else begin
                             resp_rdata_r <= bypass_resp_rdata;
+                            resp_code_r <= 2'b00;
                         end
                         state_r <= ST_IDLE;
                     end

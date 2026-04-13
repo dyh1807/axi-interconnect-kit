@@ -154,11 +154,12 @@ axi_llc_subsystem
   - 下游收敛成一组 AXI4 master 五通道
   - 不在本层再分出独立 DDR/MMIO 两组 AXI；地址分流留给外部系统
 
-## 当前未落地内容
+## 当前保留的微架构差异
 
-- 与 C++ interconnect 一样的多 outstanding / AXI remap table
-- 带 timing-check 的外部宏模型直连时序隔离
-- 重新验证后的 prefetch 控制面与预取状态机
+- lower AXI 路径当前仍做串行化处理，没有把 C++ interconnect 那套多 outstanding /
+  `orig_id / mem_id / axi_id` remap table 原样搬进 RTL
+- 带 timing-check 的外部宏模型直连时序隔离还没有接入日常回归
+- `prefetch` 仍未进入 RTL，本轮继续保持关闭
 
 ## 文档
 
@@ -226,6 +227,7 @@ axi_llc_subsystem
 - `invalidate_all_accepted` 不再表示“请求已被 FSM 吸收”，而表示“本次维护 sweep 已完成；
   active 配置在同一拍提交”。
 - `invalidate_all` 当前与 C++ 原型保持一致：
+  - 外部 `invalidate_all_valid` 需要保持到 `invalidate_all_accepted`
   - dirty resident line 存在时不会主动 flush
   - 只有 quiescent 且 `dirty_count==0` 时才接受
 - 因此如果要在 mode1 脏写之后切换 mode，bench 或上层驱动必须先做 maintenance
@@ -237,6 +239,7 @@ axi_llc_subsystem
   - 直接路径返回捕获的 `up_req_id`
   - bypass lower 路径当前仍向下传 `bypass_req_id`，响应需带回匹配 id
   - cache 路径对上游仍返回原始 `up_req_id`
+- bypass write 的 `write_resp_code` 当前已经透传 lower / AXI `bresp`
   - `mode=1` demand refill 对下游 line-memory 使用内部读事务 id `1`
   - cache miss 的 victim writeback 与 reconfig/flush 维护写回固定使用维护 id `0`
 - `axi_llc_subsystem_compat` 已补回：
