@@ -544,29 +544,29 @@ module tb_axi_llc_subsystem_cache_contract;
         end
 
         step_id = 9;
-        $display("STEP 9 dirty victim writeback + refill");
+        $display("STEP 9 dirty victim refill + writeback");
         log_base = req_log_count;
         read_base = mem_read_count;
         write_base = mem_write_count;
         issue_request(1'b0, ADDR_C, LINE_BYTES-1, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
         expect_read_response(line_c_init, "dirty victim refill response mismatch");
         if (req_log_count != (log_base + 2)) begin
-            fail("dirty victim path should emit writeback then refill");
+            fail("dirty victim path should emit refill then writeback");
         end
-        if (req_log_write[log_base] !== 1'b1) begin
-            fail("dirty victim first external request should be writeback");
+        if (req_log_write[log_base] !== 1'b0) begin
+            fail("dirty victim first external request should be refill read");
         end
-        if (req_log_addr[log_base] !== ADDR_A) begin
+        if (req_log_addr[log_base] !== ADDR_C) begin
+            fail("dirty victim refill address mismatch");
+        end
+        if (req_log_write[log_base + 1] !== 1'b1) begin
+            fail("dirty victim second external request should be writeback");
+        end
+        if (req_log_addr[log_base + 1] !== ADDR_A) begin
             fail("dirty victim writeback address mismatch");
         end
-        if (req_log_wdata[log_base] !== line_a_after_hit_write) begin
+        if (req_log_wdata[log_base + 1] !== line_a_after_hit_write) begin
             fail("dirty victim writeback data mismatch");
-        end
-        if (req_log_write[log_base + 1] !== 1'b0) begin
-            fail("dirty victim second external request should be refill read");
-        end
-        if (req_log_addr[log_base + 1] !== ADDR_C) begin
-            fail("dirty victim refill address mismatch");
         end
         if (mem_write_count != (write_base + 1)) begin
             fail("dirty victim should increment external write count");

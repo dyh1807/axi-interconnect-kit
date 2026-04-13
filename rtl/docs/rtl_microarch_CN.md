@@ -203,15 +203,13 @@
 当前限制：
 
 - 外部 custom master 接口合同已经补齐
-- resident lookup / install / invalidate 仍是单发射路径
+- resident lookup / install / invalidate 保持与当前 C++ 原型一致的单发射路径
 - 但 cacheable read miss 已经支持多 slot 挂起，并通过 lower AXI 多 outstanding 推进
 - bypass 风格请求已可绕开单发射 lookup 路径，与 cacheable miss 并发推进
 - dirty-victim 的 full-line cacheable write miss 已能与其它行的 cache miss 并发推进
 - compat 侧已经补成 per-master read response queue，因此同一 master 可连续回收多笔 cacheable read
 - 下游 AXI 侧已经补成多 outstanding / 独立 `axi_id` remap
-- 整个子模块的并发度仍不等价于 C++ 全量 MSHR 版本，当前差距主要收敛到：
-  - `pending read victim` 上的 write-hit snapshot refresh 还没补
-  - `prefetch` 仍未进入 RTL
+- 在 `prefetch` 之外，当前 RTL 已对齐到当前 C++ 原型的并发合同
 
 ### `axi_llc_axi_bridge`
 
@@ -293,10 +291,9 @@ contract bench：
 `llc_cache_ctrl` 已经补成“lookup 单发射 + read miss 多挂起”的结构，
 `axi_llc_subsystem_compat` 也已经把多 master 的 `accepted/resp` 接口补回，并为
 cacheable core-path 请求补上内部 slot / per-master read response queue；`axi_llc_subsystem`
-再把 lower 请求收敛成单组 AXI4。当前剩余差异主要不再是 lower AXI remap，而是
-write/victim 侧一条更保守的处理：`pending read victim` 期间，RTL 目前保守阻塞
-victim-line write，尚未复现 C++ 中“write hit 刷新 pending victim snapshot”的那条
-特化语义；另外 `prefetch` 仍未实现。
+再把 lower 请求收敛成单组 AXI4。当前在 `prefetch` 之外，mode / invalidate /
+bypass / non-bypass / dirty-victim 生命周期已经和 C++ 原型对齐；未实现项集中到
+`prefetch`。
 
 ## `prefetch` 状态
 

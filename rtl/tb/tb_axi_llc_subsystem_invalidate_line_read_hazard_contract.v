@@ -494,15 +494,17 @@ module tb_axi_llc_subsystem_invalidate_line_read_hazard_contract;
                       write_patch_line, write_patch_strb);
         wait_write_response(WRITE_REQ_ID);
 
-        // Scenario 2: same-line invalidate must stay blocked while a pending
-        // read miss still owns the dirty victim line for writeback.
+        // Scenario 2: same-line invalidate must stay blocked through the
+        // refill-first dirty-victim read-miss flow and the later victim
+        // writeback window.
         issue_request(1'b0, MISS_ADDR, MISS_REQ_ID,
                       {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
+        hold_invalidate_blocked_until_cache_req(1'b0, MISS_ADDR,
+                                                VICTIM_ADDR, lower_req_id);
+        drive_cache_resp(lower_req_id, miss_line);
         hold_invalidate_blocked_until_cache_req(1'b1, VICTIM_ADDR,
                                                 VICTIM_ADDR, lower_req_id);
         drive_cache_resp(lower_req_id, {LINE_BITS{1'b0}});
-        wait_cache_req(1'b0, MISS_ADDR, lower_req_id);
-        drive_cache_resp(lower_req_id, miss_line);
         wait_read_response(MISS_REQ_ID, miss_line);
         do_invalidate_accept(VICTIM_ADDR);
 

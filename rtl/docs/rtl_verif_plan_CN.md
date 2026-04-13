@@ -100,7 +100,7 @@
 - write hit 更新 resident data
 - full-line write miss 直接安装 dirty line
 - partial write miss 先 refill 再 merge
-- dirty victim writeback + refill
+- dirty victim refill + writeback
 - simple memory model 回传 `cache_req_id`，避免新增 `id` 接口破坏 mode1 主路径
 
 ### `tb_axi_llc_subsystem_invalidate_line_contract.v`

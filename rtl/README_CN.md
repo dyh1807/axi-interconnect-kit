@@ -164,10 +164,10 @@ axi_llc_subsystem
   - 下游收敛成一组 AXI4 master 五通道
   - 不在本层再分出独立 DDR/MMIO 两组 AXI；地址分流留给外部系统
 
-## 当前保留的微架构差异
+## 当前实现结构
 
-- `axi_llc_subsystem_core` 里 resident lookup / install / invalidate 仍是单发射路径，
-  不是整个子模块全路径多发射
+- `axi_llc_subsystem_core` 里 resident lookup / install / invalidate 保持与当前 C++
+  原型一致的单发射路径
 - 但 `axi_llc_subsystem_core + llc_cache_ctrl` 现在已经支持多个 cacheable read miss
   同时挂起；compat 也支持同一 master 的多 read response 排队回传
 - bypass 风格请求现在可以绕开单发射 lookup 路径，与 cacheable miss 并发推进
@@ -310,7 +310,6 @@ axi_llc_subsystem
   - C++ 原型里已有专门的 prefetch 单测与实现
   - 但本轮没有在当前分支上完成一次干净、可复现的端到端重验证
   - 因此 RTL 暂不引入 `prefetch` 状态机，只保留后续重新评估的空间
-- 相比当前 C++ 原型，write/victim 侧仍保留一条更保守的差异：
-  - `pending read victim` 期间，RTL 当前会保守阻塞 victim-line write
-  - 尚未复现 C++ 中“write hit 刷新 pending victim snapshot”的那条特化语义
+- 在 `prefetch` 之外，当前 RTL 已把 mode / invalidate / bypass / non-bypass /
+  dirty-victim 生命周期的外部合同收敛到当前 C++ 原型
 - 当前已在 `eda-10 + bash_eda10 + VCS` 跑通 store/mode/reconfig/顶层 contract bench。

@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 `include "axi_llc_params.vh"
 
-module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
+module tb_axi_llc_subsystem_compat_victim_snapshot_refresh_contract;
 
     localparam ADDR_BITS         = `AXI_LLC_ADDR_BITS;
     localparam ID_BITS           = `AXI_LLC_ID_BITS;
@@ -27,8 +27,7 @@ module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
     localparam [ID_BITS-1:0]   FILL_ID     = 4'h1;
     localparam [ID_BITS-1:0]   DIRTY_ID    = 4'h2;
     localparam [ID_BITS-1:0]   MISS_ID     = 4'h3;
-    localparam [ID_BITS-1:0]   VICTIM_RD_ID = 4'h4;
-    localparam [ID_BITS-1:0]   VICTIM_WR_ID = 4'h5;
+    localparam [ID_BITS-1:0]   REFRESH_ID  = 4'h4;
 
     reg                                   clk;
     reg                                   rst_n;
@@ -98,10 +97,11 @@ module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
 
     reg  [LINE_BITS-1:0]                  victim_line;
     reg  [LINE_BITS-1:0]                  dirty_line;
+    reg  [LINE_BITS-1:0]                  refreshed_line;
     reg  [LINE_BITS-1:0]                  miss_line;
-    reg  [ID_BITS-1:0]                    lower_wb_id;
     reg  [ID_BITS-1:0]                    lower_miss_id;
-    reg  [ID_BITS-1:0]                    lower_victim_rd_id;
+    reg  [ID_BITS-1:0]                    lower_victim_fill_id;
+    reg  [ID_BITS-1:0]                    lower_victim_wb_id;
     integer                               timeout;
 
     always #5 clk = ~clk;
@@ -142,7 +142,7 @@ module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
     task fail_now;
         input [8*160-1:0] msg;
         begin
-            $display("tb_axi_llc_subsystem_compat_victim_line_hazard_contract FAIL: %0s", msg);
+            $display("tb_axi_llc_subsystem_compat_victim_snapshot_refresh_contract FAIL: %0s", msg);
             $finish(1);
         end
     endtask
@@ -212,10 +212,10 @@ module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
     endtask
 
     task issue_write;
-        input [ADDR_BITS-1:0] addr_value;
-        input [ID_BITS-1:0]   id_value;
-        input [LINE_BITS-1:0] line_value;
-        input [LINE_BYTES-1:0] strb_value;
+        input [ADDR_BITS-1:0]   addr_value;
+        input [ID_BITS-1:0]     id_value;
+        input [LINE_BITS-1:0]   line_value;
+        input [LINE_BYTES-1:0]  strb_value;
         begin
             @(negedge clk);
             write_req_valid[0] = 1'b1;
@@ -232,53 +232,6 @@ module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
             end
             if (timeout == 0) begin
                 fail_now("write request not accepted");
-            end
-            @(negedge clk);
-            write_req_valid[0] = 1'b0;
-        end
-    endtask
-
-    task hold_read_blocked;
-        input [ADDR_BITS-1:0] addr_value;
-        input [ID_BITS-1:0]   id_value;
-        integer idx;
-        begin
-            @(negedge clk);
-            read_req_valid[0] = 1'b1;
-            read_req_addr[ADDR_BITS-1:0] = addr_value;
-            read_req_total_size[7:0] = LINE_BYTES - 1;
-            read_req_id[ID_BITS-1:0] = id_value;
-            read_req_bypass[0] = 1'b0;
-            for (idx = 0; idx < 8; idx = idx + 1) begin
-                @(posedge clk);
-                if (read_req_accepted[0]) begin
-                    fail_now("victim-line read should stay blocked");
-                end
-            end
-            @(negedge clk);
-            read_req_valid[0] = 1'b0;
-        end
-    endtask
-
-    task hold_write_blocked;
-        input [ADDR_BITS-1:0] addr_value;
-        input [ID_BITS-1:0]   id_value;
-        input [LINE_BITS-1:0] line_value;
-        integer idx;
-        begin
-            @(negedge clk);
-            write_req_valid[0] = 1'b1;
-            write_req_addr[ADDR_BITS-1:0] = addr_value;
-            write_req_wdata[LINE_BITS-1:0] = line_value;
-            write_req_wstrb[LINE_BYTES-1:0] = {LINE_BYTES{1'b1}};
-            write_req_total_size[7:0] = LINE_BYTES - 1;
-            write_req_id[ID_BITS-1:0] = id_value;
-            write_req_bypass[0] = 1'b0;
-            for (idx = 0; idx < 8; idx = idx + 1) begin
-                @(posedge clk);
-                if (write_req_accepted[0]) begin
-                    fail_now("victim-line write should stay blocked");
-                end
             end
             @(negedge clk);
             write_req_valid[0] = 1'b0;
@@ -304,26 +257,6 @@ module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
             end
             req_id_value = cache_req_id;
             @(posedge clk);
-        end
-    endtask
-
-    task wait_cache_req_visible;
-        input                     expect_write;
-        input [ADDR_BITS-1:0]     expect_addr;
-        output [ID_BITS-1:0]      req_id_value;
-        begin
-            timeout = 100;
-            while (!(cache_req_valid &&
-                     (cache_req_write == expect_write) &&
-                     (cache_req_addr == expect_addr)) &&
-                   (timeout > 0)) begin
-                @(posedge clk);
-                timeout = timeout - 1;
-            end
-            if (timeout == 0) begin
-                fail_now("cache request visibility timeout");
-            end
-            req_id_value = cache_req_id;
         end
     endtask
 
@@ -370,6 +303,27 @@ module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
             end
             if (get_read_resp_line(0) !== expect_line) begin
                 fail_now("read response data mismatch");
+            end
+            @(posedge clk);
+        end
+    endtask
+
+    task wait_write_resp;
+        input [ID_BITS-1:0] expect_id;
+        begin
+            timeout = 200;
+            while (!write_resp_valid[0] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("write response timeout");
+            end
+            if (write_resp_id[ID_BITS-1:0] !== expect_id) begin
+                fail_now("write response id mismatch");
+            end
+            if (write_resp_code[1:0] !== 2'b00) begin
+                fail_now("write response code mismatch");
             end
             @(posedge clk);
         end
@@ -486,10 +440,11 @@ module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
 
         victim_line = make_line(8'h10);
         dirty_line = make_line(8'h90);
+        refreshed_line = make_line(8'hC0);
         miss_line = make_line(8'h40);
-        lower_wb_id = {ID_BITS{1'b0}};
         lower_miss_id = {ID_BITS{1'b0}};
-        lower_victim_rd_id = {ID_BITS{1'b0}};
+        lower_victim_fill_id = {ID_BITS{1'b0}};
+        lower_victim_wb_id = {ID_BITS{1'b0}};
 
         wait_cycles(5);
         rst_n = 1'b1;
@@ -498,49 +453,36 @@ module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
 
         $display("STEP 1 fill victim line");
         issue_read(VICTIM_ADDR, FILL_ID);
-        wait_cache_req(1'b0, VICTIM_ADDR, lower_victim_rd_id);
-        drive_cache_resp(lower_victim_rd_id, victim_line);
+        wait_cache_req(1'b0, VICTIM_ADDR, lower_victim_fill_id);
+        drive_cache_resp(lower_victim_fill_id, victim_line);
         wait_read_resp(FILL_ID, victim_line);
 
         $display("STEP 2 dirty victim line");
         issue_write(VICTIM_ADDR, DIRTY_ID, dirty_line, {LINE_BYTES{1'b1}});
-        timeout = 100;
-        while (!write_resp_valid[0] && (timeout > 0)) begin
-            @(posedge clk);
-            timeout = timeout - 1;
-        end
-        if (timeout == 0) begin
-            fail_now("dirtying write response timeout");
-        end
-        @(posedge clk);
+        wait_write_resp(DIRTY_ID);
 
-        $display("STEP 3 issue read miss that takes dirty victim");
+        $display("STEP 3 issue read miss with dirty victim");
         issue_read(MISS_ADDR, MISS_ID);
         wait_cache_req(1'b0, MISS_ADDR, lower_miss_id);
 
-        $display("STEP 4 refill completes, victim hazard becomes visible");
+        $display("STEP 4 victim-line write hit must still be accepted pre-refill");
+        issue_write(VICTIM_ADDR, REFRESH_ID, refreshed_line, {LINE_BYTES{1'b1}});
+        wait_write_resp(REFRESH_ID);
+
+        $display("STEP 5 refill returns, then victim writeback must use refreshed snapshot");
         drive_cache_resp(lower_miss_id, miss_line);
-        wait_cache_req(1'b1, VICTIM_ADDR, lower_wb_id);
-
-        $display("STEP 5 victim-line accesses must stay blocked");
-        hold_read_blocked(VICTIM_ADDR, VICTIM_RD_ID);
-        hold_write_blocked(VICTIM_ADDR, VICTIM_WR_ID, make_line(8'hC0));
-
-        $display("STEP 6 retire victim hazard and complete miss");
-        drive_cache_resp(lower_wb_id, {LINE_BITS{1'b0}});
+        wait_cache_req(1'b1, VICTIM_ADDR, lower_victim_wb_id);
+        if (cache_req_wdata !== refreshed_line) begin
+            fail_now("victim writeback data did not refresh to latest write-hit snapshot");
+        end
         wait_read_resp(MISS_ID, miss_line);
-
-        $display("STEP 7 victim line becomes accessible again");
-        issue_read(VICTIM_ADDR, VICTIM_RD_ID);
-        wait_cache_req(1'b0, VICTIM_ADDR, lower_victim_rd_id);
-        drive_cache_resp(lower_victim_rd_id, victim_line);
-        wait_read_resp(VICTIM_RD_ID, victim_line);
+        drive_cache_resp(lower_victim_wb_id, {LINE_BITS{1'b0}});
 
         if (bypass_req_valid) begin
             fail_now("unexpected bypass activity");
         end
 
-        $display("tb_axi_llc_subsystem_compat_victim_line_hazard_contract PASS");
+        $display("tb_axi_llc_subsystem_compat_victim_snapshot_refresh_contract PASS");
         $finish(0);
     end
 
