@@ -146,40 +146,33 @@
 - 该 bench 使用 generic store 的层次化预装载来制造 resident 命中场景，因此只用于 `USE_SMIC12_STORES=0` 的合同验证。
 - 这是对 bypass 合同的独立验证；如果 bypass 请求仍然被硬送到 lower bypass，或者 bypass write hit 不能完成 write-through 回包，该 bench 会直接报错。
 
-### `tb_axi_llc_subsystem_compat_contract.v`
+### `tb_axi_llc_subsystem_axi_mode1_multiflow_contract.v`
 
 覆盖：
 
-- 兼容层的 read / write `accepted` 单拍脉冲
-- read `accepted_id` 与被接受请求 `id` 一致
-- 不同 read / write master 可先入队，再按各自 slot 收到 response
-- bypass write 的 `write response code` 透传 lower response
-- 非 bypass write 当前返回 `OKAY`
-- 兼容层不破坏既有 lower 路由合同：
-  - `mode=1` cache miss 走 `cache_req`
-  - `mode=1` bypass 走 `bypass_req`
-  - `mode=2` direct-window 不触发 lower 请求
+- `mode=1` cache miss read 在途时，另一个 read master 的 bypass read 仍可继续下发第二笔 AXI AR
+- bypass read 的上游 response 可先于 cache miss refill 返回
+- reset 后的独立场景中，cache miss read 在途时，另一个 write master 的 bypass write 仍可继续下发 AXI AW/W/B
+- bypass write 的上游 response 可先于 cache miss refill 返回
+- 两类 lower AXI 事务使用不同 `axi_id`
 
 说明：
 
-- 该 bench 只验证兼容层暴露给上层的多 master 队列与 response 槽合同，不改 `src/`。
-- 对 cache lower response，只要求把观测到的 `cache_req_id` 原样回传，不额外约束 cache 内部 `mem_id` 编码。
+- 该 bench 直接在最终顶层 `axi_llc_subsystem.v` 上验证多 master 非单流合同。
+- 旧的 `tb_axi_llc_subsystem_compat_contract.v` /
+  `tb_axi_llc_subsystem_compat_read_queue_contract.v`
+  假定 bypass lower id 直接等于 upstream id，且 queued bypass 不会在前一笔完成前继续发射；
+  当前实现已不再满足这两条旧合同，因此改由本 bench 与下面的
+  `tb_axi_llc_subsystem_compat_direct_bypass_contract.v` 共同替换。
 
-### `tb_axi_llc_subsystem_compat_read_queue_contract.v`
+### `tb_axi_llc_subsystem_compat_direct_bypass_contract.v`
 
 覆盖：
 
-- `axi_llc_subsystem_compat` 的 read queue 支持同一 master 多请求排队
-- 每次 read 入队都产生单拍 `accepted`
-- 每次 read 入队的 `accepted_id` 与入队 `req_id` 一致
-- 同一 master 的重复 `req_id` 在未完成前被 `ready/accept` 拒绝
-- 不同 read master 可各自排队，且后续都能回到各自 response 槽
-
-说明：
-
-- 该 bench 固定在 `mode=0` 的 bypass read 环境下，只验证 compat 层的 read queue 合同。
-- 场景中显式覆盖 `master0` 上两笔不同 `req_id` 的连续入队。
-- 该 bench 不约束 queued read 的全局调度顺序，只要求每个已接受请求最终都能被正确下发并回到正确 master。
+- direct-bypass read 的 `accepted / accepted_id`
+- direct-bypass slot / response 槽在 flight 时，同一 master 的重复 `req_id` 被拒绝
+- 当 master response 槽被占用时，lower bypass completion 会停在 `bypass_resp_ready=0`
+- 槽位释放后，挂起 completion 能继续前进并回到正确 master / `req_id`
 
 ### `tb_axi_llc_subsystem_compat_reconfig_drain_contract.v`
 
@@ -290,8 +283,8 @@
   - `tb_axi_llc_subsystem_axi_cache_refill_contract`
   - `tb_axi_llc_subsystem_axi_bypass_read_contract`
   - `tb_axi_llc_subsystem_axi_bypass_write_contract`
-  - `tb_axi_llc_subsystem_compat_contract`
-  - `tb_axi_llc_subsystem_compat_read_queue_contract`
+  - `tb_axi_llc_subsystem_axi_mode1_multiflow_contract`
+  - `tb_axi_llc_subsystem_compat_direct_bypass_contract`
   - `tb_axi_llc_subsystem_compat_reconfig_drain_contract`
   - `tb_axi_llc_subsystem_compat_invalidate_line_hazard_contract`
   - `tb_axi_llc_subsystem_read_master_timing_contract`

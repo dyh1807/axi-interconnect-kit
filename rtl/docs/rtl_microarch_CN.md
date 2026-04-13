@@ -177,13 +177,14 @@
 
 ### `axi_llc_subsystem_compat`
 
-`axi_llc_subsystem_compat` 负责把当前单流核心适配成更接近 C++ 顶层的接口：
+`axi_llc_subsystem_compat` 负责把当前核心适配成更接近 C++ 顶层的接口：
 
 - 多 read master / 多 write master
 - read `ready/accepted/accepted_id`
 - write `ready/accepted`
 - 独立 write response `id/code`
 - per-master request FIFO + 独立 response 槽位
+- bypass 风格请求的 direct lower bypass side path
 - reconfig / `invalidate_all` 期间，先由 compat 排空本地 queue / inflight / response slot，
   再把维护请求交给 core
 - `invalidate_line` 期间，compat 会拦住新的 write 接受，并等待同 line 的本地 write hazard
@@ -195,9 +196,10 @@
 当前限制：
 
 - 外部 custom master 接口合同已经补齐
-- 但 lower-memory issue 进入 bridge 之前，当前仍由单流核心串行化
+- cacheable/direct-mapped 请求进入 lower-memory 之前，当前仍由单流核心串行化
+- bypass 风格请求已可绕开单流核心，与 cacheable miss 并发推进
 - 下游 AXI 侧已经补成多 outstanding / 独立 `axi_id` remap
-- 整个子模块的总并发度仍受 compat/core 单 inflight 收敛限制
+- 整个子模块的并发度仍不等价于 C++ 全量 MSHR 版本，但已经不再是“所有请求统一单 inflight”
 
 ### `axi_llc_axi_bridge`
 
@@ -247,7 +249,8 @@ DDR/MMIO 地址分流属于外部系统功能，不在本 RTL 顶层重复展开
 
 ### 当前保留的微架构差异
 
-- compat/core 仍是单流收敛结构，因此不是“整个子模块全路径多发射”
+- cacheable/direct-mapped 请求仍由单流核心处理，因此不是“整个子模块全路径多发射”
+- bypass 风格请求已经可以绕开单流核心，与 cache miss 并发推进
 - 带 timing-check 的外部宏模型直连时序隔离未接入
 - `prefetch` 仍然保持关闭
 
@@ -274,9 +277,10 @@ contract bench：
   - 上游 `up_resp_id` 仍保持原始请求 `req_id`
 
 这套合同在 `axi_llc_subsystem_core` 内仍是单流实现；`axi_llc_subsystem_compat`
-已经把多 master 的 `accepted/resp` 接口补回；`axi_llc_subsystem` 再把 lower 请求
-收敛成单组 AXI4。当前剩余差异主要在 compat/core 的单 inflight 收敛，而不是 bridge
-层的 AXI remap。
+已经把多 master 的 `accepted/resp` 接口补回，并让 bypass 风格请求可以直接进入
+lower bypass side path；`axi_llc_subsystem` 再把 lower 请求收敛成单组 AXI4。
+当前剩余差异主要在 cacheable/direct-mapped 路径仍未做成 C++ 那种完整 MSHR 化，
+而不是 bridge 层的 AXI remap。
 
 ## `prefetch` 状态
 
