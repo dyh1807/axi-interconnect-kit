@@ -197,6 +197,10 @@
 - compat 当前还会在接受面挡住 pending dirty victim 的 victim-line read，避免外层先收下这类
   请求再在 core 内部滞留
 - `MASTER_DCACHE_R` 保留 same-cycle accept，其它 read master 仍保持 ready-first
+- 对 cacheable/core-path read，compat 的 `ready/accepted` 还会额外检查：
+  - same-line read miss / victim-line / local write hazard
+  - 同一 master 的前台 read response slot 或 response queue 是否仍忙
+  - 非 `MASTER_DCACHE_R` 是否已有尚未退休的 core-path read
 - `ready` 采用 sticky-grant 语义：一次只对一个 read master、一个 write master 发放 ready，
   在握手或请求撤销前保持
 

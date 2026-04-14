@@ -436,6 +436,125 @@ module axi_llc_subsystem_compat #(
         end
     endfunction
 
+    function core_path_request;
+        input [ADDR_BITS-1:0] addr_value;
+        input [7:0]           size_value;
+        input                 bypass_value;
+        begin
+            core_path_request = !request_uses_direct_bypass(active_mode,
+                                                            active_offset,
+                                                            addr_value,
+                                                            size_value,
+                                                            bypass_value);
+        end
+    endfunction
+
+    function local_write_line_pending;
+        input [ADDR_BITS-1:0] addr_value;
+        integer depth_idx;
+        begin
+            local_write_line_pending = 1'b0;
+            for (depth_idx = 0; depth_idx < NUM_WRITE_MASTERS; depth_idx = depth_idx + 1) begin
+                if (write_req_valid[depth_idx] &&
+                    ((write_req_addr[(depth_idx * ADDR_BITS) +: ADDR_BITS] >>
+                      LINE_OFFSET_BITS) == (addr_value >> LINE_OFFSET_BITS))) begin
+                    local_write_line_pending = 1'b1;
+                end
+                if (wr_resp_valid_r[depth_idx] &&
+                    ((wr_resp_addr_r[depth_idx] >> LINE_OFFSET_BITS) ==
+                     (addr_value >> LINE_OFFSET_BITS))) begin
+                    local_write_line_pending = 1'b1;
+                end
+            end
+            for (depth_idx = 0; depth_idx < WR_SLOT_COUNT; depth_idx = depth_idx + 1) begin
+                if (wr_q_valid[depth_idx] &&
+                    ((wr_q_addr[depth_idx] >> LINE_OFFSET_BITS) ==
+                     (addr_value >> LINE_OFFSET_BITS))) begin
+                    local_write_line_pending = 1'b1;
+                end
+            end
+            for (depth_idx = 0; depth_idx < MAX_OUTSTANDING; depth_idx = depth_idx + 1) begin
+                if (core_slot_valid_r[depth_idx] &&
+                    core_slot_is_write_r[depth_idx] &&
+                    ((core_slot_addr_r[depth_idx] >> LINE_OFFSET_BITS) ==
+                     (addr_value >> LINE_OFFSET_BITS))) begin
+                    local_write_line_pending = 1'b1;
+                end
+            end
+            for (depth_idx = 0; depth_idx < DIRECT_SLOT_COUNT; depth_idx = depth_idx + 1) begin
+                if (direct_slot_valid_r[depth_idx] &&
+                    direct_slot_is_write_r[depth_idx] &&
+                    ((direct_slot_addr_r[depth_idx] >> LINE_OFFSET_BITS) ==
+                     (addr_value >> LINE_OFFSET_BITS))) begin
+                    local_write_line_pending = 1'b1;
+                end
+            end
+        end
+    endfunction
+
+    function queued_core_read_line_pending;
+        input [ADDR_BITS-1:0] addr_value;
+        integer depth_idx;
+        begin
+            queued_core_read_line_pending = 1'b0;
+            for (depth_idx = 0; depth_idx < RD_SLOT_COUNT; depth_idx = depth_idx + 1) begin
+                if (rd_q_valid[depth_idx] &&
+                    core_path_request(rd_q_addr[depth_idx],
+                                      rd_q_size[depth_idx],
+                                      rd_q_bypass[depth_idx]) &&
+                    ((rd_q_addr[depth_idx] >> LINE_OFFSET_BITS) ==
+                     (addr_value >> LINE_OFFSET_BITS))) begin
+                    queued_core_read_line_pending = 1'b1;
+                end
+            end
+        end
+    endfunction
+
+    function read_capture_line_hazard;
+        input [ADDR_BITS-1:0] addr_value;
+        begin
+            read_capture_line_hazard = dispatch_path_line_hazard(addr_value) ||
+                                       queued_core_read_line_pending(addr_value) ||
+                                       local_write_line_pending(addr_value);
+        end
+    endfunction
+
+    function read_master_response_busy;
+        input integer master_idx;
+        integer depth_idx;
+        begin
+            read_master_response_busy = 1'b0;
+            if (rd_resp_valid_r[master_idx] || (rd_resp_q_count[master_idx] != 0)) begin
+                read_master_response_busy = 1'b1;
+            end
+        end
+    endfunction
+
+    function read_non_dcache_core_path_master_busy;
+        input integer master_idx;
+        integer depth_idx;
+        integer slot_value;
+        begin
+            read_non_dcache_core_path_master_busy = 1'b0;
+            for (depth_idx = 0; depth_idx < READ_FIFO_DEPTH; depth_idx = depth_idx + 1) begin
+                slot_value = rd_slot_index(master_idx, depth_idx);
+                if (rd_q_valid[slot_value] &&
+                    core_path_request(rd_q_addr[slot_value],
+                                      rd_q_size[slot_value],
+                                      rd_q_bypass[slot_value])) begin
+                    read_non_dcache_core_path_master_busy = 1'b1;
+                end
+            end
+            for (depth_idx = 0; depth_idx < MAX_OUTSTANDING; depth_idx = depth_idx + 1) begin
+                if (core_slot_valid_r[depth_idx] &&
+                    !core_slot_is_write_r[depth_idx] &&
+                    (core_slot_master_r[depth_idx] == master_idx[7:0])) begin
+                    read_non_dcache_core_path_master_busy = 1'b1;
+                end
+            end
+        end
+    endfunction
+
     function read_id_conflict;
         input integer master_idx;
         input [ID_BITS-1:0] req_id_value;
@@ -696,8 +815,11 @@ module axi_llc_subsystem_compat #(
                                                read_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS],
                                                read_req_total_size[(next_port * 8) +: 8],
                                                read_req_bypass[next_port]) ||
-                     !core_path_line_hazard(
-                         read_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS])) &&
+                     (!read_capture_line_hazard(
+                          read_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS]) &&
+                      !read_master_response_busy(next_port) &&
+                      ((next_port == MASTER_DCACHE_R) ||
+                       !read_non_dcache_core_path_master_busy(next_port)))) &&
                     !read_id_conflict(next_port,
                         read_req_id[(next_port * ID_BITS) +: ID_BITS])) begin
                     rd_select_found_w = 1'b1;
@@ -936,6 +1058,16 @@ module axi_llc_subsystem_compat #(
                                        !accept_blocked_w &&
                                        (rd_q_count[flat_idx] < READ_FIFO_DEPTH) &&
                                        (total_read_outstanding_w < MAX_OUTSTANDING) &&
+                                       (request_uses_direct_bypass(active_mode,
+                                                                  active_offset,
+                                                                  read_req_addr[(flat_idx * ADDR_BITS) +: ADDR_BITS],
+                                                                  read_req_total_size[(flat_idx * 8) +: 8],
+                                                                  read_req_bypass[flat_idx]) ||
+                                        (!read_capture_line_hazard(
+                                             read_req_addr[(flat_idx * ADDR_BITS) +: ADDR_BITS]) &&
+                                         !read_master_response_busy(flat_idx) &&
+                                         ((flat_idx == MASTER_DCACHE_R) ||
+                                          !read_non_dcache_core_path_master_busy(flat_idx)))) &&
                                        !read_id_conflict(flat_idx,
                                            read_req_id[(flat_idx * ID_BITS) +: ID_BITS]);
             read_resp_valid[flat_idx] = rd_resp_valid_r[flat_idx];

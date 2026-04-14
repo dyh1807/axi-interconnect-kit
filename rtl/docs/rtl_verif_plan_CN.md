@@ -185,9 +185,20 @@
 
 覆盖：
 
-- 某个 queue 头部的 same-line blocked cacheable request 不会被 compat 提前弹出
+- same-line blocked cacheable request 在接受面就会被 backpressure 挡住，
+  不会先被 accept 到 compat FIFO
 - 其它 master 上不相关 line 的 cacheable miss 仍可继续进入 core / lower
 - same-line hazard 消失后，原先被挡住的请求仍会继续推进并正常回包
+
+### `tb_axi_llc_subsystem_compat_read_accept_contract.v`
+
+覆盖：
+
+- same-line blocked cacheable read 不会被 compat 提前 accept
+- 非 `MASTER_DCACHE_R` 的 master 在已有 core-path read 未退休时，不会继续 accept
+  新的 cacheable read
+- 当该 master 的前台 read response slot / response queue 仍忙时，不会继续 accept
+  新的 cacheable read
 
 ### `tb_axi_llc_subsystem_compat_direct_bypass_contract.v`
 

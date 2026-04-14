@@ -149,6 +149,9 @@ axi_llc_subsystem
   - reconfig / `invalidate_all` 会先在 compat 层排空本地 queue / inflight / response slot，
     之后再把维护请求交给 core
   - `MASTER_DCACHE_R` 保留 same-cycle accept；其它 read master 仍保持 ready-first
+  - 对 cacheable/core-path read，compat 的 capture/ready 合同已按当前 C++ 收紧：
+    same-line blocked read 不再先被 accept 到本地 FIFO；非 `MASTER_DCACHE_R` 也不会
+    在已有 core-path read/response 未退休时继续接受新的 cacheable read
   - `ready` 采用 sticky-grant 语义：一次只对一个 read master、一个 write master
     给出 ready，并在握手或请求撤销前保持
 - `src/axi_llc_axi_bridge.v`
@@ -219,6 +222,7 @@ axi_llc_subsystem
 - `tb/tb_axi_llc_subsystem_axi_same_master_multiread_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_direct_bypass_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_same_line_hol_contract.v`
+- `tb/tb_axi_llc_subsystem_compat_read_accept_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_write_victim_multiflow_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_victim_line_hazard_contract.v`
 - `tb/tb_axi_llc_axi_bridge_read_outstanding_contract.v`

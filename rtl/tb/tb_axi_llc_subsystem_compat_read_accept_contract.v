@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 `include "axi_llc_params.vh"
 
-module tb_axi_llc_subsystem_compat_same_line_hol_contract;
+module tb_axi_llc_subsystem_compat_read_accept_contract;
 
     localparam ADDR_BITS         = `AXI_LLC_ADDR_BITS;
     localparam ID_BITS           = `AXI_LLC_ID_BITS;
@@ -22,12 +22,12 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
     localparam READ_RESP_BITS    = `AXI_LLC_READ_RESP_BITS;
 
     localparam [MODE_BITS-1:0] MODE_CACHE = 2'b01;
-    localparam [ADDR_BITS-1:0] ADDR_A0    = 32'h0000_0000;
-    localparam [ADDR_BITS-1:0] ADDR_A1    = 32'h0000_0004;
+    localparam [ADDR_BITS-1:0] ADDR_A     = 32'h0000_0000;
     localparam [ADDR_BITS-1:0] ADDR_B     = 32'h0000_0008;
-    localparam [ID_BITS-1:0]   ID_A0      = 4'h1;
-    localparam [ID_BITS-1:0]   ID_A1      = 4'h2;
-    localparam [ID_BITS-1:0]   ID_B       = 4'h3;
+    localparam [ADDR_BITS-1:0] ADDR_C     = 32'h0000_0010;
+    localparam [ID_BITS-1:0]   ID_A       = 4'h1;
+    localparam [ID_BITS-1:0]   ID_B       = 4'h2;
+    localparam [ID_BITS-1:0]   ID_C       = 4'h3;
 
     reg                                   clk;
     reg                                   rst_n;
@@ -97,9 +97,11 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
 
     reg  [LINE_BITS-1:0]                  line_a;
     reg  [LINE_BITS-1:0]                  line_b;
-    reg  [ID_BITS-1:0]                    lower_id_a0;
+    reg  [LINE_BITS-1:0]                  line_c;
+    reg  [ID_BITS-1:0]                    lower_id_a;
     reg  [ID_BITS-1:0]                    lower_id_b;
-    reg  [ID_BITS-1:0]                    lower_id_a1;
+    reg  [ID_BITS-1:0]                    lower_id_c;
+    reg  [ID_BITS-1:0]                    lower_id_d;
     integer                               timeout;
 
     always #5 clk = ~clk;
@@ -140,7 +142,7 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
     task fail_now;
         input [8*160-1:0] msg;
         begin
-            $display("tb_axi_llc_subsystem_compat_same_line_hol_contract FAIL: %0s", msg);
+            $display("tb_axi_llc_subsystem_compat_read_accept_contract FAIL: %0s", msg);
             $finish(1);
         end
     endtask
@@ -226,7 +228,7 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
             for (idx = 0; idx < cycles; idx = idx + 1) begin
                 @(posedge clk);
                 if (read_req_accepted[master]) begin
-                    fail_now("same-line read should stay blocked");
+                    fail_now("read request should stay blocked");
                 end
             end
             @(negedge clk);
@@ -301,7 +303,6 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
             if (get_read_resp_line(master) !== expect_line) begin
                 fail_now("read response data mismatch");
             end
-            @(posedge clk);
         end
     endtask
 
@@ -415,41 +416,64 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
         invalidate_all_valid = 1'b0;
 
         line_a = make_line(8'h10);
-        line_b = make_line(8'h80);
-        lower_id_a0 = {ID_BITS{1'b0}};
+        line_b = make_line(8'h40);
+        line_c = make_line(8'h80);
+        lower_id_a = {ID_BITS{1'b0}};
         lower_id_b = {ID_BITS{1'b0}};
-        lower_id_a1 = {ID_BITS{1'b0}};
+        lower_id_c = {ID_BITS{1'b0}};
+        lower_id_d = {ID_BITS{1'b0}};
 
         wait_cycles(5);
         rst_n = 1'b1;
         wait_cycles(5);
         wait_mode_cache_active();
 
-        $display("STEP 1 master0 issues line A read miss");
-        issue_read(0, ADDR_A0, ID_A0);
-        wait_cache_req(1'b0, ADDR_A0, lower_id_a0);
+        $display("STEP 1 non-dcache master accepts first cacheable read");
+        issue_read(0, ADDR_A, ID_A);
+        wait_cache_req(1'b0, ADDR_A, lower_id_a);
 
-        $display("STEP 2 same-line read must stay blocked at accept side");
-        hold_read_blocked(0, ADDR_A1, ID_A1, 4);
+        $display("STEP 2 non-dcache master cannot accept a second cacheable miss while first is pending");
+        hold_read_blocked(0, ADDR_B, ID_B, 6);
 
-        $display("STEP 3 unrelated line-B miss from another master still proceeds");
-        issue_read(1, ADDR_B, ID_B);
-
-        $display("STEP 4 unrelated line-B miss must bypass same-line blocked head");
-        wait_cache_req(1'b0, ADDR_B, lower_id_b);
-        if (lower_id_b == lower_id_a0) begin
-            fail_now("second cache slot id should differ from first inflight miss");
+        $display("STEP 3 first response arrives and occupies front response slot");
+        read_resp_ready[0] = 1'b0;
+        drive_cache_resp(lower_id_a, line_a);
+        if (!read_resp_valid[0]) begin
+            fail_now("read response should occupy master0 response slot");
         end
-        drive_cache_resp(lower_id_b, line_b);
-        wait_read_resp(1, ID_B, line_b);
 
-        $display("STEP 5 once line A retires, same-line read can be accepted");
-        drive_cache_resp(lower_id_a0, line_a);
-        wait_read_resp(0, ID_A0, line_a);
-        issue_read(0, ADDR_A1, ID_A1);
-        wait_cache_req(1'b0, ADDR_A0, lower_id_a1);
-        drive_cache_resp(lower_id_a1, line_a);
-        wait_read_resp(0, ID_A1, line_a);
+        $display("STEP 4 front response busy still blocks new cacheable read accept");
+        hold_read_blocked(0, ADDR_C, ID_C, 6);
+
+        $display("STEP 5 once response slot clears, new read can be accepted");
+        read_resp_ready[0] = 1'b1;
+        @(posedge clk);
+        wait_cycles(2);
+        issue_read(0, ADDR_C, ID_C);
+        wait_cache_req(1'b0, ADDR_C, lower_id_c);
+        drive_cache_resp(lower_id_c, line_c);
+        wait_read_resp(0, ID_C, line_c);
+
+        $display("STEP 6 dcache read still accepts with same-cycle contract");
+        issue_read(1, ADDR_B, ID_B);
+        wait_cache_req(1'b0, ADDR_B, lower_id_b);
+
+        $display("STEP 7 dcache response slot busy must also block a new cacheable read");
+        read_resp_ready[1] = 1'b0;
+        drive_cache_resp(lower_id_b, line_b);
+        if (!read_resp_valid[1]) begin
+            fail_now("dcache response should occupy front slot");
+        end
+        hold_read_blocked(1, ADDR_A, ID_A, 6);
+
+        $display("STEP 8 once dcache response slot clears, next cacheable read may proceed");
+        read_resp_ready[1] = 1'b1;
+        @(posedge clk);
+        wait_cycles(2);
+        issue_read(1, ADDR_A, ID_A);
+        wait_cache_req(1'b0, ADDR_A, lower_id_d);
+        drive_cache_resp(lower_id_d, line_a);
+        wait_read_resp(1, ID_A, line_a);
 
         if (bypass_req_valid) begin
             fail_now("unexpected bypass activity");
@@ -458,7 +482,7 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
             fail_now("config_error asserted unexpectedly");
         end
 
-        $display("tb_axi_llc_subsystem_compat_same_line_hol_contract PASS");
+        $display("tb_axi_llc_subsystem_compat_read_accept_contract PASS");
         $finish(0);
     end
 
