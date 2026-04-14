@@ -92,6 +92,7 @@ module axi_llc_subsystem_compat #(
     output     [ADDR_BITS-1:0]              bypass_req_addr,
     output     [ID_BITS-1:0]                bypass_req_id,
     output     [7:0]                        bypass_req_size,
+    output                                  bypass_req_mode2_ddr_aligned,
     output     [LINE_BITS-1:0]              bypass_req_wdata,
     output     [LINE_BYTES-1:0]             bypass_req_wstrb,
     input                                   bypass_resp_valid,
@@ -394,6 +395,22 @@ module axi_llc_subsystem_compat #(
             end else begin
                 request_uses_direct_bypass = 1'b1;
             end
+        end
+    endfunction
+
+    function request_needs_mode2_ddr_aligned;
+        input [MODE_BITS-1:0] mode_value;
+        input [ADDR_BITS-1:0] offset_value;
+        input [ADDR_BITS-1:0] addr_value;
+        input [7:0]           total_size_value;
+        begin
+            request_needs_mode2_ddr_aligned =
+                (mode_value == MODE_MAPPED) &&
+                !request_in_mapped_window(offset_value,
+                                          addr_value,
+                                          total_size_value) &&
+                !((addr_value >= MMIO_BASE) &&
+                  (addr_value < (MMIO_BASE + MMIO_SIZE)));
         end
     endfunction
 
@@ -1102,6 +1119,11 @@ module axi_llc_subsystem_compat #(
     assign bypass_req_addr = direct_dispatch_addr_w;
     assign bypass_req_id = direct_slot_free_w[ID_BITS-1:0];
     assign bypass_req_size = direct_dispatch_size_w;
+    assign bypass_req_mode2_ddr_aligned =
+        request_needs_mode2_ddr_aligned(active_mode,
+                                        active_offset,
+                                        direct_dispatch_addr_w,
+                                        direct_dispatch_size_w);
     assign bypass_req_wdata = direct_dispatch_wdata_w;
     assign bypass_req_wstrb = direct_dispatch_wstrb_w;
     assign bypass_resp_ready = direct_resp_accept_w;

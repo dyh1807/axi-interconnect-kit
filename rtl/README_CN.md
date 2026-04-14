@@ -146,6 +146,8 @@ axi_llc_subsystem
   - 同一 read master 也支持多笔在途 read response，通过前台 response slot +
     per-master response queue 依次回传
   - `mode=1` bypass、`mode=0/3`、以及 `mode=2` 窗口外请求可直接走 bypass side path
+  - `mode=2` 窗口外且起始地址不在 MMIO 区间内的 direct-bypass 请求，会额外带
+    `bypass_req_mode2_ddr_aligned`
   - reconfig / `invalidate_all` 会先在 compat 层排空本地 queue / inflight / response slot，
     之后再把维护请求交给 core
   - `MASTER_DCACHE_R` 保留 same-cycle accept；其它 read master 仍保持 ready-first
@@ -161,6 +163,12 @@ axi_llc_subsystem
     - `size` 固定等于下游 AXI beat 宽度
     - `burst` 固定为 `INCR`
     - beat `data/strb` 按低地址连续切片
+  - `mode=2` 窗口外 direct-bypass 的 DDR 请求会在 bridge 内改写成：
+    - 整个请求落在 1 个 32B beat 内：发 32B 对齐单 beat
+    - 跨 32B：退回 64B line / 2 beat
+    - 读响应按原始地址低位重新抽取到低字节
+    - 写请求按原始地址低位平移 `wdata/wstrb`
+    - 起始地址命中 MMIO 区间的请求不做这组改写
 - `src/axi_llc_subsystem.v`
   - 当前对外 RTL 子模块顶层
   - 上游保持 C++ 风格的多 read/write master 自定义接口
@@ -217,6 +225,8 @@ axi_llc_subsystem
 - `tb/tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_bypass_read_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_bypass_write_contract.v`
+- `tb/tb_axi_llc_subsystem_axi_mode2_aligned_read_contract.v`
+- `tb/tb_axi_llc_subsystem_axi_mode2_aligned_write_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_mode1_multiflow_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_cache_multiread_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_same_master_multiread_contract.v`

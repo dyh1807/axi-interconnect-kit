@@ -232,6 +232,12 @@
   - `burst` 固定 `INCR`
   - 写 `data/strb` 按低地址连续切片
 - 读 beat 也按低地址连续拼回 `READ_RESP_BITS=256B` 缓冲
+- `mode=2` 窗口外 direct-bypass 的 DDR 请求会额外做一层对齐改写：
+  - 起始地址命中 MMIO 区间：保持原始 bypass 地址/size
+  - 非 MMIO 且整个请求落在 1 个 32B beat 内：发 32B 对齐单 beat
+  - 非 MMIO 且跨 32B：退回 64B line / 2 beat
+  - read completion 在 bridge 内按原始地址低位重新抽取到低字节
+  - write 的 `WDATA/WSTRB` 在 bridge 内按原始地址低位平移
 - 当前 bridge 已具备：
   - read / write 各自独立的 pending table
   - read / write 各自独立的 `axi_id` 分配

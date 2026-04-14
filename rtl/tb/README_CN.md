@@ -10,6 +10,7 @@
 - reconfiguration FSM
 - 顶层 mode 路由、mode2 可见性、mode 切换失效
 - 对外顶层到单组 AXI4 的请求打包合同
+- mode2 窗口外 DDR 对齐读写合同（含跨 32B 回退和 MMIO passthrough）
 
 ## 当前提供
 
@@ -39,6 +40,8 @@
 - `tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 - `tb_axi_llc_subsystem_axi_bypass_read_contract.v`
 - `tb_axi_llc_subsystem_axi_bypass_write_contract.v`
+- `tb_axi_llc_subsystem_axi_mode2_aligned_read_contract.v`
+- `tb_axi_llc_subsystem_axi_mode2_aligned_write_contract.v`
 - `tb_axi_llc_subsystem_axi_mode1_multiflow_contract.v`
 - `tb_axi_llc_subsystem_axi_cache_multiread_contract.v`
 - `tb_axi_llc_subsystem_axi_same_master_multiread_contract.v`

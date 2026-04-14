@@ -140,6 +140,7 @@ module axi_llc_subsystem #(
     wire [ADDR_BITS-1:0]     bypass_req_addr_w;
     wire [ID_BITS-1:0]       bypass_req_id_w;
     wire [7:0]               bypass_req_size_w;
+    wire                     bypass_req_mode2_ddr_aligned_w;
     wire [LINE_BITS-1:0]     bypass_req_wdata_w;
     wire [LINE_BYTES-1:0]    bypass_req_wstrb_w;
     wire                     bypass_resp_valid_w;
@@ -225,6 +226,7 @@ module axi_llc_subsystem #(
         .bypass_req_addr       (bypass_req_addr_w),
         .bypass_req_id         (bypass_req_id_w),
         .bypass_req_size       (bypass_req_size_w),
+        .bypass_req_mode2_ddr_aligned(bypass_req_mode2_ddr_aligned_w),
         .bypass_req_wdata      (bypass_req_wdata_w),
         .bypass_req_wstrb      (bypass_req_wstrb_w),
         .bypass_resp_valid     (bypass_resp_valid_w),
@@ -278,6 +280,7 @@ module axi_llc_subsystem #(
         .bypass_req_addr   (bypass_req_addr_w),
         .bypass_req_id     (bypass_req_id_w),
         .bypass_req_size   (bypass_req_size_w),
+        .bypass_req_mode2_ddr_aligned(bypass_req_mode2_ddr_aligned_w),
         .bypass_req_wdata  (bypass_req_wdata_w),
         .bypass_req_wstrb  (bypass_req_wstrb_w),
         .bypass_resp_valid (bypass_resp_valid_w),

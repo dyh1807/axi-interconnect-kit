@@ -152,6 +152,7 @@ module tb_axi_llc_axi_bridge_read_outstanding_contract;
         .bypass_req_addr  (bypass_req_addr),
         .bypass_req_id    (bypass_req_id),
         .bypass_req_size  (bypass_req_size),
+        .bypass_req_mode2_ddr_aligned(1'b0),
         .bypass_req_wdata (bypass_req_wdata),
         .bypass_req_wstrb (bypass_req_wstrb),
         .bypass_resp_valid(bypass_resp_valid),

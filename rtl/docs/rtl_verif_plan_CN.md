@@ -285,6 +285,26 @@
 - `W` 数据与 `WSTRB` 采用低地址连续打包，不再按地址低位二次移位
 - `B` 回来后生成 write response
 
+### `tb_axi_llc_subsystem_axi_mode2_aligned_read_contract.v`
+
+覆盖：
+
+- `mode=2` 窗口外非 MMIO 4B read 会发 32B 对齐单 beat `AR`
+- `mode=2` 窗口外跨 32B 的 8B read 会退回 64B line / `ARLEN=1`
+- 对齐读取后的返回数据会按原始地址低位重新抽取到低字节
+- 起始地址命中 MMIO 区间的请求保持原始 `ARADDR`
+- 起始地址命中 MMIO、但请求尾部越过 MMIO 末端时，仍保持 MMIO passthrough
+
+### `tb_axi_llc_subsystem_axi_mode2_aligned_write_contract.v`
+
+覆盖：
+
+- `mode=2` 窗口外非 MMIO 4B write 会发 32B 对齐单 beat `AW/W`
+- `mode=2` 窗口外跨 32B 的 8B write 会退回 64B line / 2 beat
+- 对齐写的 `WDATA/WSTRB` 会按原始地址低位平移
+- 起始地址命中 MMIO 区间的请求保持原始 `AWADDR`
+- 起始地址命中 MMIO、但请求尾部越过 MMIO 末端时，仍保持 MMIO passthrough
+
 ### `tb_axi_llc_subsystem_invalidate_all_contract.v`
 
 覆盖：
