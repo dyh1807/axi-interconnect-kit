@@ -30,13 +30,16 @@ struct ARLatch_t {
   bool valid;
   bool accepted_upstream;
   bool to_llc;
+  bool resp_extract_from_aligned_beat;
   uint32_t addr;
+  uint32_t upstream_addr;
   uint8_t len;
   uint8_t size;
   uint8_t burst;
   uint8_t id;
   uint8_t master_id;
   uint8_t orig_id;
+  uint8_t upstream_total_size;
 };
 
 // Latched AW request - holds values until awready
@@ -60,6 +63,9 @@ struct ReadPendingTxn {
   uint8_t total_beats;
   uint8_t beats_done;
   uint32_t addr;
+  uint32_t upstream_addr;
+  uint8_t upstream_total_size;
+  bool resp_extract_from_aligned_beat;
   bool to_llc;
   WideReadData_t data;
   uint32_t stall_cycles;
@@ -74,6 +80,7 @@ struct LlcUpstreamReqLatch {
   uint8_t id = 0;
   bool bypass = false;
   bool direct_mapped = false;
+  bool mode2_ddr_aligned = false;
 };
 
 struct ReadReqHoldLatch {
@@ -93,6 +100,7 @@ struct LlcUpstreamWriteReqLatch {
   WideWriteStrb_t wstrb{};
   bool bypass = false;
   bool direct_mapped = false;
+  bool mode2_ddr_aligned = false;
 };
 
 struct WritePendingTxn {
@@ -261,6 +269,9 @@ private:
   uint32_t llc_mem_ignored_b_count_ = 0;
   bool ar_from_llc_c = false;
   uint8_t ar_llc_mem_id_c = 0;
+  bool ar_llc_resp_extract_from_aligned_beat_c = false;
+  uint32_t ar_llc_upstream_addr_c = 0;
+  uint8_t ar_llc_upstream_total_size_c = 0;
   int ar_master_c = -1;
   uint8_t ar_orig_id_c = 0;
   uint8_t runtime_mode_ = 1;

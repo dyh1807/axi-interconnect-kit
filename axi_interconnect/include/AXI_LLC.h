@@ -73,6 +73,7 @@ struct AXI_LLC_ReadReqIn_t {
   wire<4> id = 0;
   wire<1> bypass = false;
   wire<1> direct_mapped = false;
+  wire<1> mode2_ddr_aligned = false;
 };
 
 struct AXI_LLC_ReadReqOut_t {
@@ -98,6 +99,7 @@ struct AXI_LLC_WriteReqIn_t {
   wire<4> id = 0;
   wire<1> bypass = false;
   wire<1> direct_mapped = false;
+  wire<1> mode2_ddr_aligned = false;
 };
 
 struct AXI_LLC_WriteReqOut_t {
@@ -149,6 +151,7 @@ struct AXI_LLC_MemOut_t {
   wire<1> read_req_valid = false;
   wire<32> read_req_addr = 0;
   wire<8> read_req_size = 0;
+  wire<1> read_req_mode2_ddr_aligned = false;
   wire<4> read_req_id = 0;
   wire<1> read_resp_ready = false;
   wire<1> write_req_valid = false;
@@ -156,6 +159,7 @@ struct AXI_LLC_MemOut_t {
   WideWriteData_t write_req_data{};
   WideWriteStrb_t write_req_strobe{};
   wire<8> write_req_size = 0;
+  wire<1> write_req_mode2_ddr_aligned = false;
   wire<4> write_req_id = 0;
   wire<1> write_resp_ready = false;
 };
@@ -211,6 +215,7 @@ struct AXI_LLCMissEntry_t {
   bool bypass = false;
   bool is_prefetch = false;
   bool is_write = false;
+  bool mode2_ddr_aligned = false;
   bool prefetch_train = false;
   bool mem_req_issued = false;
   bool refill_valid = false;
@@ -241,6 +246,7 @@ struct AXI_LLCWritePendingReq_t {
   bool valid = false;
   bool bypass = false;
   bool direct_mapped = false;
+  bool mode2_ddr_aligned = false;
   uint8_t master = 0;
   uint8_t id = 0;
   uint8_t total_size = 0;
@@ -253,6 +259,7 @@ struct AXI_LLCWriteCtx_t {
   bool valid = false;
   bool bypass = false;
   bool direct_mapped = false;
+  bool mode2_ddr_aligned = false;
   bool lookup_pending = false;
   bool mem_issued = false;
   bool mem_done = false;
@@ -300,6 +307,7 @@ struct AXI_LLC_Regs_t {
   bool lookup_is_write_r = false;
   bool lookup_is_bypass_r = false;
   bool lookup_is_direct_mapped_r = false;
+  bool lookup_is_mode2_ddr_aligned_r = false;
   bool prefetch_stream_valid_r = false;
   uint32_t prefetch_last_miss_line_r = 0;
   uint8_t prefetch_quiet_cycles_r = 0;

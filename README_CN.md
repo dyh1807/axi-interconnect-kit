@@ -101,6 +101,13 @@ router 负责 AXI 侧地址译码。
   - `mode=1`：LLC_ON
   - `mode=2`：`[offset, offset + 4MB)` 映射为 direct-mapped 的本地 LLC 存储窗口；
     窗口内访问不分配 MSHR、也不会从 DDR refill，窗口外访问强制 `bypass`
+  - `mode=2` 窗口外若继续走 DDR：
+    - 非 MMIO 且请求规模 `<= 256-bit` 时，interconnect 会把它改写成
+      `256-bit` 对齐的单 beat AXI 访问
+    - MMIO 排除当前按“请求起始地址是否命中 MMIO 区间”判断
+    - 读响应会在 interconnect 处按原始地址低位重新截断/对齐后，再回给上游
+    - 写请求会在对齐后的单 beat 内按地址低位平移 `data/wstrb`
+    - 若请求规模暂时大于 `256-bit`，当前仍按原有 `64B/2 beat` 路径处理
   - `mode=0/3`：LLC_OFF，所有请求强制 `bypass`
   - `mode` / `offset` 变化遵循 `drain -> invalidate_all -> activate`：
     切换期间不再接收新的上游请求，旧模式下已在途的 LLC/AXI 工作先排空，

@@ -8,6 +8,7 @@
  */
 
 #include "AXI_Interconnect.h"
+#include "axi_mmio_map.h"
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
@@ -132,6 +133,92 @@ void unpack_downstream_read_beat(ReadPendingTxn &txn, sim_ddr::axi_data_t beat) 
     }
     txn.data[idx] = axi_compat::get_u32(beat, word);
   }
+}
+
+uint8_t get_wide_read_byte(const WideReadData_t &data, uint32_t byte_idx) {
+  const uint32_t word_idx = byte_idx / sizeof(uint32_t);
+  const uint32_t byte_off = byte_idx % sizeof(uint32_t);
+  if (word_idx >= MAX_READ_TRANSACTION_WORDS) {
+    return 0;
+  }
+  return static_cast<uint8_t>((data.words[word_idx] >> (byte_off * 8u)) & 0xFFu);
+}
+
+void set_wide_read_byte(WideReadData_t &data, uint32_t byte_idx, uint8_t value) {
+  const uint32_t word_idx = byte_idx / sizeof(uint32_t);
+  const uint32_t byte_off = byte_idx % sizeof(uint32_t);
+  if (word_idx >= MAX_READ_TRANSACTION_WORDS) {
+    return;
+  }
+  const uint32_t shift = byte_off * 8u;
+  const uint32_t mask = 0xFFu << shift;
+  data.words[word_idx] =
+      (data.words[word_idx] & ~mask) | (static_cast<uint32_t>(value) << shift);
+}
+
+uint8_t get_wide_write_byte(const WideWriteData_t &data, uint32_t byte_idx) {
+  const uint32_t word_idx = byte_idx / sizeof(uint32_t);
+  const uint32_t byte_off = byte_idx % sizeof(uint32_t);
+  if (word_idx >= MAX_WRITE_TRANSACTION_WORDS) {
+    return 0;
+  }
+  return static_cast<uint8_t>((data.words[word_idx] >> (byte_off * 8u)) & 0xFFu);
+}
+
+void set_wide_write_byte(WideWriteData_t &data, uint32_t byte_idx, uint8_t value) {
+  const uint32_t word_idx = byte_idx / sizeof(uint32_t);
+  const uint32_t byte_off = byte_idx % sizeof(uint32_t);
+  if (word_idx >= MAX_WRITE_TRANSACTION_WORDS) {
+    return;
+  }
+  const uint32_t shift = byte_off * 8u;
+  const uint32_t mask = 0xFFu << shift;
+  data.words[word_idx] =
+      (data.words[word_idx] & ~mask) | (static_cast<uint32_t>(value) << shift);
+}
+
+uint32_t align_downstream_addr(uint32_t addr, uint32_t align_bytes) {
+  return align_bytes == 0 ? addr : (addr / align_bytes) * align_bytes;
+}
+
+WideReadData_t extract_aligned_downstream_read(const ReadPendingTxn &txn) {
+  WideReadData_t out;
+  out.clear();
+  const uint32_t byte_off = txn.upstream_addr - txn.addr;
+  for (uint32_t dst = 0; dst + byte_off < MAX_READ_TRANSACTION_BYTES; ++dst) {
+    set_wide_read_byte(out, dst, get_wide_read_byte(txn.data, byte_off + dst));
+  }
+  return out;
+}
+
+WideWriteData_t align_mode2_downstream_write_data(const WideWriteData_t &src,
+                                                  uint32_t addr,
+                                                  uint32_t issued_addr) {
+  WideWriteData_t out;
+  out.clear();
+  const uint32_t byte_off = addr - issued_addr;
+  for (uint32_t byte = 0;
+       byte < MAX_WRITE_TRANSACTION_BYTES && (byte + byte_off) < MAX_WRITE_TRANSACTION_BYTES;
+       ++byte) {
+    set_wide_write_byte(out, byte + byte_off, get_wide_write_byte(src, byte));
+  }
+  return out;
+}
+
+WideWriteStrb_t align_mode2_downstream_write_strobe(const WideWriteStrb_t &src,
+                                                    uint32_t addr,
+                                                    uint32_t issued_addr) {
+  WideWriteStrb_t out;
+  out.clear();
+  const uint32_t byte_off = addr - issued_addr;
+  for (uint32_t byte = 0;
+       byte < MAX_WRITE_TRANSACTION_BYTES && (byte + byte_off) < MAX_WRITE_TRANSACTION_BYTES;
+       ++byte) {
+    if (src.test(byte)) {
+      out.set(byte + byte_off, true);
+    }
+  }
+  return out;
 }
 
 void dump_focus_read_txn(const char *tag, long long cyc,
@@ -331,13 +418,16 @@ void AXI_Interconnect::init() {
   ar_latched.valid = false;
   ar_latched.accepted_upstream = false;
   ar_latched.to_llc = false;
+  ar_latched.resp_extract_from_aligned_beat = false;
   ar_latched.addr = 0;
+  ar_latched.upstream_addr = 0;
   ar_latched.len = 0;
   ar_latched.size = kDownstreamAxiSize;
   ar_latched.burst = sim_ddr::AXI_BURST_INCR;
   ar_latched.id = 0;
   ar_latched.master_id = 0;
   ar_latched.orig_id = 0;
+  ar_latched.upstream_total_size = 0;
 
   w_active = false;
   w_current = {};
@@ -740,6 +830,8 @@ void AXI_Interconnect::prepare_llc_inputs() {
         llc_upstream_req[master].bypass;
     llc.io.ext_in.upstream.read_req[master].direct_mapped =
         llc_upstream_req[master].direct_mapped;
+    llc.io.ext_in.upstream.read_req[master].mode2_ddr_aligned =
+        llc_upstream_req[master].mode2_ddr_aligned;
     llc.io.ext_in.upstream.read_resp[master].ready = read_ports[master].resp.ready;
   }
 
@@ -756,6 +848,8 @@ void AXI_Interconnect::prepare_llc_inputs() {
         llc_upstream_write_req[master].bypass;
     llc.io.ext_in.upstream.write_req[master].direct_mapped =
         llc_upstream_write_req[master].direct_mapped;
+    llc.io.ext_in.upstream.write_req[master].mode2_ddr_aligned =
+        llc_upstream_write_req[master].mode2_ddr_aligned;
     llc.io.ext_in.upstream.write_resp[master].ready = write_ports[master].resp.ready;
   }
 
@@ -773,7 +867,9 @@ void AXI_Interconnect::prepare_llc_inputs() {
     }
     dump_focus_read_words("MEM-RSP-FWD", sim_time, txn);
     llc.io.ext_in.mem.read_resp_valid = true;
-    llc.io.ext_in.mem.read_resp_data = txn.data;
+    llc.io.ext_in.mem.read_resp_data = txn.resp_extract_from_aligned_beat
+                                           ? extract_aligned_downstream_read(txn)
+                                           : txn.data;
     llc.io.ext_in.mem.read_resp_id = txn.orig_id;
     break;
   }
@@ -858,6 +954,9 @@ void AXI_Interconnect::comb_inputs() {
 void AXI_Interconnect::comb_read_arbiter() {
   ar_from_llc_c = false;
   ar_llc_mem_id_c = 0;
+  ar_llc_resp_extract_from_aligned_beat_c = false;
+  ar_llc_upstream_addr_c = 0;
+  ar_llc_upstream_total_size_c = 0;
   ar_master_c = -1;
   ar_orig_id_c = 0;
   for (int i = 0; i < NUM_READ_MASTERS; ++i) {
@@ -910,18 +1009,47 @@ void AXI_Interconnect::comb_read_arbiter() {
 
   if (llc_enabled()) {
     if (llc.io.ext_out.mem.read_req_valid && can_issue_llc_read_req()) {
+      const uint16_t llc_read_bytes =
+          static_cast<uint16_t>(llc.io.ext_out.mem.read_req_size) + 1u;
+      const uint32_t llc_read_beat_addr =
+          align_downstream_addr(llc.io.ext_out.mem.read_req_addr,
+                                kDownstreamBeatBytes);
+      const bool mode2_single_beat_read =
+          llc.io.ext_out.mem.read_req_mode2_ddr_aligned &&
+          llc_read_bytes <= kDownstreamBeatBytes &&
+          (static_cast<uint32_t>(llc.io.ext_out.mem.read_req_addr - llc_read_beat_addr) +
+           llc_read_bytes) <= kDownstreamBeatBytes;
+      const uint32_t llc_read_addr = llc.io.ext_out.mem.read_req_mode2_ddr_aligned
+                                         ? (mode2_single_beat_read
+                                                ? llc_read_beat_addr
+                                                : align_downstream_addr(
+                                                      llc.io.ext_out.mem.read_req_addr,
+                                                      llc_config.line_bytes))
+                                         : llc.io.ext_out.mem.read_req_addr;
+      const uint8_t llc_read_size = llc.io.ext_out.mem.read_req_mode2_ddr_aligned
+                                        ? (mode2_single_beat_read
+                                               ? static_cast<uint8_t>(
+                                                     kDownstreamBeatBytes - 1u)
+                                               : static_cast<uint8_t>(
+                                                     llc_config.line_bytes - 1u))
+                                        : static_cast<uint8_t>(
+                                              llc.io.ext_out.mem.read_req_size);
       if (llc_focus_line(llc.io.ext_out.mem.read_req_addr)) {
         std::printf(
             "[AXI-LLC][AR-ISSUE] cyc=%lld addr=0x%08x slot=%u size=%u\n",
-            sim_time, llc.io.ext_out.mem.read_req_addr,
+            sim_time, llc_read_addr,
             static_cast<unsigned>(llc.io.ext_out.mem.read_req_id),
-            static_cast<unsigned>(llc.io.ext_out.mem.read_req_size));
+            static_cast<unsigned>(llc_read_size));
       }
       ar_from_llc_c = true;
       ar_llc_mem_id_c = llc.io.ext_out.mem.read_req_id;
+      ar_llc_resp_extract_from_aligned_beat_c =
+          llc.io.ext_out.mem.read_req_mode2_ddr_aligned;
+      ar_llc_upstream_addr_c = llc.io.ext_out.mem.read_req_addr;
+      ar_llc_upstream_total_size_c = llc.io.ext_out.mem.read_req_size;
       axi_io.ar.arvalid = true;
-      axi_io.ar.araddr = llc.io.ext_out.mem.read_req_addr;
-      axi_io.ar.arlen = calc_burst_len(llc.io.ext_out.mem.read_req_size);
+      axi_io.ar.araddr = llc_read_addr;
+      axi_io.ar.arlen = calc_burst_len(llc_read_size);
       axi_io.ar.arsize = kDownstreamAxiSize;
       axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
       axi_io.ar.arid = alloc_read_axi_id();
@@ -953,6 +1081,10 @@ void AXI_Interconnect::comb_read_arbiter() {
             static_cast<bool>(read_ports[master].req.bypass));
         llc_upstream_capture_c[master].direct_mapped =
             request_uses_direct_mapped_llc(req_addr, req_total_size);
+        llc_upstream_capture_c[master].mode2_ddr_aligned =
+            runtime_mode_ == 2u &&
+            !is_mmio_addr(req_addr) &&
+            !request_in_mapped_window(req_addr, req_total_size);
         continue;
       }
       req_ready_r[master] = true;
@@ -1132,9 +1264,35 @@ void AXI_Interconnect::comb_write_request() {
       axi_io.aw.awvalid = false;
       if (!w_active && !llc_mem_write_resp_valid_ &&
           llc.io.ext_out.mem.write_req_valid) {
+        const uint16_t llc_write_bytes =
+            static_cast<uint16_t>(llc.io.ext_out.mem.write_req_size) + 1u;
+        const uint32_t llc_write_beat_addr =
+            align_downstream_addr(llc.io.ext_out.mem.write_req_addr,
+                                  kDownstreamBeatBytes);
+        const bool mode2_single_beat_write =
+            llc.io.ext_out.mem.write_req_mode2_ddr_aligned &&
+            llc_write_bytes <= kDownstreamBeatBytes &&
+            (static_cast<uint32_t>(llc.io.ext_out.mem.write_req_addr -
+                                   llc_write_beat_addr) +
+             llc_write_bytes) <= kDownstreamBeatBytes;
+        const uint32_t llc_write_addr = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
+                                            ? (mode2_single_beat_write
+                                                   ? llc_write_beat_addr
+                                                   : align_downstream_addr(
+                                                         llc.io.ext_out.mem.write_req_addr,
+                                                         llc_config.line_bytes))
+                                            : llc.io.ext_out.mem.write_req_addr;
+        const uint8_t llc_write_size = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
+                                           ? (mode2_single_beat_write
+                                                  ? static_cast<uint8_t>(
+                                                        kDownstreamBeatBytes - 1u)
+                                                  : static_cast<uint8_t>(
+                                                        llc_config.line_bytes - 1u))
+                                           : static_cast<uint8_t>(
+                                                 llc.io.ext_out.mem.write_req_size);
         axi_io.aw.awvalid = true;
-        axi_io.aw.awaddr = llc.io.ext_out.mem.write_req_addr;
-        axi_io.aw.awlen = calc_burst_len(llc.io.ext_out.mem.write_req_size);
+        axi_io.aw.awaddr = llc_write_addr;
+        axi_io.aw.awlen = calc_burst_len(llc_write_size);
         axi_io.aw.awsize = kDownstreamAxiSize;
         axi_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
         axi_io.aw.awid = llc.io.ext_out.mem.write_req_id & 0x7;
@@ -1176,6 +1334,10 @@ void AXI_Interconnect::comb_write_request() {
               static_cast<bool>(write_ports[idx].req.bypass));
           llc_upstream_write_capture_c[idx].direct_mapped =
               request_uses_direct_mapped_llc(req_addr, req_total_size);
+          llc_upstream_write_capture_c[idx].mode2_ddr_aligned =
+              runtime_mode_ == 2u &&
+              !is_mmio_addr(req_addr) &&
+              !request_in_mapped_window(req_addr, req_total_size);
           break;
         }
         w_req_ready_r[idx] = true;
@@ -1433,6 +1595,12 @@ void AXI_Interconnect::seq() {
       ar_latched.master_id = static_cast<uint8_t>(master_idx);
       ar_latched.orig_id = orig_id;
       ar_latched.to_llc = ar_from_llc_c;
+      ar_latched.resp_extract_from_aligned_beat =
+          ar_llc_resp_extract_from_aligned_beat_c;
+      ar_latched.upstream_addr =
+          ar_from_llc_c ? ar_llc_upstream_addr_c : axi_io.ar.araddr;
+      ar_latched.upstream_total_size =
+          ar_from_llc_c ? ar_llc_upstream_total_size_c : 0;
       if (!ar_from_llc_c) {
         // A latched AR only means the interconnect has locally buffered the
         // request under downstream backpressure. Upstream acceptance must wait
@@ -1454,11 +1622,18 @@ void AXI_Interconnect::seq() {
       txn.orig_id = ar_latched.orig_id;
       txn.total_beats = ar_latched.len + 1;
       txn.addr = ar_latched.addr;
+      txn.upstream_addr = ar_latched.upstream_addr;
+      txn.upstream_total_size = ar_latched.upstream_total_size;
+      txn.resp_extract_from_aligned_beat =
+          ar_latched.resp_extract_from_aligned_beat;
       txn.to_llc = ar_latched.to_llc;
       const bool upstream_accepted = ar_latched.accepted_upstream;
       ar_latched.valid = false; // Clear latch
       ar_latched.accepted_upstream = false;
       ar_latched.to_llc = false;
+      ar_latched.resp_extract_from_aligned_beat = false;
+      ar_latched.upstream_addr = 0;
+      ar_latched.upstream_total_size = 0;
       if (!txn.to_llc && !upstream_accepted &&
           txn.master_id < NUM_READ_MASTERS) {
         read_req_accepted[txn.master_id] = true;
@@ -1493,6 +1668,10 @@ void AXI_Interconnect::seq() {
       txn.orig_id = orig_id;
       txn.total_beats = axi_io.ar.arlen + 1;
       txn.addr = axi_io.ar.araddr;
+      txn.upstream_addr = ar_from_llc_c ? ar_llc_upstream_addr_c : axi_io.ar.araddr;
+      txn.upstream_total_size = ar_from_llc_c ? ar_llc_upstream_total_size_c : 0;
+      txn.resp_extract_from_aligned_beat =
+          ar_from_llc_c && ar_llc_resp_extract_from_aligned_beat_c;
       txn.to_llc = ar_from_llc_c;
       if (!ar_from_llc_c) {
         read_req_hold[master_idx] = {};
@@ -1741,14 +1920,49 @@ read_handshake_done:
 
     if (!w_active && llc.io.ext_out.mem.write_req_valid &&
         llc.io.ext_in.mem.write_req_ready) {
+      const uint16_t llc_write_bytes =
+          static_cast<uint16_t>(llc.io.ext_out.mem.write_req_size) + 1u;
+      const uint32_t llc_write_beat_addr =
+          align_downstream_addr(llc.io.ext_out.mem.write_req_addr,
+                                kDownstreamBeatBytes);
+      const bool mode2_single_beat_write =
+          llc.io.ext_out.mem.write_req_mode2_ddr_aligned &&
+          llc_write_bytes <= kDownstreamBeatBytes &&
+          (static_cast<uint32_t>(llc.io.ext_out.mem.write_req_addr -
+                                 llc_write_beat_addr) +
+           llc_write_bytes) <= kDownstreamBeatBytes;
+      const uint32_t issued_write_addr = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
+                                             ? (mode2_single_beat_write
+                                                    ? llc_write_beat_addr
+                                                    : align_downstream_addr(
+                                                          llc.io.ext_out.mem.write_req_addr,
+                                                          llc_config.line_bytes))
+                                             : llc.io.ext_out.mem.write_req_addr;
+      const uint8_t issued_write_size = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
+                                            ? (mode2_single_beat_write
+                                                   ? static_cast<uint8_t>(
+                                                         kDownstreamBeatBytes - 1u)
+                                                   : static_cast<uint8_t>(
+                                                         llc_config.line_bytes - 1u))
+                                            : static_cast<uint8_t>(
+                                                  llc.io.ext_out.mem.write_req_size);
       w_active = true;
       w_current = {};
-      w_current.addr = llc.io.ext_out.mem.write_req_addr;
-      w_current.wdata = llc.io.ext_out.mem.write_req_data;
-      w_current.wstrb = llc.io.ext_out.mem.write_req_strobe;
+      w_current.addr = issued_write_addr;
+      w_current.wdata = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
+                            ? align_mode2_downstream_write_data(
+                                  llc.io.ext_out.mem.write_req_data,
+                                  llc.io.ext_out.mem.write_req_addr,
+                                  issued_write_addr)
+                            : llc.io.ext_out.mem.write_req_data;
+      w_current.wstrb = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
+                            ? align_mode2_downstream_write_strobe(
+                                  llc.io.ext_out.mem.write_req_strobe,
+                                  llc.io.ext_out.mem.write_req_addr,
+                                  issued_write_addr)
+                            : llc.io.ext_out.mem.write_req_strobe;
       w_current.orig_id = llc.io.ext_out.mem.write_req_id;
-      w_current.total_beats =
-          calc_burst_len(llc.io.ext_out.mem.write_req_size) + 1;
+      w_current.total_beats = calc_burst_len(issued_write_size) + 1;
       w_current.beats_sent = 0;
       w_current.aw_done = false;
       w_current.w_done = false;

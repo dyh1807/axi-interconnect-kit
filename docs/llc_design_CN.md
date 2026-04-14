@@ -322,6 +322,13 @@ mode 切换现在首先依赖 `drain -> invalidate_all -> activate` 合同来保
     direct-mapped 的本地 LLC 存储窗口
   - 窗口内访问不做 tag compare / replacement，不分配 MSHR，也不会从 DDR refill
   - 窗口外请求被强制转换为 `bypass`
+  - 对窗口外的 DDR 访问：
+    - 非 MMIO 且请求规模 `<= 256-bit` 时，interconnect 会把原请求改写成
+      `256-bit` 对齐的单 beat AXI 访问
+    - MMIO 排除当前按“请求起始地址是否命中 MMIO 区间”判断
+    - 读响应会在 interconnect 处按原始地址低位截断/重排后，再回送给上游
+    - 写请求会在对齐后的 beat 内按原始地址低位平移 `data/wstrb`
+    - 请求规模大于 `256-bit` 时，当前仍沿用 `64B/2 beat` 路径
 - `mode=0/3`
   - LLC_OFF
   - 仍复用同一条 LLC datapath，但所有请求都被强制为 `bypass`
