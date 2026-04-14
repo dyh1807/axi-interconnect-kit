@@ -198,8 +198,9 @@
   lower completion，并回传上游响应
 - reconfig / `invalidate_all` 期间，先由 compat 排空本地 queue / inflight / response slot，
   再把维护请求交给 core
-- `invalidate_line` 期间，compat 会拦住新的 write 接受，并等待同 line 的本地 write hazard
-  消失后才把 maintenance 请求交给 core
+- `invalidate_line` 在 compat 侧当前也与 `invalidate_all` / reconfig 共用同一条外层 drain gate：
+  只有 compat-local queue / inflight / response slot 全排空后，才会把 maintenance 请求交给 core
+- same-line 的本地 write hazard 只是 compat 侧额外的一条更细粒度过滤条件
 - core 内部的 `llc_cache_ctrl` 还会继续检查 same-line read miss / victim hazard；
   只有这层也通过时，`invalidate_line_accepted` 才会拉高
 - compat 当前还会在接受面挡住 pending dirty victim 的 victim-line read，避免外层先收下这类

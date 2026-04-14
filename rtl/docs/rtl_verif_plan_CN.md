@@ -225,9 +225,18 @@
 
 覆盖：
 
-- `invalidate_line` 在 same-line write inflight 期间不能被 accepted
-- `invalidate_line` 在 same-line write 仍停留于 compat queue / response slot 期间不能被 accepted
-- 所有 same-line write hazard 清空后，`invalidate_line` 才允许被 accepted
+- `invalidate_line` 在 compat-local queue / inflight / response slot 未排空时，不能被 accepted
+- 其中 same-line write inflight / queue / response slot 仍是显式覆盖的局部 hazard
+- 只有 compat-local drain 完成后，`invalidate_line` 才允许继续前推
+
+### `tb_axi_llc_subsystem_compat_pending_direct_maintenance_contract.v`
+
+覆盖：
+
+- `mode=1 bypass read miss` 已 handoff 到 compat pending-issue direct slot、但 lower 仍未 ready 时，
+  unrelated `invalidate_line` 也不能被 accepted
+- 同样条件下，`invalidate_all` 也不能被 accepted
+- 只有 pending direct slot 退休后，maintenance 请求才允许继续前推
 
 ### `tb_axi_llc_subsystem_invalidate_line_read_hazard_contract.v`
 

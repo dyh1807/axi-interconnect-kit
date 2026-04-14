@@ -291,8 +291,9 @@ axi_llc_subsystem
 - `invalidate_line` 当前已经接入：
   - 所有非 direct-window 请求都通过 `llc_cache_ctrl` 复用 resident lookup 做 maintenance
   - `mode=2` direct-window resident line 仍不复用这条 maintenance 语义
-  - compat 层会先挡住新的 write 接受，并等待同 line 的本地 write hazard 消失后，
-    才把 `invalidate_line` 交给 core
+  - compat 层与 `invalidate_all` / reconfig 一样，先要求 compat-local queue / inflight /
+    response slot 全部排空后，才会把 `invalidate_line` 交给 core
+  - same-line 的本地 write hazard 只是这层之外额外的一条更细粒度挡板
   - core 内部还会继续挡住 same-line read miss / refill / dirty victim hazard，
     避免旧 resident line 在 `invalidate_line` accepted 之后被回装
 - pending dirty victim 当前还会在 compat 接受面挡住 victim-line read，因此这类读不会先被

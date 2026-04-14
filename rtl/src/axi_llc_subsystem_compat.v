@@ -917,10 +917,11 @@ module axi_llc_subsystem_compat #(
             end
         end
 
-        // Match the C++ interconnect contract: reconfiguration / invalidate-all
-        // first drains compat-local queueing, then the request is forwarded to
-        // the core so the core only sees maintenance after the outer boundary is
-        // already quiescent.
+        // Maintenance first drains compat-local queueing / inflight ownership,
+        // then forwards into the core. invalidate_line shares this outer
+        // compat-local quiescent gate with invalidate_all / reconfig; the
+        // same-line local write hazard below is an additional filter, not the
+        // only maintenance gate.
         if (maintenance_pending_w && compat_quiescent_w) begin
             core_mode_req_w = mode_req;
             core_offset_req_w = (mode_req == MODE_MAPPED) ?
