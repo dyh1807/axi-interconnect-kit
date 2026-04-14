@@ -268,6 +268,8 @@ module axi_llc_subsystem_compat #(
     reg                          direct_resp_target_busy_w;
     reg                          direct_resp_conflict_w;
     wire                         direct_resp_accept_w;
+    reg                          core_bypass_slot_found_w;
+    reg [7:0]                    core_bypass_slot_w;
     wire                         core_bypass_resp_ready_w;
     wire                         core_bypass_req_ready_w;
     wire                         direct_bypass_req_valid_w;
@@ -742,6 +744,8 @@ module axi_llc_subsystem_compat #(
         direct_resp_addr_w = {ADDR_BITS{1'b0}};
         direct_resp_target_busy_w = 1'b0;
         direct_resp_conflict_w = 1'b0;
+        core_bypass_slot_found_w = 1'b0;
+        core_bypass_slot_w = 8'd0;
 
         for (flat_idx = 0; flat_idx < NUM_READ_MASTERS; flat_idx = flat_idx + 1) begin
             total_read_outstanding_w = total_read_outstanding_w + rd_q_count[flat_idx];
@@ -798,6 +802,12 @@ module axi_llc_subsystem_compat #(
                     line_write_hazard_w = 1'b1;
                 end
             end
+        end
+        if (core_bypass_req_valid_w &&
+            (core_bypass_req_id_w < MAX_OUTSTANDING) &&
+            core_slot_valid_r[core_bypass_req_id_w]) begin
+            core_bypass_slot_found_w = 1'b1;
+            core_bypass_slot_w = core_bypass_req_id_w;
         end
         for (flat_idx = 0; flat_idx < DIRECT_SLOT_COUNT; flat_idx = flat_idx + 1) begin
             if (!direct_slot_free_found_w && !direct_slot_valid_r[flat_idx]) begin
@@ -1131,7 +1141,9 @@ module axi_llc_subsystem_compat #(
 
     assign direct_bypass_req_valid_w = direct_dispatch_found_w &&
                                        direct_slot_free_found_w;
-    assign bypass_req_from_core_w = core_bypass_req_valid_w;
+    assign bypass_req_from_core_w = core_bypass_req_valid_w &&
+                                    direct_slot_free_found_w &&
+                                    core_bypass_slot_found_w;
     assign direct_bypass_req_handshake_w = direct_bypass_req_valid_w &&
                                            bypass_req_ready &&
                                            !bypass_req_from_core_w;
@@ -1148,7 +1160,7 @@ module axi_llc_subsystem_compat #(
                              core_bypass_req_addr_w :
                              direct_dispatch_addr_w;
     assign bypass_req_id = bypass_req_from_core_w ?
-                           core_bypass_req_id_w :
+                           direct_slot_free_w[ID_BITS-1:0] :
                            direct_slot_free_w[ID_BITS-1:0];
     assign bypass_req_size = bypass_req_from_core_w ?
                              core_bypass_req_size_w :
@@ -1425,6 +1437,23 @@ module axi_llc_subsystem_compat #(
                     rd_q_count[direct_dispatch_master_w] <=
                         rd_q_count[direct_dispatch_master_w] - 8'd1;
                 end
+            end
+
+            if (bypass_req_from_core_w && bypass_req_ready) begin
+                direct_slot_valid_r[direct_slot_free_w] <= 1'b1;
+                direct_slot_is_write_r[direct_slot_free_w] <=
+                    core_bypass_req_write_w;
+                direct_slot_master_r[direct_slot_free_w] <=
+                    core_slot_master_r[core_bypass_slot_w];
+                direct_slot_orig_id_r[direct_slot_free_w] <=
+                    core_slot_orig_id_r[core_bypass_slot_w];
+                direct_slot_addr_r[direct_slot_free_w] <=
+                    core_slot_addr_r[core_bypass_slot_w];
+                core_slot_valid_r[core_bypass_slot_w] <= 1'b0;
+                core_slot_is_write_r[core_bypass_slot_w] <= 1'b0;
+                core_slot_master_r[core_bypass_slot_w] <= 8'd0;
+                core_slot_orig_id_r[core_bypass_slot_w] <= {ID_BITS{1'b0}};
+                core_slot_addr_r[core_bypass_slot_w] <= {ADDR_BITS{1'b0}};
             end
 
             if (dispatch_found_w && core_slot_free_found_w &&

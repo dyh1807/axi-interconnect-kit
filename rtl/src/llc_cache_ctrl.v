@@ -727,8 +727,10 @@ module llc_cache_ctrl #(
     assign bypass_req_wdata = req_wdata_r;
     assign bypass_req_wstrb = req_wstrb_r;
     assign bypass_resp_match_w = bypass_resp_valid && (bypass_resp_id == req_id_r);
-    assign bypass_resp_ready = (state_r == ST_BYPASS_WAIT) &&
-                               (bypass_resp_id == req_id_r);
+    // Lower bypass completions are retired by the outer compat layer once the
+    // request has been issued, so the cache-control FSM no longer stalls in a
+    // dedicated bypass-wait state.
+    assign bypass_resp_ready = 1'b0;
 
     always @(*) begin
         lookup_hit_r = 1'b0;
@@ -1249,7 +1251,7 @@ module llc_cache_ctrl #(
 
                 ST_BYPASS_REQ: begin
                     if (bypass_req_valid && bypass_req_ready) begin
-                        state_r <= ST_BYPASS_WAIT;
+                        state_r <= ST_IDLE;
                     end
                 end
 

@@ -118,6 +118,10 @@ module tb_axi_llc_subsystem_axi_mode1_multiflow_contract;
     reg  [AXI_ID_BITS-1:0]          bypass_arid;
     reg  [AXI_ID_BITS-1:0]          cache_arid_1;
     reg  [AXI_ID_BITS-1:0]          bypass_awid;
+    reg  [AXI_ID_BITS-1:0]          cache_arid_2;
+    reg  [AXI_ID_BITS-1:0]          bypass_arid_2;
+    reg  [AXI_ID_BITS-1:0]          cache_arid_3;
+    reg  [AXI_ID_BITS-1:0]          bypass_awid_2;
     reg  [AXI_DATA_BITS-1:0]        cache_beat0;
     reg  [AXI_DATA_BITS-1:0]        cache_beat1;
     reg  [AXI_DATA_BITS-1:0]        cache_beat2;
@@ -735,6 +739,118 @@ module tb_axi_llc_subsystem_axi_mode1_multiflow_contract;
 
         drive_r(cache_arid_1, cache_beat2, AXI_RESP_OKAY, 1'b0);
         drive_r(cache_arid_1, cache_beat3, AXI_RESP_OKAY, 1'b1);
+        wait_for_read_resp_master(CACHE_MASTER, CACHE_READ_ID_1,
+                                  expected_cache_line1[31:0]);
+
+        // Restart from a clean state before the reverse-order read case.
+        @(negedge clk);
+        rst_n = 1'b0;
+        clear_reqs();
+        axi_bvalid = 1'b0;
+        axi_bid = {AXI_ID_BITS{1'b0}};
+        axi_bresp = AXI_RESP_OKAY;
+        axi_rvalid = 1'b0;
+        axi_rid = {AXI_ID_BITS{1'b0}};
+        axi_rdata = {AXI_DATA_BITS{1'b0}};
+        axi_rresp = AXI_RESP_OKAY;
+        axi_rlast = 1'b0;
+        wait_cycles(4);
+        rst_n = 1'b1;
+        wait_mode_cache_active();
+
+        // Case 3: mode1 bypass read miss in flight must not block a later cache miss read.
+        issue_bypass_read();
+        timeout = 200;
+        while (ar_count < 1 && timeout > 0) begin
+            @(posedge clk);
+            timeout = timeout - 1;
+        end
+        if (timeout == 0) begin
+            fail_now("reverse-order bypass read should issue first AXI AR");
+        end
+        if (ar_addr_log[0] !== BYPASS_READ_ADDR) begin
+            fail_now("reverse-order first AXI AR should belong to bypass read");
+        end
+        bypass_arid_2 = ar_id_log[0];
+
+        issue_cache_read(CACHE_READ_ID_0);
+        timeout = 200;
+        while (ar_count < 2 && timeout > 0) begin
+            @(posedge clk);
+            timeout = timeout - 1;
+        end
+        if (timeout == 0) begin
+            fail_now("cache miss should issue AXI AR while bypass read is pending");
+        end
+        if (ar_addr_log[1] !== CACHE_ADDR) begin
+            fail_now("reverse-order second AXI AR should belong to cache miss");
+        end
+        cache_arid_2 = ar_id_log[1];
+        if (cache_arid_2 == bypass_arid_2) begin
+            fail_now("reverse-order cache miss should use a different AXI id");
+        end
+
+        drive_r(cache_arid_2, cache_beat0, AXI_RESP_OKAY, 1'b0);
+        drive_r(cache_arid_2, cache_beat1, AXI_RESP_OKAY, 1'b1);
+        wait_for_read_resp_master(CACHE_MASTER, CACHE_READ_ID_0,
+                                  expected_cache_line0[31:0]);
+
+        drive_r(bypass_arid_2,
+                256'h00000000000000000000000000000000000000000000000000000000DEADBEEF,
+                AXI_RESP_OKAY,
+                1'b1);
+        wait_for_read_resp_master(BYPASS_READ_MASTER, BYPASS_READ_ID, 32'hDEAD_BEEF);
+
+        // Restart from a clean state before the reverse-order write-through case.
+        @(negedge clk);
+        rst_n = 1'b0;
+        clear_reqs();
+        axi_bvalid = 1'b0;
+        axi_bid = {AXI_ID_BITS{1'b0}};
+        axi_bresp = AXI_RESP_OKAY;
+        axi_rvalid = 1'b0;
+        axi_rid = {AXI_ID_BITS{1'b0}};
+        axi_rdata = {AXI_DATA_BITS{1'b0}};
+        axi_rresp = AXI_RESP_OKAY;
+        axi_rlast = 1'b0;
+        wait_cycles(4);
+        rst_n = 1'b1;
+        wait_mode_cache_active();
+
+        // Case 4: mode1 bypass write-through in flight must not block a later cache miss read.
+        issue_bypass_write();
+        timeout = 200;
+        while ((aw_count < 1 || w_count < 1) && timeout > 0) begin
+            @(posedge clk);
+            timeout = timeout - 1;
+        end
+        if (timeout == 0) begin
+            fail_now("reverse-order bypass write should issue AXI AW/W first");
+        end
+        if (aw_addr_log[0] !== BYPASS_WRITE_ADDR) begin
+            fail_now("reverse-order first AXI AW should belong to bypass write");
+        end
+        bypass_awid_2 = aw_id_log[0];
+
+        issue_cache_read(CACHE_READ_ID_1);
+        timeout = 200;
+        while (ar_count < 1 && timeout > 0) begin
+            @(posedge clk);
+            timeout = timeout - 1;
+        end
+        if (timeout == 0) begin
+            fail_now("cache miss should issue AXI AR while bypass write is pending");
+        end
+        if (ar_addr_log[0] !== CACHE_ADDR) begin
+            fail_now("reverse-order cache read AXI AR address mismatch");
+        end
+        cache_arid_3 = ar_id_log[0];
+
+        drive_b(bypass_awid_2, AXI_RESP_SLVERR);
+        wait_for_write_resp_master1(BYPASS_WRITE_ID, AXI_RESP_SLVERR);
+
+        drive_r(cache_arid_3, cache_beat2, AXI_RESP_OKAY, 1'b0);
+        drive_r(cache_arid_3, cache_beat3, AXI_RESP_OKAY, 1'b1);
         wait_for_read_resp_master(CACHE_MASTER, CACHE_READ_ID_1,
                                   expected_cache_line1[31:0]);
 

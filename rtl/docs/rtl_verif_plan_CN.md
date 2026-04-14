@@ -307,6 +307,21 @@
 - 起始地址命中 MMIO、但请求尾部越过 MMIO 末端时，仍保持 MMIO passthrough
 - 当前 MMIO 分类规则按请求起始地址冻结，不支持跨 MMIO / 非 MMIO 边界的单次请求
 
+### `tb_axi_llc_subsystem_mode1_bypass_resident_contract.v`
+
+覆盖：
+
+- `mode=1 bypass read hit` 必须返回 resident 数据，且不触发 lower AXI `AR`
+- `mode=1 bypass write hit` 必须 shadow-update resident，并继续 lower write-through
+- dirty resident 上的 `mode=1 bypass read` 必须优先返回 resident 数据
+
+### `tb_axi_llc_subsystem_axi_mode1_multiflow_contract.v`
+
+当前除“cache 先发，bypass 后发”之外，还覆盖反向顺序：
+
+- bypass read miss 已在 lower flight 时，后续 cache miss 仍能继续发 AXI `AR`
+- bypass write-through 已在 lower flight 时，后续 cache miss 仍能继续发 AXI `AR`
+
 ### `tb_axi_llc_subsystem_invalidate_all_contract.v`
 
 覆盖：

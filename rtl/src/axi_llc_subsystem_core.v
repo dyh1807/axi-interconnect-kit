@@ -335,7 +335,7 @@ module axi_llc_subsystem_core #(
 
     assign direct_valid_rd_set_w = direct_wait_rd_r ? direct_set_r : mapped_set_w;
     assign is_mmio_w = (up_req_addr >= MMIO_BASE) &&
-                       (up_req_end_w <= mmio_limit_w);
+                       (up_req_addr < mmio_limit_w);
     assign req_bypass_w = ((active_mode_w == MODE_CACHE) ? (up_req_bypass || is_mmio_w)
                                                          : 1'b1);
 
