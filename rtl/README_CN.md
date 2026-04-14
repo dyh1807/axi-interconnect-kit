@@ -82,10 +82,11 @@ axi_llc_subsystem
 - `mode=1`：正常 LLC cache path
 - `mode=2`：direct-mapped 本地 LLC window
 - `mode=0/3`：请求仍先进入 LLC resident lookup，但按 bypass 语义处理
-- `mode=1` 命中 `MMIO_BASE/MMIO_SIZE` 窗口的请求会被强制按 bypass 语义处理
+- `mode=1` 命中 `MMIO_BASE/MMIO_SIZE` 窗口的请求仍进入 core，但按 bypass 语义处理
 - 模式切换统一走 `block accepts -> drain -> valid-sweep invalidate -> activate`
 - `invalidate_all` 只有在 cache 已 quiescent 且没有 dirty resident line 时才会被接受，
   不主动触发 dirty flush
+- MMIO 分类当前按请求起始地址冻结；上游不得发出跨 MMIO / 非 MMIO 边界的单次请求
 
 当前目录是**自包含**的，不接入根 CMake，也不影响现有 C++/CTest 构建。
 
@@ -145,7 +146,8 @@ axi_llc_subsystem
     支持多个 read miss 同时在 core / lower AXI 中挂起
   - 同一 read master 也支持多笔在途 read response，通过前台 response slot +
     per-master response queue 依次回传
-  - `mode=1` bypass、`mode=0/3`、以及 `mode=2` 窗口外请求可直接走 bypass side path
+  - `mode=1` bypass 请求会进入 core，保留 resident-hit / write-hit shadow-update 语义
+  - 只有 `mode=0/3`、以及 `mode=2` 窗口外请求会走 compat 的 direct bypass side path
   - `mode=2` 窗口外且起始地址不在 MMIO 区间内的 direct-bypass 请求，会额外带
     `bypass_req_mode2_ddr_aligned`
   - reconfig / `invalidate_all` 会先在 compat 层排空本地 queue / inflight / response slot，
@@ -169,6 +171,7 @@ axi_llc_subsystem
     - 读响应按原始地址低位重新抽取到低字节
     - 写请求按原始地址低位平移 `wdata/wstrb`
     - 起始地址命中 MMIO 区间的请求不做这组改写
+    - 该 MMIO 分类合同与当前 C++ 原型一致，按请求起始地址冻结
 - `src/axi_llc_subsystem.v`
   - 当前对外 RTL 子模块顶层
   - 上游保持 C++ 风格的多 read/write master 自定义接口
@@ -222,6 +225,7 @@ axi_llc_subsystem
 - `tb/tb_axi_llc_subsystem_id_contract.v`
 - `tb/tb_axi_llc_subsystem_read_slice_contract.v`
 - `tb/tb_axi_llc_subsystem_bypass_contract.v`
+- `tb/tb_axi_llc_subsystem_mode1_bypass_resident_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_bypass_read_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_bypass_write_contract.v`
@@ -258,6 +262,7 @@ axi_llc_subsystem
   地址的 32-bit word offset 提取返回数据，与 C++ 原型的 `extract_line_response()` 语义对齐。
 - resident table 读当前按 C++ 外部表 bundle 合同收口：
   - `data/meta/valid/repl` 各自有独立 `rd_valid`
+- `mode=1` bypass 请求当前已经通过 compat 重新接回 core，不再在顶层直接绕过 core。
   - `mode=1` lookup 会等四表同拍返回后再消费
   - `mode=2` direct-window 会等 `data + valid` 返回后再消费
 - `TABLE_READ_LATENCY` 默认值是 `1`，保持当前功能回归时序；如果做更保守的 SMIC12

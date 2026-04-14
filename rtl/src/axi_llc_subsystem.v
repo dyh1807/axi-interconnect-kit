@@ -149,9 +149,10 @@ module axi_llc_subsystem #(
     wire [ID_BITS-1:0]       bypass_resp_id_w;
     wire [1:0]               bypass_resp_code_w;
 
-    // Multi-master compatibility layer around the core. Cacheable traffic still
-    // enters the core, while mode1/0/3 bypass-style traffic can use the direct
-    // bypass side path concurrently.
+// Multi-master compatibility layer around the core. Mode1 bypass still enters
+// the core so resident-hit / shadow-update semantics stay aligned with the
+// C++ model. The direct bypass side path is reserved for mode0/3 and
+// mode2-window-outside traffic.
     axi_llc_subsystem_compat #(
         .ADDR_BITS         (ADDR_BITS),
         .ID_BITS           (ID_BITS),

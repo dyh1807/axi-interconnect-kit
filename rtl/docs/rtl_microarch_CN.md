@@ -36,6 +36,8 @@
 
 当前已把 `mode=2 + reconfig/invalidate + mode=1 最小 cache 控制` 落地。
 
+当前 MMIO 分类合同按请求起始地址冻结；上游不得发出跨 MMIO / 非 MMIO 边界的单次请求。
+
 ## 模块
 
 ### `axi_reconfig_ctrl`
@@ -187,7 +189,8 @@
 - write `ready/accepted`
 - 独立 write response `id/code`
 - per-master request FIFO + 独立 response 槽位
-- bypass 风格请求的 direct lower bypass side path
+- `mode=0/3` 与 `mode=2` 窗口外请求的 direct lower bypass side path
+- `mode=1` bypass 重新进入 core，保留 resident-hit / write-hit shadow-update 语义
 - reconfig / `invalidate_all` 期间，先由 compat 排空本地 queue / inflight / response slot，
   再把维护请求交给 core
 - `invalidate_line` 期间，compat 会拦住新的 write 接受，并等待同 line 的本地 write hazard
@@ -211,7 +214,7 @@
 - 但 cacheable read miss 已经支持多 slot 挂起，并通过 lower AXI 多 outstanding 推进
 - core 入口对 cacheable miss 的准入不再要求 `cache_quiescent`；该信号只继续服务
   maintenance / reconfig drain
-- bypass 风格请求已可绕开单发射 lookup 路径，与 cacheable miss 并发推进
+- direct-bypass 请求已可绕开单发射 lookup 路径，与 cacheable miss 并发推进
 - dirty-victim 的 full-line cacheable write miss 已能与其它行的 cache miss 并发推进
 - compat 侧已经补成 per-master read response queue，因此同一 master 可连续回收多笔 cacheable read
 - 下游 AXI 侧已经补成多 outstanding / 独立 `axi_id` remap
@@ -238,6 +241,7 @@
   - 非 MMIO 且跨 32B：退回 64B line / 2 beat
   - read completion 在 bridge 内按原始地址低位重新抽取到低字节
   - write 的 `WDATA/WSTRB` 在 bridge 内按原始地址低位平移
+  - 该 MMIO 分类规则按请求起始地址与 C++ 原型保持一致
 - 当前 bridge 已具备：
   - read / write 各自独立的 pending table
   - read / write 各自独立的 `axi_id` 分配

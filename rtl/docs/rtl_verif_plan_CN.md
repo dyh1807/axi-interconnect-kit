@@ -294,6 +294,7 @@
 - 对齐读取后的返回数据会按原始地址低位重新抽取到低字节
 - 起始地址命中 MMIO 区间的请求保持原始 `ARADDR`
 - 起始地址命中 MMIO、但请求尾部越过 MMIO 末端时，仍保持 MMIO passthrough
+- 当前 MMIO 分类规则按请求起始地址冻结，不支持跨 MMIO / 非 MMIO 边界的单次请求
 
 ### `tb_axi_llc_subsystem_axi_mode2_aligned_write_contract.v`
 
@@ -304,6 +305,7 @@
 - 对齐写的 `WDATA/WSTRB` 会按原始地址低位平移
 - 起始地址命中 MMIO 区间的请求保持原始 `AWADDR`
 - 起始地址命中 MMIO、但请求尾部越过 MMIO 末端时，仍保持 MMIO passthrough
+- 当前 MMIO 分类规则按请求起始地址冻结，不支持跨 MMIO / 非 MMIO 边界的单次请求
 
 ### `tb_axi_llc_subsystem_invalidate_all_contract.v`
 

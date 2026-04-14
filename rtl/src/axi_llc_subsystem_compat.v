@@ -7,13 +7,16 @@
 // Responsibilities:
 //   - Hold per-master queued upstream requests
 //   - Return accepted / accepted_id / independent write responses
-//   - Feed cacheable / mapped requests into axi_llc_subsystem_core
-//   - Feed bypass-style requests directly into the lower bypass port
+//   - Feed cacheable requests, mode1 bypass requests, and mapped-window
+//     requests into axi_llc_subsystem_core
+//   - Feed only mode0/3 and mode2-window-outside direct-bypass requests to
+//     the lower bypass port without occupying a core slot
 //   - Drain local queues before reconfiguration / invalidate-all reaches core
 //
 // This layer does not translate to AXI and does not own resident storage.
 // It is also the first place where the single-flow core is relaxed:
-// mode1 bypass-style traffic can progress independently of the cacheable path.
+// direct-bypass traffic from mode0/3 and mode2-window-outside can progress
+// independently of the core path.
 module axi_llc_subsystem_compat #(
     parameter ADDR_BITS         = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS           = `AXI_LLC_ID_BITS,
@@ -265,10 +268,16 @@ module axi_llc_subsystem_compat #(
     reg                          direct_resp_target_busy_w;
     reg                          direct_resp_conflict_w;
     wire                         direct_resp_accept_w;
+    wire                         core_bypass_resp_ready_w;
+    wire                         core_bypass_req_ready_w;
+    wire                         direct_bypass_req_valid_w;
+    wire                         direct_bypass_req_handshake_w;
+    wire                         bypass_req_from_core_w;
 
-    // Core bypass is intentionally left disconnected at the outer boundary.
-    // Cacheable mode1 traffic goes through core/cache_ctrl; bypass-style
-    // traffic is sent directly from compat to the lower bypass port.
+    // The core owns mode1 bypass semantics so resident lookup / write-hit
+    // shadow update stay aligned with the C++ model. Compat keeps a separate
+    // direct-bypass side path only for mode0/3 and mode2 window-outside
+    // traffic.
     wire                         core_bypass_req_valid_w;
     wire                         core_bypass_req_write_w;
     wire [ADDR_BITS-1:0]        core_bypass_req_addr_w;
@@ -383,8 +392,10 @@ module axi_llc_subsystem_compat #(
         begin
             request_uses_direct_bypass = 1'b1;
             if (mode_value == MODE_CACHE) begin
-                request_uses_direct_bypass =
-                    bypass_value || request_is_mmio(addr_value, total_size_value);
+                // Mode1 bypass still enters the core so the core can perform
+                // resident lookup and write-hit shadow update, matching the
+                // current C++ AXI_LLC contract.
+                request_uses_direct_bypass = 1'b0;
             end else if (mode_value == MODE_MAPPED) begin
                 request_uses_direct_bypass =
                     !request_in_mapped_window(offset_value,
@@ -888,9 +899,10 @@ module axi_llc_subsystem_compat #(
         if (!accept_blocked_w &&
             (MASTER_DCACHE_R < NUM_READ_MASTERS) &&
             rd_select_found_w &&
-            (rd_select_master_w == MASTER_DCACHE_R) &&
-            read_req_valid[MASTER_DCACHE_R]) begin
-            dcache_same_cycle_accept_w = 1'b1;
+            (rd_select_master_w == MASTER_DCACHE_R)) begin
+            if (read_req_valid[rd_select_master_w]) begin
+                dcache_same_cycle_accept_w = 1'b1;
+            end
         end
 
         if (core_slot_free_found_w) begin
@@ -958,6 +970,9 @@ module axi_llc_subsystem_compat #(
             core_up_req_wstrb_w = dispatch_is_write_w ?
                                   wr_q_wstrb[dispatch_fifo_slot_w] :
                                   {LINE_BYTES{1'b0}};
+            core_up_req_bypass_w = dispatch_is_write_w ?
+                                   wr_q_bypass[dispatch_fifo_slot_w] :
+                                   rd_q_bypass[dispatch_fifo_slot_w];
         end
 
         if (direct_slot_free_found_w) begin
@@ -1114,19 +1129,43 @@ module axi_llc_subsystem_compat #(
         end
     end
 
-    assign bypass_req_valid = direct_dispatch_found_w && direct_slot_free_found_w;
-    assign bypass_req_write = direct_dispatch_is_write_w;
-    assign bypass_req_addr = direct_dispatch_addr_w;
-    assign bypass_req_id = direct_slot_free_w[ID_BITS-1:0];
-    assign bypass_req_size = direct_dispatch_size_w;
+    assign direct_bypass_req_valid_w = direct_dispatch_found_w &&
+                                       direct_slot_free_found_w;
+    assign bypass_req_from_core_w = core_bypass_req_valid_w;
+    assign direct_bypass_req_handshake_w = direct_bypass_req_valid_w &&
+                                           bypass_req_ready &&
+                                           !bypass_req_from_core_w;
+    assign core_bypass_req_ready_w = bypass_req_ready &&
+                                     bypass_req_from_core_w;
+
+    assign bypass_req_valid = bypass_req_from_core_w ?
+                              core_bypass_req_valid_w :
+                              direct_bypass_req_valid_w;
+    assign bypass_req_write = bypass_req_from_core_w ?
+                              core_bypass_req_write_w :
+                              direct_dispatch_is_write_w;
+    assign bypass_req_addr = bypass_req_from_core_w ?
+                             core_bypass_req_addr_w :
+                             direct_dispatch_addr_w;
+    assign bypass_req_id = bypass_req_from_core_w ?
+                           core_bypass_req_id_w :
+                           direct_slot_free_w[ID_BITS-1:0];
+    assign bypass_req_size = bypass_req_from_core_w ?
+                             core_bypass_req_size_w :
+                             direct_dispatch_size_w;
     assign bypass_req_mode2_ddr_aligned =
+        bypass_req_from_core_w ? 1'b0 :
         request_needs_mode2_ddr_aligned(active_mode,
                                         active_offset,
                                         direct_dispatch_addr_w,
                                         direct_dispatch_size_w);
-    assign bypass_req_wdata = direct_dispatch_wdata_w;
-    assign bypass_req_wstrb = direct_dispatch_wstrb_w;
-    assign bypass_resp_ready = direct_resp_accept_w;
+    assign bypass_req_wdata = bypass_req_from_core_w ?
+                              core_bypass_req_wdata_w :
+                              direct_dispatch_wdata_w;
+    assign bypass_req_wstrb = bypass_req_from_core_w ?
+                              core_bypass_req_wstrb_w :
+                              direct_dispatch_wstrb_w;
+    assign bypass_resp_ready = core_bypass_resp_ready_w || direct_resp_accept_w;
 
     // Single-flow core instance.
     axi_llc_subsystem_core #(
@@ -1185,18 +1224,18 @@ module axi_llc_subsystem_compat #(
         .cache_resp_id         (cache_resp_id),
         .cache_resp_code       (cache_resp_code),
         .bypass_req_valid      (core_bypass_req_valid_w),
-        .bypass_req_ready      (1'b0),
+        .bypass_req_ready      (core_bypass_req_ready_w),
         .bypass_req_write      (core_bypass_req_write_w),
         .bypass_req_addr       (core_bypass_req_addr_w),
         .bypass_req_id         (core_bypass_req_id_w),
         .bypass_req_size       (core_bypass_req_size_w),
         .bypass_req_wdata      (core_bypass_req_wdata_w),
         .bypass_req_wstrb      (core_bypass_req_wstrb_w),
-        .bypass_resp_valid     (1'b0),
-        .bypass_resp_ready     (),
-        .bypass_resp_rdata     ({READ_RESP_BITS{1'b0}}),
-        .bypass_resp_id        ({ID_BITS{1'b0}}),
-        .bypass_resp_code      (2'b00),
+        .bypass_resp_valid     (bypass_resp_valid),
+        .bypass_resp_ready     (core_bypass_resp_ready_w),
+        .bypass_resp_rdata     (bypass_resp_rdata),
+        .bypass_resp_id        (bypass_resp_id),
+        .bypass_resp_code      (bypass_resp_code),
         .invalidate_line_valid (core_invalidate_line_valid_w),
         .invalidate_line_addr  (invalidate_line_addr),
         .invalidate_line_accepted(invalidate_line_accepted),
@@ -1366,7 +1405,7 @@ module axi_llc_subsystem_compat #(
                 write_req_ready_r[wr_select_master_w] <= 1'b1;
             end
 
-            if (bypass_req_valid && bypass_req_ready && direct_slot_free_found_w) begin
+            if (direct_bypass_req_handshake_w) begin
                 direct_slot_valid_r[direct_slot_free_w] <= 1'b1;
                 direct_slot_is_write_r[direct_slot_free_w] <= direct_dispatch_is_write_w;
                 direct_slot_master_r[direct_slot_free_w] <= direct_dispatch_master_w;

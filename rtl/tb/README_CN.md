@@ -11,6 +11,7 @@
 - 顶层 mode 路由、mode2 可见性、mode 切换失效
 - 对外顶层到单组 AXI4 的请求打包合同
 - mode2 窗口外 DDR 对齐读写合同（含跨 32B 回退和 MMIO passthrough）
+- mode1 bypass 重新进入 core 后的 resident-hit / shadow-update 合同
 
 ## 当前提供
 
@@ -32,6 +33,7 @@
 - `tb_axi_llc_subsystem_id_contract.v`
 - `tb_axi_llc_subsystem_read_slice_contract.v`
 - `tb_axi_llc_subsystem_bypass_contract.v`
+- `tb_axi_llc_subsystem_mode1_bypass_resident_contract.v`
 - `tb_axi_llc_subsystem_compat_reconfig_drain_contract.v`
 - `tb_axi_llc_subsystem_compat_invalidate_line_hazard_contract.v`
 - `tb_axi_llc_subsystem_compat_write_victim_multiflow_contract.v`
@@ -67,6 +69,17 @@
 store 来构造 resident 命中场景。它只检查 bypass 合同，不要求固定实现路径；
 如果 bypass 请求仍然被硬送到 lower bypass，或者 bypass write hit 不能完成 write-through
 响应，该 bench 会失败。
+
+### `tb_axi_llc_subsystem_mode1_bypass_resident_contract.v`
+
+目标是把最终顶层 `axi_llc_subsystem.v` 上最关键的 mode1 bypass 路由合同单独钉住：
+
+- `mode=1 bypass read hit` 必须进入 core，直接返回 resident 数据，不触发 AXI `AR`
+- `mode=1 bypass write hit` 必须进入 core，做 resident shadow update，并且继续 write-through
+- dirty resident 上的 `mode=1 bypass read` 必须优先返回 resident 数据，而不是 lower 旧值
+
+这个 bench 直接实例化最终顶层，并通过层次化预装载 internal resident store 来构造 hit 场景；
+因此它能明确区分“core 内部 bypass 语义正确”与“顶层实际有没有把 mode1 bypass 接回 core”。
 
 ### `tb_axi_llc_subsystem_axi_mode1_multiflow_contract.v`
 
