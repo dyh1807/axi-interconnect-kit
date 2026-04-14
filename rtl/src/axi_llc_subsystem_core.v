@@ -426,7 +426,6 @@ module axi_llc_subsystem_core #(
                           !data_busy_w &&
                           !meta_busy_w &&
                           !cache_up_resp_visible_w &&
-                          cache_quiescent_w &&
                           (route_direct_w ? 1'b1 : cache_up_req_ready_w);
 
     assign up_resp_valid = resp_pending_r | cache_up_resp_visible_w;

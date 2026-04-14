@@ -43,6 +43,7 @@
 - `tb_axi_llc_subsystem_axi_cache_multiread_contract.v`
 - `tb_axi_llc_subsystem_axi_same_master_multiread_contract.v`
 - `tb_axi_llc_subsystem_compat_direct_bypass_contract.v`
+- `tb_axi_llc_subsystem_compat_same_line_hol_contract.v`
 - `tb_axi_llc_axi_bridge_read_outstanding_contract.v`
 - `tb_axi_llc_axi_bridge_write_outstanding_contract.v`
 - `tb_axi_llc_axi_bridge_write_id_reuse_contract.v`
@@ -106,6 +107,14 @@ store 来构造 resident 命中场景。它只检查 bypass 合同，不要求�
 - 同一 master 上，direct-bypass request 还在 slot / response 槽中时，重复 `req_id` 必须被拒绝
 - 当 master 的 read response 槽被占住时，lower bypass completion 必须停在 `bypass_resp_ready=0`
 - 槽位释放后，挂起的 lower bypass completion 必须继续前进并回到正确 master/`req_id`
+
+### `tb_axi_llc_subsystem_compat_same_line_hol_contract.v`
+
+覆盖：
+
+- 某个 queue 头部的 same-line blocked cacheable request 不会被 compat 提前弹出
+- 其它 master 上不相关 line 的 cacheable miss 仍可继续进入 core / lower
+- same-line hazard 消失后，原先被挡住的请求仍会继续推进并正常回包
 
 ### `tb_axi_llc_subsystem_compat_reconfig_drain_contract.v`
 

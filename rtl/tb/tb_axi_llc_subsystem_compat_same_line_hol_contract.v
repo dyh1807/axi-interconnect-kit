@@ -1,0 +1,440 @@
+`timescale 1ns / 1ps
+`include "axi_llc_params.vh"
+
+module tb_axi_llc_subsystem_compat_same_line_hol_contract;
+
+    localparam ADDR_BITS         = `AXI_LLC_ADDR_BITS;
+    localparam ID_BITS           = `AXI_LLC_ID_BITS;
+    localparam MODE_BITS         = `AXI_LLC_MODE_BITS;
+    localparam LINE_BYTES        = 8;
+    localparam LINE_BITS         = 64;
+    localparam LINE_OFFSET_BITS  = 3;
+    localparam SET_COUNT         = 4;
+    localparam SET_BITS          = 2;
+    localparam WAY_COUNT         = 1;
+    localparam WAY_BITS          = 1;
+    localparam META_BITS         = `AXI_LLC_META_BITS;
+    localparam LLC_SIZE_BYTES    = LINE_BYTES * SET_COUNT * WAY_COUNT;
+    localparam WINDOW_BYTES      = LINE_BYTES * SET_COUNT;
+    localparam WINDOW_WAYS       = 1;
+    localparam NUM_READ_MASTERS  = 2;
+    localparam NUM_WRITE_MASTERS = 1;
+    localparam READ_RESP_BITS    = `AXI_LLC_READ_RESP_BITS;
+
+    localparam [MODE_BITS-1:0] MODE_CACHE = 2'b01;
+    localparam [ADDR_BITS-1:0] ADDR_A0    = 32'h0000_0000;
+    localparam [ADDR_BITS-1:0] ADDR_A1    = 32'h0000_0004;
+    localparam [ADDR_BITS-1:0] ADDR_B     = 32'h0000_0008;
+    localparam [ID_BITS-1:0]   ID_A0      = 4'h1;
+    localparam [ID_BITS-1:0]   ID_A1      = 4'h2;
+    localparam [ID_BITS-1:0]   ID_B       = 4'h3;
+
+    reg                                   clk;
+    reg                                   rst_n;
+    reg  [MODE_BITS-1:0]                  mode_req;
+    reg  [ADDR_BITS-1:0]                  llc_mapped_offset_req;
+    reg  [NUM_READ_MASTERS-1:0]           read_req_valid;
+    wire [NUM_READ_MASTERS-1:0]           read_req_ready;
+    wire [NUM_READ_MASTERS-1:0]           read_req_accepted;
+    wire [NUM_READ_MASTERS*ID_BITS-1:0]   read_req_accepted_id;
+    reg  [NUM_READ_MASTERS*ADDR_BITS-1:0] read_req_addr;
+    reg  [NUM_READ_MASTERS*8-1:0]         read_req_total_size;
+    reg  [NUM_READ_MASTERS*ID_BITS-1:0]   read_req_id;
+    reg  [NUM_READ_MASTERS-1:0]           read_req_bypass;
+    wire [NUM_READ_MASTERS-1:0]           read_resp_valid;
+    reg  [NUM_READ_MASTERS-1:0]           read_resp_ready;
+    wire [NUM_READ_MASTERS*READ_RESP_BITS-1:0] read_resp_data;
+    wire [NUM_READ_MASTERS*ID_BITS-1:0]   read_resp_id;
+    reg  [NUM_WRITE_MASTERS-1:0]          write_req_valid;
+    wire [NUM_WRITE_MASTERS-1:0]          write_req_ready;
+    wire [NUM_WRITE_MASTERS-1:0]          write_req_accepted;
+    reg  [NUM_WRITE_MASTERS*ADDR_BITS-1:0] write_req_addr;
+    reg  [NUM_WRITE_MASTERS*LINE_BITS-1:0] write_req_wdata;
+    reg  [NUM_WRITE_MASTERS*LINE_BYTES-1:0] write_req_wstrb;
+    reg  [NUM_WRITE_MASTERS*8-1:0]        write_req_total_size;
+    reg  [NUM_WRITE_MASTERS*ID_BITS-1:0]  write_req_id;
+    reg  [NUM_WRITE_MASTERS-1:0]          write_req_bypass;
+    wire [NUM_WRITE_MASTERS-1:0]          write_resp_valid;
+    reg  [NUM_WRITE_MASTERS-1:0]          write_resp_ready;
+    wire [NUM_WRITE_MASTERS*ID_BITS-1:0]  write_resp_id;
+    wire [NUM_WRITE_MASTERS*2-1:0]        write_resp_code;
+    wire                                  cache_req_valid;
+    reg                                   cache_req_ready;
+    wire                                  cache_req_write;
+    wire [ADDR_BITS-1:0]                  cache_req_addr;
+    wire [ID_BITS-1:0]                    cache_req_id;
+    wire [7:0]                            cache_req_size;
+    wire [LINE_BITS-1:0]                  cache_req_wdata;
+    wire [LINE_BYTES-1:0]                 cache_req_wstrb;
+    reg                                   cache_resp_valid;
+    wire                                  cache_resp_ready;
+    reg  [READ_RESP_BITS-1:0]             cache_resp_rdata;
+    reg  [ID_BITS-1:0]                    cache_resp_id;
+    reg  [1:0]                            cache_resp_code;
+    wire                                  bypass_req_valid;
+    reg                                   bypass_req_ready;
+    wire                                  bypass_req_write;
+    wire [ADDR_BITS-1:0]                  bypass_req_addr;
+    wire [ID_BITS-1:0]                    bypass_req_id;
+    wire [7:0]                            bypass_req_size;
+    wire [LINE_BITS-1:0]                  bypass_req_wdata;
+    wire [LINE_BYTES-1:0]                 bypass_req_wstrb;
+    reg                                   bypass_resp_valid;
+    wire                                  bypass_resp_ready;
+    reg  [READ_RESP_BITS-1:0]             bypass_resp_rdata;
+    reg  [ID_BITS-1:0]                    bypass_resp_id;
+    reg  [1:0]                            bypass_resp_code;
+    reg                                   invalidate_line_valid;
+    reg  [ADDR_BITS-1:0]                  invalidate_line_addr;
+    wire                                  invalidate_line_accepted;
+    reg                                   invalidate_all_valid;
+    wire                                  invalidate_all_accepted;
+    wire [MODE_BITS-1:0]                  active_mode;
+    wire [ADDR_BITS-1:0]                  active_offset;
+    wire                                  reconfig_busy;
+    wire [1:0]                            reconfig_state;
+    wire                                  config_error;
+
+    reg  [LINE_BITS-1:0]                  line_a;
+    reg  [LINE_BITS-1:0]                  line_b;
+    reg  [ID_BITS-1:0]                    lower_id_a0;
+    reg  [ID_BITS-1:0]                    lower_id_b;
+    reg  [ID_BITS-1:0]                    lower_id_a1;
+    integer                               timeout;
+
+    always #5 clk = ~clk;
+
+    function [LINE_BITS-1:0] make_line;
+        input [7:0] seed;
+        integer byte_idx;
+        begin
+            make_line = {LINE_BITS{1'b0}};
+            for (byte_idx = 0; byte_idx < LINE_BYTES; byte_idx = byte_idx + 1) begin
+                make_line[(byte_idx * 8) +: 8] = seed + byte_idx[7:0];
+            end
+        end
+    endfunction
+
+    function [READ_RESP_BITS-1:0] pack_line;
+        input [LINE_BITS-1:0] line_value;
+        begin
+            pack_line = {READ_RESP_BITS{1'b0}};
+            pack_line[LINE_BITS-1:0] = line_value;
+        end
+    endfunction
+
+    function [ID_BITS-1:0] get_read_resp_id;
+        input integer master;
+        begin
+            get_read_resp_id = read_resp_id[(master * ID_BITS) +: ID_BITS];
+        end
+    endfunction
+
+    function [LINE_BITS-1:0] get_read_resp_line;
+        input integer master;
+        begin
+            get_read_resp_line = read_resp_data[(master * READ_RESP_BITS) +: LINE_BITS];
+        end
+    endfunction
+
+    task fail_now;
+        input [8*160-1:0] msg;
+        begin
+            $display("tb_axi_llc_subsystem_compat_same_line_hol_contract FAIL: %0s", msg);
+            $finish(1);
+        end
+    endtask
+
+    task wait_cycles;
+        input integer cycles;
+        integer idx;
+        begin
+            for (idx = 0; idx < cycles; idx = idx + 1) begin
+                @(posedge clk);
+            end
+        end
+    endtask
+
+    task wait_mode_cache_active;
+        begin
+            timeout = 100;
+            while (((active_mode !== MODE_CACHE) || reconfig_busy) &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("mode=1 activate timeout");
+            end
+        end
+    endtask
+
+    task clear_inputs;
+        begin
+            read_req_valid = {NUM_READ_MASTERS{1'b0}};
+            read_req_addr = {(NUM_READ_MASTERS * ADDR_BITS){1'b0}};
+            read_req_total_size = {(NUM_READ_MASTERS * 8){1'b0}};
+            read_req_id = {(NUM_READ_MASTERS * ID_BITS){1'b0}};
+            read_req_bypass = {NUM_READ_MASTERS{1'b0}};
+            write_req_valid = {NUM_WRITE_MASTERS{1'b0}};
+            write_req_addr = {(NUM_WRITE_MASTERS * ADDR_BITS){1'b0}};
+            write_req_wdata = {(NUM_WRITE_MASTERS * LINE_BITS){1'b0}};
+            write_req_wstrb = {(NUM_WRITE_MASTERS * LINE_BYTES){1'b0}};
+            write_req_total_size = {(NUM_WRITE_MASTERS * 8){1'b0}};
+            write_req_id = {(NUM_WRITE_MASTERS * ID_BITS){1'b0}};
+            write_req_bypass = {NUM_WRITE_MASTERS{1'b0}};
+        end
+    endtask
+
+    task issue_read;
+        input integer           master;
+        input [ADDR_BITS-1:0]   addr_value;
+        input [ID_BITS-1:0]     id_value;
+        begin
+            @(negedge clk);
+            read_req_valid[master] = 1'b1;
+            read_req_addr[(master * ADDR_BITS) +: ADDR_BITS] = addr_value;
+            read_req_total_size[(master * 8) +: 8] = LINE_BYTES - 1;
+            read_req_id[(master * ID_BITS) +: ID_BITS] = id_value;
+            read_req_bypass[master] = 1'b0;
+            timeout = 100;
+            while ((read_req_accepted[master] !== 1'b1) && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("read request not accepted");
+            end
+            @(negedge clk);
+            read_req_valid[master] = 1'b0;
+        end
+    endtask
+
+    task wait_cache_req;
+        input                     expect_write;
+        input [ADDR_BITS-1:0]     expect_addr;
+        output [ID_BITS-1:0]      req_id_value;
+        begin
+            timeout = 100;
+            while (!(cache_req_valid &&
+                     cache_req_ready &&
+                     (cache_req_write == expect_write) &&
+                     (cache_req_addr == expect_addr)) &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("cache request timeout");
+            end
+            req_id_value = cache_req_id;
+            @(posedge clk);
+        end
+    endtask
+
+    task drive_cache_resp;
+        input [ID_BITS-1:0]       resp_id_value;
+        input [LINE_BITS-1:0]     line_value;
+        begin
+            @(negedge clk);
+            cache_resp_valid = 1'b1;
+            cache_resp_id = resp_id_value;
+            cache_resp_code = 2'b00;
+            cache_resp_rdata = pack_line(line_value);
+            timeout = 100;
+            while (!cache_resp_ready && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("cache response timeout");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            cache_resp_valid = 1'b0;
+            cache_resp_id = {ID_BITS{1'b0}};
+            cache_resp_code = 2'b00;
+            cache_resp_rdata = {READ_RESP_BITS{1'b0}};
+        end
+    endtask
+
+    task wait_read_resp;
+        input integer             master;
+        input [ID_BITS-1:0]       expect_id;
+        input [LINE_BITS-1:0]     expect_line;
+        begin
+            timeout = 200;
+            while (!read_resp_valid[master] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("read response timeout");
+            end
+            if (get_read_resp_id(master) !== expect_id) begin
+                fail_now("read response id mismatch");
+            end
+            if (get_read_resp_line(master) !== expect_line) begin
+                fail_now("read response data mismatch");
+            end
+            @(posedge clk);
+        end
+    endtask
+
+    axi_llc_subsystem_compat #(
+        .ADDR_BITS         (ADDR_BITS),
+        .ID_BITS           (ID_BITS),
+        .MODE_BITS         (MODE_BITS),
+        .LINE_BYTES        (LINE_BYTES),
+        .LINE_BITS         (LINE_BITS),
+        .LINE_OFFSET_BITS  (LINE_OFFSET_BITS),
+        .SET_COUNT         (SET_COUNT),
+        .SET_BITS          (SET_BITS),
+        .WAY_COUNT         (WAY_COUNT),
+        .WAY_BITS          (WAY_BITS),
+        .META_BITS         (META_BITS),
+        .LLC_SIZE_BYTES    (LLC_SIZE_BYTES),
+        .WINDOW_BYTES      (WINDOW_BYTES),
+        .WINDOW_WAYS       (WINDOW_WAYS),
+        .RESET_MODE        (MODE_CACHE),
+        .NUM_READ_MASTERS  (NUM_READ_MASTERS),
+        .NUM_WRITE_MASTERS (NUM_WRITE_MASTERS),
+        .READ_RESP_BITS    (READ_RESP_BITS)
+    ) dut (
+        .clk                   (clk),
+        .rst_n                 (rst_n),
+        .mode_req              (mode_req),
+        .llc_mapped_offset_req (llc_mapped_offset_req),
+        .read_req_valid        (read_req_valid),
+        .read_req_ready        (read_req_ready),
+        .read_req_accepted     (read_req_accepted),
+        .read_req_accepted_id  (read_req_accepted_id),
+        .read_req_addr         (read_req_addr),
+        .read_req_total_size   (read_req_total_size),
+        .read_req_id           (read_req_id),
+        .read_req_bypass       (read_req_bypass),
+        .read_resp_valid       (read_resp_valid),
+        .read_resp_ready       (read_resp_ready),
+        .read_resp_data        (read_resp_data),
+        .read_resp_id          (read_resp_id),
+        .write_req_valid       (write_req_valid),
+        .write_req_ready       (write_req_ready),
+        .write_req_accepted    (write_req_accepted),
+        .write_req_addr        (write_req_addr),
+        .write_req_wdata       (write_req_wdata),
+        .write_req_wstrb       (write_req_wstrb),
+        .write_req_total_size  (write_req_total_size),
+        .write_req_id          (write_req_id),
+        .write_req_bypass      (write_req_bypass),
+        .write_resp_valid      (write_resp_valid),
+        .write_resp_ready      (write_resp_ready),
+        .write_resp_id         (write_resp_id),
+        .write_resp_code       (write_resp_code),
+        .cache_req_valid       (cache_req_valid),
+        .cache_req_ready       (cache_req_ready),
+        .cache_req_write       (cache_req_write),
+        .cache_req_addr        (cache_req_addr),
+        .cache_req_id          (cache_req_id),
+        .cache_req_size        (cache_req_size),
+        .cache_req_wdata       (cache_req_wdata),
+        .cache_req_wstrb       (cache_req_wstrb),
+        .cache_resp_valid      (cache_resp_valid),
+        .cache_resp_ready      (cache_resp_ready),
+        .cache_resp_rdata      (cache_resp_rdata),
+        .cache_resp_id         (cache_resp_id),
+        .cache_resp_code       (cache_resp_code),
+        .bypass_req_valid      (bypass_req_valid),
+        .bypass_req_ready      (bypass_req_ready),
+        .bypass_req_write      (bypass_req_write),
+        .bypass_req_addr       (bypass_req_addr),
+        .bypass_req_id         (bypass_req_id),
+        .bypass_req_size       (bypass_req_size),
+        .bypass_req_wdata      (bypass_req_wdata),
+        .bypass_req_wstrb      (bypass_req_wstrb),
+        .bypass_resp_valid     (bypass_resp_valid),
+        .bypass_resp_ready     (bypass_resp_ready),
+        .bypass_resp_rdata     (bypass_resp_rdata),
+        .bypass_resp_id        (bypass_resp_id),
+        .bypass_resp_code      (bypass_resp_code),
+        .invalidate_line_valid (invalidate_line_valid),
+        .invalidate_line_addr  (invalidate_line_addr),
+        .invalidate_line_accepted(invalidate_line_accepted),
+        .invalidate_all_valid  (invalidate_all_valid),
+        .invalidate_all_accepted(invalidate_all_accepted),
+        .active_mode           (active_mode),
+        .active_offset         (active_offset),
+        .reconfig_busy         (reconfig_busy),
+        .reconfig_state        (reconfig_state),
+        .config_error          (config_error)
+    );
+
+    initial begin
+        clk = 1'b0;
+        rst_n = 1'b0;
+        mode_req = MODE_CACHE;
+        llc_mapped_offset_req = {ADDR_BITS{1'b0}};
+        clear_inputs();
+        read_resp_ready = {NUM_READ_MASTERS{1'b1}};
+        write_resp_ready = {NUM_WRITE_MASTERS{1'b1}};
+        cache_req_ready = 1'b1;
+        cache_resp_valid = 1'b0;
+        cache_resp_rdata = {READ_RESP_BITS{1'b0}};
+        cache_resp_id = {ID_BITS{1'b0}};
+        cache_resp_code = 2'b00;
+        bypass_req_ready = 1'b1;
+        bypass_resp_valid = 1'b0;
+        bypass_resp_rdata = {READ_RESP_BITS{1'b0}};
+        bypass_resp_id = {ID_BITS{1'b0}};
+        bypass_resp_code = 2'b00;
+        invalidate_line_valid = 1'b0;
+        invalidate_line_addr = {ADDR_BITS{1'b0}};
+        invalidate_all_valid = 1'b0;
+
+        line_a = make_line(8'h10);
+        line_b = make_line(8'h80);
+        lower_id_a0 = {ID_BITS{1'b0}};
+        lower_id_b = {ID_BITS{1'b0}};
+        lower_id_a1 = {ID_BITS{1'b0}};
+
+        wait_cycles(5);
+        rst_n = 1'b1;
+        wait_cycles(5);
+        wait_mode_cache_active();
+
+        $display("STEP 1 master0 issues line A read miss");
+        issue_read(0, ADDR_A0, ID_A0);
+        wait_cache_req(1'b0, ADDR_A0, lower_id_a0);
+
+        $display("STEP 2 queue same-line read behind the inflight miss");
+        issue_read(0, ADDR_A1, ID_A1);
+
+        $display("STEP 3 queue unrelated line-B miss from another master");
+        issue_read(1, ADDR_B, ID_B);
+
+        $display("STEP 4 unrelated line-B miss must bypass same-line blocked head");
+        wait_cache_req(1'b0, ADDR_B, lower_id_b);
+        if (lower_id_b == lower_id_a0) begin
+            fail_now("second cache slot id should differ from first inflight miss");
+        end
+        drive_cache_resp(lower_id_b, line_b);
+        wait_read_resp(1, ID_B, line_b);
+
+        $display("STEP 5 once line A retires, queued same-line read can proceed");
+        drive_cache_resp(lower_id_a0, line_a);
+        wait_read_resp(0, ID_A0, line_a);
+        wait_cache_req(1'b0, ADDR_A0, lower_id_a1);
+        drive_cache_resp(lower_id_a1, line_a);
+        wait_read_resp(0, ID_A1, line_a);
+
+        if (bypass_req_valid) begin
+            fail_now("unexpected bypass activity");
+        end
+        if (config_error) begin
+            fail_now("config_error asserted unexpectedly");
+        end
+
+        $display("tb_axi_llc_subsystem_compat_same_line_hol_contract PASS");
+        $finish(0);
+    end
+
+endmodule

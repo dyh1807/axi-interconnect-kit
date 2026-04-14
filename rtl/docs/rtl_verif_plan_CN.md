@@ -181,6 +181,14 @@
 - lower `R` 返回后，两笔 response 会通过 compat 的 per-master read response queue 依次回到前台 response slot
 - 同一 master 的 `req_id` 在 read response 回到上游时保持不变
 
+### `tb_axi_llc_subsystem_compat_same_line_hol_contract.v`
+
+覆盖：
+
+- 某个 queue 头部的 same-line blocked cacheable request 不会被 compat 提前弹出
+- 其它 master 上不相关 line 的 cacheable miss 仍可继续进入 core / lower
+- same-line hazard 消失后，原先被挡住的请求仍会继续推进并正常回包
+
 ### `tb_axi_llc_subsystem_compat_direct_bypass_contract.v`
 
 覆盖：

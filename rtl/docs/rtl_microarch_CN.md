@@ -205,6 +205,8 @@
 - 外部 custom master 接口合同已经补齐
 - resident lookup / install / invalidate 保持与当前 C++ 原型一致的单发射路径
 - 但 cacheable read miss 已经支持多 slot 挂起，并通过 lower AXI 多 outstanding 推进
+- core 入口对 cacheable miss 的准入不再要求 `cache_quiescent`；该信号只继续服务
+  maintenance / reconfig drain
 - bypass 风格请求已可绕开单发射 lookup 路径，与 cacheable miss 并发推进
 - dirty-victim 的 full-line cacheable write miss 已能与其它行的 cache miss 并发推进
 - compat 侧已经补成 per-master read response queue，因此同一 master 可连续回收多笔 cacheable read

@@ -169,7 +169,8 @@ axi_llc_subsystem
 - `axi_llc_subsystem_core` 里 resident lookup / install / invalidate 保持与当前 C++
   原型一致的单发射路径
 - 但 `axi_llc_subsystem_core + llc_cache_ctrl` 现在已经支持多个 cacheable read miss
-  同时挂起；compat 也支持同一 master 的多 read response 排队回传
+  同时挂起，且 cacheable miss 入口不再被 `cache_quiescent` 串行化；compat 也支持同一
+  master 的多 read response 排队回传
 - bypass 风格请求现在可以绕开单发射 lookup 路径，与 cacheable miss 并发推进
 - dirty-victim 的 full-line cacheable write miss 现在也走内部 slot 路径，不再把其它
   miss/维护流量完全串死在旧的串行 writeback 状态机后面
@@ -217,6 +218,7 @@ axi_llc_subsystem
 - `tb/tb_axi_llc_subsystem_axi_cache_multiread_contract.v`
 - `tb/tb_axi_llc_subsystem_axi_same_master_multiread_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_direct_bypass_contract.v`
+- `tb/tb_axi_llc_subsystem_compat_same_line_hol_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_write_victim_multiflow_contract.v`
 - `tb/tb_axi_llc_subsystem_compat_victim_line_hazard_contract.v`
 - `tb/tb_axi_llc_axi_bridge_read_outstanding_contract.v`

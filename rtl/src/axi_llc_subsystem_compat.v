@@ -178,17 +178,6 @@ module axi_llc_subsystem_compat #(
     reg [7:0]                    core_slot_master_r [0:MAX_OUTSTANDING-1];
     reg [ID_BITS-1:0]            core_slot_orig_id_r [0:MAX_OUTSTANDING-1];
     reg [ADDR_BITS-1:0]          core_slot_addr_r [0:MAX_OUTSTANDING-1];
-    // Once a cacheable/direct-mapped request leaves the compat queues, keep a
-    // stable internal slot/id until core accepts it. This avoids combinational
-    // req/id drift while core backpressures the single lookup path.
-    reg                          core_issue_valid_r;
-    reg                          core_issue_is_write_r;
-    reg [7:0]                    core_issue_master_r;
-    reg [ID_BITS-1:0]            core_issue_slot_r;
-    reg [ADDR_BITS-1:0]          core_issue_addr_r;
-    reg [7:0]                    core_issue_size_r;
-    reg [LINE_BITS-1:0]          core_issue_wdata_r;
-    reg [LINE_BYTES-1:0]         core_issue_wstrb_r;
 
     // Direct bypass slots. These requests use the lower bypass port without
     // occupying the core-side inflight marker.
@@ -432,6 +421,21 @@ module axi_llc_subsystem_compat #(
         end
     endfunction
 
+    function dispatch_path_line_hazard;
+        input [ADDR_BITS-1:0] addr_value;
+        integer depth_idx;
+        begin
+            dispatch_path_line_hazard = core_path_line_hazard(addr_value);
+            for (depth_idx = 0; depth_idx < MAX_OUTSTANDING; depth_idx = depth_idx + 1) begin
+                if (core_slot_valid_r[depth_idx] &&
+                    ((core_slot_addr_r[depth_idx] >> LINE_OFFSET_BITS) ==
+                     (addr_value >> LINE_OFFSET_BITS))) begin
+                    dispatch_path_line_hazard = 1'b1;
+                end
+            end
+        end
+    endfunction
+
     function read_id_conflict;
         input integer master_idx;
         input [ID_BITS-1:0] req_id_value;
@@ -540,13 +544,13 @@ module axi_llc_subsystem_compat #(
         dispatch_master_w = 8'd0;
         dispatch_fifo_slot_w = 0;
         dispatch_slot_w = 0;
-        core_up_req_valid_w = core_issue_valid_r;
-        core_up_req_write_w = core_issue_is_write_r;
-        core_up_req_addr_w = core_issue_addr_r;
-        core_up_req_id_w = core_issue_slot_r;
-        core_up_req_total_size_w = core_issue_size_r;
-        core_up_req_wdata_w = core_issue_wdata_r;
-        core_up_req_wstrb_w = core_issue_wstrb_r;
+        core_up_req_valid_w = 1'b0;
+        core_up_req_write_w = 1'b0;
+        core_up_req_addr_w = {ADDR_BITS{1'b0}};
+        core_up_req_id_w = {ID_BITS{1'b0}};
+        core_up_req_total_size_w = 8'd0;
+        core_up_req_wdata_w = {LINE_BITS{1'b0}};
+        core_up_req_wstrb_w = {LINE_BYTES{1'b0}};
         core_up_req_bypass_w = 1'b0;
         total_read_outstanding_w = 0;
         total_write_outstanding_w = 0;
@@ -750,7 +754,7 @@ module axi_llc_subsystem_compat #(
             dcache_same_cycle_accept_w = 1'b1;
         end
 
-        if (!core_issue_valid_r && core_slot_free_found_w) begin
+        if (core_slot_free_found_w) begin
             for (rr_off = 0; rr_off < TOTAL_PORTS; rr_off = rr_off + 1) begin
                 next_port = rr_ptr_r + rr_off;
                 if (next_port >= TOTAL_PORTS) begin
@@ -767,7 +771,7 @@ module axi_llc_subsystem_compat #(
                                                             rd_q_addr[dispatch_fifo_slot_w],
                                                             rd_q_size[dispatch_fifo_slot_w],
                                                             rd_q_bypass[dispatch_fifo_slot_w]) &&
-                                !core_path_line_hazard(
+                                !dispatch_path_line_hazard(
                                     rd_q_addr[dispatch_fifo_slot_w])) begin
                                 dispatch_found_w = 1'b1;
                                 dispatch_is_write_w = 1'b0;
@@ -786,7 +790,7 @@ module axi_llc_subsystem_compat #(
                                                             wr_q_addr[dispatch_fifo_slot_w],
                                                             wr_q_size[dispatch_fifo_slot_w],
                                                             wr_q_bypass[dispatch_fifo_slot_w]) &&
-                                !core_path_line_hazard(
+                                !dispatch_path_line_hazard(
                                     wr_q_addr[dispatch_fifo_slot_w])) begin
                                 dispatch_found_w = 1'b1;
                                 dispatch_is_write_w = 1'b1;
@@ -797,6 +801,24 @@ module axi_llc_subsystem_compat #(
                     end
                 end
             end
+        end
+
+        if (dispatch_found_w && core_slot_free_found_w) begin
+            core_up_req_valid_w = 1'b1;
+            core_up_req_write_w = dispatch_is_write_w;
+            core_up_req_addr_w = dispatch_is_write_w ?
+                                 wr_q_addr[dispatch_fifo_slot_w] :
+                                 rd_q_addr[dispatch_fifo_slot_w];
+            core_up_req_id_w = core_slot_free_w[ID_BITS-1:0];
+            core_up_req_total_size_w = dispatch_is_write_w ?
+                                       wr_q_size[dispatch_fifo_slot_w] :
+                                       rd_q_size[dispatch_fifo_slot_w];
+            core_up_req_wdata_w = dispatch_is_write_w ?
+                                  wr_q_wdata[dispatch_fifo_slot_w] :
+                                  {LINE_BITS{1'b0}};
+            core_up_req_wstrb_w = dispatch_is_write_w ?
+                                  wr_q_wstrb[dispatch_fifo_slot_w] :
+                                  {LINE_BYTES{1'b0}};
         end
 
         if (direct_slot_free_found_w) begin
@@ -1042,14 +1064,6 @@ module axi_llc_subsystem_compat #(
             direct_rr_ptr_r <= 8'd0;
             rd_capture_rr_r <= 8'd0;
             wr_capture_rr_r <= 8'd0;
-            core_issue_valid_r <= 1'b0;
-            core_issue_is_write_r <= 1'b0;
-            core_issue_master_r <= 8'd0;
-            core_issue_slot_r <= {ID_BITS{1'b0}};
-            core_issue_addr_r <= {ADDR_BITS{1'b0}};
-            core_issue_size_r <= 8'd0;
-            core_issue_wdata_r <= {LINE_BITS{1'b0}};
-            core_issue_wstrb_r <= {LINE_BYTES{1'b0}};
             read_req_accepted_r <= {NUM_READ_MASTERS{1'b0}};
             read_req_accepted_id_r <= {(NUM_READ_MASTERS*ID_BITS){1'b0}};
             write_req_accepted_r <= {NUM_WRITE_MASTERS{1'b0}};
@@ -1220,26 +1234,15 @@ module axi_llc_subsystem_compat #(
                 end
             end
 
-            if (!core_issue_valid_r && dispatch_found_w) begin
-                core_issue_valid_r <= 1'b1;
-                core_issue_is_write_r <= dispatch_is_write_w;
-                core_issue_master_r <= dispatch_master_w;
-                core_issue_slot_r <= core_slot_free_w[ID_BITS-1:0];
+            if (dispatch_found_w && core_slot_free_found_w &&
+                core_up_req_valid_w && core_up_req_ready_w) begin
                 if (dispatch_is_write_w) begin
-                    core_issue_addr_r <= wr_q_addr[dispatch_fifo_slot_w];
-                    core_issue_size_r <= wr_q_size[dispatch_fifo_slot_w];
-                    core_issue_wdata_r <= wr_q_wdata[dispatch_fifo_slot_w];
-                    core_issue_wstrb_r <= wr_q_wstrb[dispatch_fifo_slot_w];
                     wr_q_valid[dispatch_fifo_slot_w] <= 1'b0;
                     wr_q_head[dispatch_master_w] <= next_wr_ptr(wr_q_head[dispatch_master_w]);
                     wr_q_count[dispatch_master_w] <= wr_q_count[dispatch_master_w] - 8'd1;
                     core_slot_orig_id_r[core_slot_free_w[ID_BITS-1:0]] <=
                         wr_q_id[dispatch_fifo_slot_w];
                 end else begin
-                    core_issue_addr_r <= rd_q_addr[dispatch_fifo_slot_w];
-                    core_issue_size_r <= rd_q_size[dispatch_fifo_slot_w];
-                    core_issue_wdata_r <= {LINE_BITS{1'b0}};
-                    core_issue_wstrb_r <= {LINE_BYTES{1'b0}};
                     rd_q_valid[dispatch_fifo_slot_w] <= 1'b0;
                     rd_q_head[dispatch_master_w] <= next_rd_ptr(rd_q_head[dispatch_master_w]);
                     rd_q_count[dispatch_master_w] <= rd_q_count[dispatch_master_w] - 8'd1;
@@ -1253,17 +1256,6 @@ module axi_llc_subsystem_compat #(
                     dispatch_is_write_w ? wr_q_addr[dispatch_fifo_slot_w]
                                         : rd_q_addr[dispatch_fifo_slot_w];
                 rr_ptr_r <= dispatch_slot_w[7:0] + 8'd1;
-            end
-
-            if (core_issue_valid_r && core_up_req_ready_w) begin
-                core_issue_valid_r <= 1'b0;
-                core_issue_is_write_r <= 1'b0;
-                core_issue_master_r <= 8'd0;
-                core_issue_slot_r <= {ID_BITS{1'b0}};
-                core_issue_addr_r <= {ADDR_BITS{1'b0}};
-                core_issue_size_r <= 8'd0;
-                core_issue_wdata_r <= {LINE_BITS{1'b0}};
-                core_issue_wstrb_r <= {LINE_BYTES{1'b0}};
             end
 
             // Move the accepted core response back into the owning read/write
