@@ -430,40 +430,25 @@ module tb_axi_llc_subsystem_compat_direct_bypass_contract;
         issue_read_expect_accept(0, ADDR1, 4'h2);
         wait_bypass_request(ADDR1, lower_id1);
 
-        @(negedge clk);
-        bypass_resp_valid = 1'b1;
-        bypass_resp_id = lower_id1;
-        bypass_resp_rdata = pack_line(64'h2222_2222_2222_2222);
-        bypass_resp_code = 2'b00;
-        wait_cycles(4);
-        if (bypass_resp_ready !== 1'b0) begin
-            fail_now("second lower response should stall while response slot is occupied");
+        drive_bypass_resp_until_ready(lower_id1, 64'h2222_2222_2222_2222);
+        if (!read_resp_valid[0]) begin
+            fail_now("first response should stay visible while second queues");
+        end
+        if (get_resp_id(0) !== 4'h1) begin
+            fail_now("front response id should still be first request");
         end
         read_resp_ready[0] = 1'b1;
-        timeout = 20;
-        while (read_resp_valid[0] && (timeout > 0)) begin
-            @(posedge clk);
-            timeout = timeout - 1;
-        end
-        if (timeout == 0) begin
-            fail_now("first response should clear once master becomes ready");
-        end
-        read_resp_ready[0] = 1'b0;
-        timeout = 20;
-        while (!bypass_resp_ready && (timeout > 0)) begin
-            @(posedge clk);
-            timeout = timeout - 1;
-        end
-        if (timeout == 0) begin
-            fail_now("second lower response should resume after slot is freed");
-        end
         @(posedge clk);
-        @(negedge clk);
-        bypass_resp_valid = 1'b0;
-        bypass_resp_id = {ID_BITS{1'b0}};
-        bypass_resp_rdata = {READ_RESP_BITS{1'b0}};
-
-        expect_read_resp(0, 4'h2, 64'h2222_2222_2222_2222);
+        #1;
+        if (!read_resp_valid[0]) begin
+            fail_now("second response should be promoted from queue");
+        end
+        if (get_resp_id(0) !== 4'h2) begin
+            fail_now("promoted response id mismatch");
+        end
+        if (get_resp_line(0) !== 64'h2222_2222_2222_2222) begin
+            fail_now("promoted response line mismatch");
+        end
         read_resp_ready[0] = 1'b1;
         @(posedge clk);
 
