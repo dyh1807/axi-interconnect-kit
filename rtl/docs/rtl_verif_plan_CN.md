@@ -152,6 +152,8 @@
 
 - `mode=1` cache miss read 在途时，另一个 read master 的 bypass read 仍可继续下发第二笔 AXI AR
 - bypass read 的上游 response 可先于 cache miss refill 返回
+- `mode=1 bypass miss / write-through` 在 lower ready 被故意拉低时，后续 cache miss 仍可继续推进到
+  cache lower 路径
 - reset 后的独立场景中，cache miss read 在途时，另一个 write master 的 bypass write 仍可继续下发 AXI AW/W/B
 - bypass write 的上游 response 可先于 cache miss refill 返回
 - 两类 lower AXI 事务使用不同 `axi_id`
@@ -197,6 +199,8 @@
 - same-line blocked cacheable read 不会被 compat 提前 accept
 - 非 `MASTER_DCACHE_R` 的 master 在已有 core-path read 未退休时，不会继续 accept
   新的 cacheable read
+- 非 `MASTER_DCACHE_R` 的 master 在已有 core-origin `mode=1 bypass read` 未退休时，也不会继续
+  accept 第二笔 same-master bypass read
 - 当该 master 的前台 read response slot / response queue 仍忙时，不会继续 accept
   新的 cacheable read
 

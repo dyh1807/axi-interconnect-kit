@@ -148,9 +148,10 @@ axi_llc_subsystem
     per-master response queue 依次回传
   - `mode=1` bypass 请求会进入 core，保留 resident-hit / write-hit shadow-update 语义
   - 只有 `mode=0/3`、以及 `mode=2` 窗口外请求会走 compat 的 direct bypass side path
-  - `mode=1 bypass miss / write-through` 在 lower request 发出后，会从 core slot 迁移到
-    compat 的 direct slot，由 compat 继续等待 lower completion；core 不再被 `ST_BYPASS_WAIT`
-    串住
+  - `mode=1 bypass miss / write-through` 在 core 判定出需要 lower bypass 后，就会先 handoff 到
+    compat 的 direct slot；后续由 compat 自己等待 lower ready、发出 lower request、再等待
+    lower completion
+  - 因此 core 不再被 `ST_BYPASS_WAIT` 或 lower-ready backpressure 长时间串住
   - `mode=2` 窗口外且起始地址不在 MMIO 区间内的 direct-bypass 请求，会额外带
     `bypass_req_mode2_ddr_aligned`
   - reconfig / `invalidate_all` 会先在 compat 层排空本地 queue / inflight / response slot，
@@ -190,7 +191,9 @@ axi_llc_subsystem
   master 的多 read response 排队回传
 - bypass 风格请求现在可以绕开单发射 lookup 路径，与 cacheable miss 并发推进
 - `mode=1 bypass miss / write-through` 现在也不再把 `llc_cache_ctrl` 主状态机整体卡在
-  lower wait 上；lower completion 由 compat 的 direct slot 接管
+  lower wait 上；lower issue/completion 都由 compat 的 direct slot 接管
+- 非 `MASTER_DCACHE_R` 的 same-master `mode=1 bypass read` 不会因为 handoff 到 direct slot
+  后被意外放宽；compat 仍把这类 core-origin direct slot 计入 same-master busy
 - dirty-victim 的 full-line cacheable write miss 现在也走内部 slot 路径，不再把其它
   miss/维护流量完全串死在旧的串行 writeback 状态机后面
 - 但 `axi_llc_axi_bridge` 已经补成 lower AXI 多 outstanding / 独立 `axi_id` remap：

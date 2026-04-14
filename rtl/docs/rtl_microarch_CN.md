@@ -193,8 +193,9 @@
 - per-master request FIFO + 独立 response 槽位
 - `mode=0/3` 与 `mode=2` 窗口外请求的 direct lower bypass side path
 - `mode=1` bypass 重新进入 core，保留 resident-hit / write-hit shadow-update 语义
-- `mode=1 bypass miss / write-through` 在 lower request 发出后，会从 core slot 迁移到
-  compat 的 direct slot，由 compat 负责等待 lower completion 并回传上游响应
+- `mode=1 bypass miss / write-through` 在 core 判定出需要 lower bypass 后，会先 handoff 到
+  compat 的 direct slot；随后由 compat 自己等待 lower ready、发出 lower request、等待
+  lower completion，并回传上游响应
 - reconfig / `invalidate_all` 期间，先由 compat 排空本地 queue / inflight / response slot，
   再把维护请求交给 core
 - `invalidate_line` 期间，compat 会拦住新的 write 接受，并等待同 line 的本地 write hazard
@@ -208,6 +209,7 @@
   - same-line read miss / victim-line / local write hazard
   - 同一 master 的前台 read response slot 或 response queue 是否仍忙
   - 非 `MASTER_DCACHE_R` 是否已有尚未退休的 core-path read
+  - 非 `MASTER_DCACHE_R` 是否已有尚未退休的 core-origin `mode=1 bypass read`
 - `ready` 采用 sticky-grant 语义：一次只对一个 read master、一个 write master 发放 ready，
   在握手或请求撤销前保持
 
@@ -220,7 +222,8 @@
   maintenance / reconfig drain
 - direct-bypass 请求已可绕开单发射 lookup 路径，与 cacheable miss 并发推进
 - `mode=1 bypass miss / write-through` 现在也不会再把 `llc_cache_ctrl` 主状态机整体卡在
-  lower wait 上，因此“先 bypass 后 cache”与“先 cache 后 bypass”两种顺序都能形成并发
+  lower wait 上；compat 的 direct slot 会先接管 pending-issue owner，因此“先 bypass 后
+  cache”与“先 cache 后 bypass”两种顺序都能形成并发
 - dirty-victim 的 full-line cacheable write miss 已能与其它行的 cache miss 并发推进
 - compat 侧已经补成 per-master read response queue，因此同一 master 可连续回收多笔 cacheable read
 - 下游 AXI 侧已经补成多 outstanding / 独立 `axi_id` remap
