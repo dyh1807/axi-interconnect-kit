@@ -508,6 +508,54 @@ bool AXI_LLC::write_line_pending(const AXI_LLC_Regs_t &regs,
   return false;
 }
 
+bool AXI_LLC::read_victim_snapshot_present(const AXI_LLC_Regs_t &regs,
+                                           uint32_t victim_addr) const {
+  if (victim_addr == 0) {
+    return false;
+  }
+  if (regs.victim_wb_valid_r && !regs.victim_wb_for_write_r &&
+      regs.victim_wb_addr_r == victim_addr) {
+    return true;
+  }
+  for (uint32_t i = 0; i < regs.read_victim_wb_q_count_r &&
+                       i < AXI_LLC_READ_VICTIM_WB_QUEUE_DEPTH;
+       ++i) {
+    const uint8_t slot =
+        static_cast<uint8_t>((regs.read_victim_wb_q_head_r + i) %
+                             AXI_LLC_READ_VICTIM_WB_QUEUE_DEPTH);
+    const auto &entry = regs.read_victim_wb_q[slot];
+    if (entry.valid && entry.victim_addr == victim_addr) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool AXI_LLC::victim_snapshot_waits_for_write_resolution(
+    const AXI_LLC_Regs_t &regs, uint32_t victim_addr) const {
+  if (victim_addr == 0) {
+    return false;
+  }
+  // Only writes that have already consumed cache state can block the victim
+  // snapshot. Pre-lookup / queued writes must wait and retry after the refill
+  // path has externalized the snapshot.
+  if (regs.lookup_valid_r && regs.lookup_is_write_r && regs.lookup_issued_r &&
+      !regs.lookup_is_bypass_r &&
+      line_addr(config_, regs.lookup_addr_r) == victim_addr) {
+    return true;
+  }
+  for (uint8_t master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    const auto &ctx = regs.write_ctx[master];
+    if (!ctx.valid || ctx.bypass || ctx.line_addr != victim_addr) {
+      continue;
+    }
+    if (ctx.cache_pending) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool AXI_LLC::victim_line_pending(const AXI_LLC_Regs_t &regs,
                                   uint32_t line_addr_value) const {
   if (regs.victim_wb_valid_r && regs.victim_wb_addr_r == line_addr_value) {
@@ -2647,17 +2695,11 @@ void AXI_LLC::drive_mem_read_path() {
            io.reg_write.victim_wb_addr_r == entry.victim_addr &&
            io.reg_write.victim_wb_mshr_slot_r == static_cast<uint8_t>(commit_slot);
   };
-  auto read_victim_snapshot_externalized = [&]() -> bool {
-    if (read_victim_snapshot_in_global_slot()) {
-      return io.reg_write.victim_wb_issued_r;
-    }
-    return false;
-  };
   auto ensure_read_victim_snapshot_externalized = [&]() -> bool {
     if (!entry.victim_dirty || entry.victim_writeback_done) {
       return true;
     }
-    if (write_line_pending(io.regs, entry.victim_addr)) {
+    if (victim_snapshot_waits_for_write_resolution(io.regs, entry.victim_addr)) {
       if (llc_focus_line(entry.line_addr) || llc_focus_line(entry.victim_addr)) {
         std::printf(
             "[AXI-LLC][VICTIM-WAIT-WRITE] cyc=%lld slot=%d line=0x%08x "
@@ -2666,12 +2708,12 @@ void AXI_LLC::drive_mem_read_path() {
       }
       return false;
     }
-    if (read_victim_snapshot_externalized()) {
+    if (read_victim_snapshot_in_global_slot() ||
+        read_victim_snapshot_present(io.reg_write, entry.victim_addr)) {
       return true;
     }
-    if (read_victim_snapshot_in_global_slot()) {
-      return false;
-    }
+    // Once the dirty victim snapshot is captured in the dedicated victim slot
+    // or queue, refill commit no longer depends on write-path cache_done.
     if (!io.reg_write.victim_wb_valid_r) {
       io.reg_write.victim_wb_valid_r = true;
       io.reg_write.victim_wb_issued_r = false;
@@ -2682,9 +2724,11 @@ void AXI_LLC::drive_mem_read_path() {
       io.reg_write.victim_wb_issue_cycle_r = 0;
       io.reg_write.victim_wb_data_r = entry.victim_data;
       io.reg_write.victim_wb_strobe_r = full_line_strobe(config_);
-      return false;
+      return true;
     }
-    return false;
+    return enqueue_read_victim_snapshot(static_cast<uint8_t>(commit_slot),
+                                        entry.victim_addr, entry.victim_data,
+                                        full_line_strobe(config_));
   };
   auto log_active_victim_slot_clear = [&](const char *reason) {
     if (!(io.regs.victim_wb_valid_r && io.regs.victim_wb_issued_r &&
