@@ -481,6 +481,31 @@ bool AXI_LLC::write_line_pending(const AXI_LLC_Regs_t &regs,
   return false;
 }
 
+bool AXI_LLC::victim_snapshot_blocked_by_write(const AXI_LLC_Regs_t &regs,
+                                               uint32_t victim_addr) const {
+  if (victim_addr == 0) {
+    return false;
+  }
+  for (uint8_t master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    const auto &ctx = regs.write_ctx[master];
+    if (!ctx.valid || ctx.bypass || ctx.cache_done ||
+        ctx.line_addr != victim_addr) {
+      continue;
+    }
+    if (ctx.cache_pending) {
+      return true;
+    }
+    const bool lookup_owned_by_ctx =
+        regs.lookup_valid_r && regs.lookup_is_write_r &&
+        regs.lookup_master_r == master &&
+        line_addr(config_, regs.lookup_addr_r) == victim_addr;
+    if (lookup_owned_by_ctx && regs.lookup_issued_r) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool AXI_LLC::victim_line_pending(const AXI_LLC_Regs_t &regs,
                                   uint32_t line_addr_value) const {
   if (regs.victim_wb_valid_r && regs.victim_wb_addr_r == line_addr_value) {
@@ -849,6 +874,17 @@ int AXI_LLC::find_mshr_by_mem_id(const AXI_LLC_Regs_t &regs, uint8_t mem_id) con
 
 int AXI_LLC::pick_refill_commit_slot(const AXI_LLC_Regs_t &regs) const {
   const uint32_t limit = std::min<uint32_t>(config_.mshr_num, MAX_OUTSTANDING);
+  for (uint32_t i = 0; i < limit; ++i) {
+    const auto &entry = regs.mshr[i];
+    if (!entry.valid || !entry.refill_valid) {
+      continue;
+    }
+    if (entry.victim_dirty && !entry.victim_writeback_done &&
+        victim_snapshot_blocked_by_write(regs, entry.victim_addr)) {
+      continue;
+    }
+    return static_cast<int>(i);
+  }
   for (uint32_t i = 0; i < limit; ++i) {
     if (regs.mshr[i].valid && regs.mshr[i].refill_valid) {
       return static_cast<int>(i);
@@ -2452,7 +2488,7 @@ void AXI_LLC::drive_mem_read_path() {
     if (!entry.victim_dirty || entry.victim_writeback_done) {
       return true;
     }
-    if (write_line_pending(io.regs, entry.victim_addr)) {
+    if (victim_snapshot_blocked_by_write(io.regs, entry.victim_addr)) {
       if (llc_focus_line(entry.line_addr) || llc_focus_line(entry.victim_addr)) {
         std::printf(
             "[AXI-LLC][VICTIM-WAIT-WRITE] cyc=%lld slot=%d line=0x%08x "

@@ -2941,7 +2941,7 @@ bool test_unarmed_refill_ready_victim_blocks_victim_line_access() {
 }
 
 bool test_refill_ready_victim_waits_for_pending_victim_write() {
-  printf("=== LLC Test 20f: refill-ready victim waits for pending victim-line write ===\n");
+  printf("=== LLC Test 20f: refill-ready victim waits for non-replayable victim-line write ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -2972,23 +2972,144 @@ bool test_refill_ready_victim_waits_for_pending_victim_write() {
   ctx.bypass = false;
   ctx.lookup_pending = false;
   ctx.cache_done = false;
-  ctx.cache_pending = false;
+  ctx.cache_pending = true;
   ctx.line_addr = victim_line;
   ctx.addr = victim_line;
 
   clear_inputs(llc);
   llc.comb();
   if (llc.io.reg_write.victim_wb_valid_r) {
-    printf("FAIL: victim writeback armed while same victim line still has pending write\n");
+    printf("FAIL: victim writeback armed while same victim line still has non-replayable write\n");
     return false;
   }
 
-  llc.io.regs.write_ctx[MASTER_DCACHE_W].cache_done = true;
+  llc.io.regs.write_ctx[MASTER_DCACHE_W].cache_pending = false;
   clear_inputs(llc);
   llc.comb();
   if (!llc.io.reg_write.victim_wb_valid_r ||
       llc.io.reg_write.victim_wb_addr_r != victim_line) {
-    printf("FAIL: victim writeback did not arm after pending victim write cleared\n");
+    printf("FAIL: victim writeback did not arm after non-replayable victim write cleared\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_refill_ready_victim_does_not_wait_for_replayable_victim_write() {
+  printf("=== LLC Test 20g: refill-ready victim ignores replayable victim-line write ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim_line = AXI_LLC::line_addr(config, 0x940);
+  const uint32_t fill_line = AXI_LLC::line_addr(config, 0x840);
+
+  auto &pending = llc.io.regs.mshr[0];
+  pending.valid = true;
+  pending.bypass = false;
+  pending.is_write = false;
+  pending.refill_valid = true;
+  pending.refill_committed = false;
+  pending.addr = fill_line;
+  pending.line_addr = fill_line;
+  pending.set = AXI_LLC::set_index(config, fill_line);
+  pending.way = 0;
+  pending.victim_dirty = true;
+  pending.victim_writeback_done = false;
+  pending.victim_addr = victim_line;
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    pending.victim_data[i] = 0x7800 + i;
+  }
+
+  auto &ctx = llc.io.regs.write_ctx[MASTER_DCACHE_W];
+  ctx.valid = true;
+  ctx.bypass = false;
+  ctx.lookup_pending = false;
+  ctx.cache_done = false;
+  ctx.cache_pending = false;
+  ctx.line_addr = victim_line;
+  ctx.addr = victim_line;
+
+  llc.io.regs.lookup_valid_r = true;
+  llc.io.regs.lookup_issued_r = false;
+  llc.io.regs.lookup_addr_r = victim_line;
+  llc.io.regs.lookup_master_r = MASTER_DCACHE_W;
+  llc.io.regs.lookup_id_r = 0x69;
+  llc.io.regs.lookup_is_write_r = true;
+  llc.io.regs.lookup_is_bypass_r = false;
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.reg_write.victim_wb_valid_r ||
+      llc.io.reg_write.victim_wb_addr_r != victim_line) {
+    printf("FAIL: refill-ready victim still waited on replayable victim-line write\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_refill_commit_skips_victim_write_blocked_slot() {
+  printf("=== LLC Test 20h: refill commit skips victim-write-blocked slot ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t blocked_fill_line = AXI_LLC::line_addr(config, 0x840);
+  const uint32_t blocked_victim_line = AXI_LLC::line_addr(config, 0x940);
+  const uint32_t ready_line = AXI_LLC::line_addr(config, 0xa40);
+
+  auto &blocked = llc.io.regs.mshr[0];
+  blocked.valid = true;
+  blocked.bypass = false;
+  blocked.is_write = false;
+  blocked.refill_valid = true;
+  blocked.refill_committed = false;
+  blocked.addr = blocked_fill_line;
+  blocked.line_addr = blocked_fill_line;
+  blocked.set = AXI_LLC::set_index(config, blocked_fill_line);
+  blocked.way = 0;
+  blocked.victim_dirty = true;
+  blocked.victim_writeback_done = false;
+  blocked.victim_addr = blocked_victim_line;
+  blocked.refill_data = make_line_data(0x8100);
+
+  auto &ctx = llc.io.regs.write_ctx[MASTER_DCACHE_W];
+  ctx.valid = true;
+  ctx.bypass = false;
+  ctx.lookup_pending = false;
+  ctx.cache_done = false;
+  ctx.cache_pending = true;
+  ctx.line_addr = blocked_victim_line;
+  ctx.addr = blocked_victim_line;
+
+  auto &ready = llc.io.regs.mshr[1];
+  ready.valid = true;
+  ready.bypass = true;
+  ready.is_write = false;
+  ready.refill_valid = true;
+  ready.refill_committed = true;
+  ready.addr = ready_line;
+  ready.line_addr = ready_line;
+  ready.master = MASTER_ICACHE;
+  ready.id = 0x6a;
+  ready.refill_data = make_line_data(0x8200);
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.reg_write.read_resp_valid_r[MASTER_ICACHE] ||
+      llc.io.reg_write.read_resp_id_r[MASTER_ICACHE] != 0x6a ||
+      llc.io.reg_write.mshr[1].valid) {
+    printf(
+        "FAIL: ready refill slot was not committed while blocked slot stayed ahead "
+        "resp_valid=%d resp_id=%u slot1_valid=%d\n",
+        static_cast<int>(llc.io.reg_write.read_resp_valid_r[MASTER_ICACHE]),
+        static_cast<unsigned>(llc.io.reg_write.read_resp_id_r[MASTER_ICACHE]),
+        static_cast<int>(llc.io.reg_write.mshr[1].valid));
     return false;
   }
 
@@ -3485,6 +3606,16 @@ int main() {
     failed++;
 
   if (test_refill_ready_victim_waits_for_pending_victim_write())
+    passed++;
+  else
+    failed++;
+
+  if (test_refill_ready_victim_does_not_wait_for_replayable_victim_write())
+    passed++;
+  else
+    failed++;
+
+  if (test_refill_commit_skips_victim_write_blocked_slot())
     passed++;
   else
     failed++;
