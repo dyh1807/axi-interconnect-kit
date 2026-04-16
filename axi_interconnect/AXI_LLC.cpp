@@ -59,6 +59,14 @@ bool llc_focus_set(const AXI_LLCConfig &config, uint32_t set) {
   return false;
 }
 
+bool read_resp_requires_fresh_hold(uint8_t master) {
+  // The shared top-level fabric samples ready one phase earlier and benefits
+  // from holding a newly-produced response for one full cycle. The internal
+  // DCache path is a direct bridge into MSHR and consumes resp.valid as a
+  // one-shot event; forcing the extra visible cycle there duplicates fills.
+  return master != MASTER_DCACHE_R;
+}
+
 void llc_dump_words(const char *tag, uint32_t line_addr, uint8_t slot,
                     uint8_t master, uint8_t id, const WideReadData_t &data) {
   if (!llc_focus_line(line_addr)) {
@@ -1227,6 +1235,7 @@ void AXI_LLC::try_launch_prefetch_lookup() {
 
 void AXI_LLC::drive_read_responses() {
   for (uint8_t i = 0; i < NUM_READ_MASTERS; ++i) {
+    const bool keep_fresh_one_cycle = read_resp_requires_fresh_hold(i);
     io.ext_out.upstream.read_resp[i].valid = io.regs.read_resp_valid_r[i];
     io.ext_out.upstream.read_resp[i].data = io.regs.read_resp_data_r[i];
     io.ext_out.upstream.read_resp[i].id = io.regs.read_resp_id_r[i];
@@ -1234,7 +1243,8 @@ void AXI_LLC::drive_read_responses() {
     // earlier than the consumer computes its current-cycle backpressure. Keep
     // a newly-produced response visible for one full cycle before letting the
     // previous-cycle ready retire it.
-    if (io.regs.read_resp_valid_r[i] && io.regs.read_resp_fresh_r[i]) {
+    if (keep_fresh_one_cycle && io.regs.read_resp_valid_r[i] &&
+        io.regs.read_resp_fresh_r[i]) {
       io.reg_write.read_resp_fresh_r[i] = false;
     } else if (io.regs.read_resp_valid_r[i] &&
                io.ext_in.upstream.read_resp[i].ready) {
