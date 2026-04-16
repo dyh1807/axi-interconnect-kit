@@ -60,11 +60,8 @@ bool llc_focus_set(const AXI_LLCConfig &config, uint32_t set) {
 }
 
 bool read_resp_requires_fresh_hold(uint8_t master) {
-  // The shared top-level fabric samples ready one phase earlier and benefits
-  // from holding a newly-produced response for one full cycle. The internal
-  // DCache path is a direct bridge into MSHR and consumes resp.valid as a
-  // one-shot event; forcing the extra visible cycle there duplicates fills.
-  return master != MASTER_DCACHE_R;
+  (void)master;
+  return true;
 }
 
 void llc_dump_words(const char *tag, uint32_t line_addr, uint8_t slot,
