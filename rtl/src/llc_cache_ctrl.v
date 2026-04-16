@@ -519,10 +519,7 @@ module llc_cache_ctrl #(
             if (!mshr_commit_found_r && mshr_valid_r[mshr_idx] &&
                 !mshr_committed_r[mshr_idx] &&
                 ((mshr_need_refill_r[mshr_idx] &&
-                  mshr_refill_valid_r[mshr_idx] &&
-                  (!mshr_victim_dirty_r[mshr_idx] ||
-                   mshr_wb_issued_r[mshr_idx] ||
-                   mshr_wb_done_r[mshr_idx])) ||
+                  mshr_refill_valid_r[mshr_idx]) ||
                  (!mshr_need_refill_r[mshr_idx] &&
                   (!mshr_victim_dirty_r[mshr_idx] ||
                    mshr_wb_done_r[mshr_idx])))) begin

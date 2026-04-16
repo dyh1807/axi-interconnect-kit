@@ -518,19 +518,27 @@ module tb_axi_llc_subsystem_compat_victim_line_hazard_contract;
         issue_read(MISS_ADDR, MISS_ID);
         wait_cache_req(1'b0, MISS_ADDR, lower_miss_id);
 
-        $display("STEP 4 refill completes, victim hazard becomes visible");
+        $display("STEP 4 refill completes; read response may precede victim writeback issue");
+        @(negedge clk);
+        cache_req_ready = 1'b0;
         drive_cache_resp(lower_miss_id, miss_line);
-        wait_cache_req(1'b1, VICTIM_ADDR, lower_wb_id);
+        wait_read_resp(MISS_ID, miss_line);
 
-        $display("STEP 5 victim-line accesses must stay blocked");
+        $display("STEP 5 victim-line accesses must stay blocked before victim writeback issues");
         hold_read_blocked(VICTIM_ADDR, VICTIM_RD_ID);
         hold_write_blocked(VICTIM_ADDR, VICTIM_WR_ID, make_line(8'hC0));
 
-        $display("STEP 6 retire victim hazard and complete miss");
-        drive_cache_resp(lower_wb_id, {LINE_BITS{1'b0}});
-        wait_read_resp(MISS_ID, miss_line);
+        $display("STEP 6 lower writeback path unblocks, hazard still stays visible until retire");
+        @(negedge clk);
+        cache_req_ready = 1'b1;
+        wait_cache_req(1'b1, VICTIM_ADDR, lower_wb_id);
+        hold_read_blocked(VICTIM_ADDR, VICTIM_RD_ID);
+        hold_write_blocked(VICTIM_ADDR, VICTIM_WR_ID, make_line(8'hC0));
 
-        $display("STEP 7 victim line becomes accessible again");
+        $display("STEP 7 retire victim hazard");
+        drive_cache_resp(lower_wb_id, {LINE_BITS{1'b0}});
+
+        $display("STEP 8 victim line becomes accessible again");
         issue_read(VICTIM_ADDR, VICTIM_RD_ID);
         wait_cache_req(1'b0, VICTIM_ADDR, lower_victim_rd_id);
         drive_cache_resp(lower_victim_rd_id, victim_line);
