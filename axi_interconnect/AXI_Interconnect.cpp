@@ -877,7 +877,8 @@ void AXI_Interconnect::prepare_llc_inputs() {
       !any_upstream_capture_pending && !any_upstream_req_visible;
   llc.io.ext_in.mem.read_req_ready = can_issue_llc_read_req();
   llc.io.ext_in.mem.write_req_ready =
-      !w_active && !aw_latched.valid && !llc_mem_write_resp_valid_;
+      !w_active && !aw_latched.valid && !llc_mem_write_resp_valid_ &&
+      llc_mem_ignored_b_count_ == 0;
   llc.io.ext_in.mem.write_resp_valid = llc_mem_write_resp_valid_;
   llc.io.ext_in.mem.write_resp = llc_mem_write_resp_;
 

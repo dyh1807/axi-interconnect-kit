@@ -1221,8 +1221,38 @@ bool test_llc_write_resp_holds_until_ready() {
   return true;
 }
 
+bool test_llc_ignored_victim_b_blocks_new_write_issue() {
+  printf("=== Test 14: ignored victim B blocks new LLC write issue ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+
+  interconnect.llc_mem_ignored_b_count_ = 1;
+  interconnect.w_active = false;
+  interconnect.aw_latched.valid = false;
+  interconnect.llc_mem_write_resp_valid_ = false;
+
+  interconnect.prepare_llc_inputs();
+  if (interconnect.llc.io.ext_in.mem.write_req_ready) {
+    printf("FAIL: LLC write issue remained ready while ignored victim B was pending\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_multi_write_outstanding(TestEnv &env) {
-  printf("=== Test 12: multiple write outstanding contexts ===\n");
+  printf("=== Test 15: multiple write outstanding contexts ===\n");
 
   env.clear_events();
   env.interconnect.init();
@@ -1412,6 +1442,11 @@ int main() {
     failed++;
 
   if (test_llc_write_resp_holds_until_ready())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_ignored_victim_b_blocks_new_write_issue())
     passed++;
   else
     failed++;
