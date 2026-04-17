@@ -752,6 +752,23 @@ bool AXI_Interconnect::can_accept_read_master(uint8_t master_id) const {
   return alloc_read_axi_id() != kInvalidAxiReadId;
 }
 
+bool AXI_Interconnect::llc_read_resp_queue_has_id(uint8_t master_id,
+                                                  uint8_t orig_id) const {
+  if (!llc_enabled() || master_id >= NUM_READ_MASTERS) {
+    return false;
+  }
+  const uint8_t count = llc.io.regs.read_resp_q_count_r[master_id];
+  const uint8_t head = llc.io.regs.read_resp_q_head_r[master_id];
+  for (uint8_t off = 0; off < count; ++off) {
+    const uint8_t slot =
+        static_cast<uint8_t>((head + off) % AXI_LLC_READ_RESP_QUEUE_DEPTH);
+    if (llc.io.regs.read_resp_q_id_r[master_id][slot] == orig_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool AXI_Interconnect::has_read_id_conflict(uint8_t master_id,
                                             uint8_t orig_id) const {
   if (ar_latched.valid && !ar_latched.to_llc &&
@@ -769,6 +786,9 @@ bool AXI_Interconnect::has_read_id_conflict(uint8_t master_id,
     }
     if (llc.io.regs.read_resp_valid_r[master_id] &&
         llc.io.regs.read_resp_id_r[master_id] == orig_id) {
+      return true;
+    }
+    if (llc_read_resp_queue_has_id(master_id, orig_id)) {
       return true;
     }
     if (llc.io.regs.lookup_valid_r &&
@@ -1466,18 +1486,6 @@ void AXI_Interconnect::seq() {
     if (!llc_enabled()) {
       return;
     }
-    auto read_resp_queue_has_id = [&](int master, uint8_t id) {
-      const uint8_t count = llc.io.regs.read_resp_q_count_r[master];
-      const uint8_t head = llc.io.regs.read_resp_q_head_r[master];
-      for (uint8_t off = 0; off < count; ++off) {
-        const uint8_t slot =
-            static_cast<uint8_t>((head + off) % AXI_LLC_READ_RESP_QUEUE_DEPTH);
-        if (llc.io.regs.read_resp_q_id_r[master][slot] == id) {
-          return true;
-        }
-      }
-      return false;
-    };
     for (int master = 0; master < NUM_READ_MASTERS; ++master) {
       if (!(llc_upstream_req_valid_prev[master] &&
             llc.io.ext_out.upstream.read_req[master].ready)) {
@@ -1500,7 +1508,9 @@ void AXI_Interconnect::seq() {
       retained = retained || (llc.io.regs.read_resp_valid_r[master] &&
                               llc.io.regs.read_resp_id_r[master] ==
                                   consumed_req.id);
-      retained = retained || read_resp_queue_has_id(master, consumed_req.id);
+      retained = retained ||
+                 llc_read_resp_queue_has_id(static_cast<uint8_t>(master),
+                                            consumed_req.id);
       if (!retained) {
         std::printf(
             "[axi][llc] consumed request without retained llc state "

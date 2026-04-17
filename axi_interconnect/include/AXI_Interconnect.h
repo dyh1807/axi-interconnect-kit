@@ -187,6 +187,7 @@ private:
   uint8_t count_master_read_pending(uint8_t master_id) const;
   uint8_t count_total_read_inflight() const;
   bool can_accept_read_master(uint8_t master_id) const;
+  bool llc_read_resp_queue_has_id(uint8_t master_id, uint8_t orig_id) const;
   bool has_read_id_conflict(uint8_t master_id, uint8_t orig_id) const;
   uint8_t alloc_write_axi_id() const;
   bool can_accept_write_now() const;

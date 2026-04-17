@@ -110,22 +110,25 @@ void cycle_inputs(TestEnv &env) {
 
   // Record DDR-side handshakes for protocol/beat-splitting checks
   if (env.interconnect.axi_io.ar.arvalid && env.interconnect.axi_io.ar.arready) {
-    env.ar_events.push_back(
-        {.addr = env.interconnect.axi_io.ar.araddr,
-         .id = static_cast<uint8_t>(env.interconnect.axi_io.ar.arid),
-         .len = static_cast<uint8_t>(env.interconnect.axi_io.ar.arlen)});
+    ArEvent ev{};
+    ev.addr = env.interconnect.axi_io.ar.araddr;
+    ev.id = static_cast<uint8_t>(env.interconnect.axi_io.ar.arid);
+    ev.len = static_cast<uint8_t>(env.interconnect.axi_io.ar.arlen);
+    env.ar_events.push_back(ev);
   }
   if (env.interconnect.axi_io.aw.awvalid && env.interconnect.axi_io.aw.awready) {
-    env.aw_events.push_back(
-        {.addr = env.interconnect.axi_io.aw.awaddr,
-         .id = static_cast<uint8_t>(env.interconnect.axi_io.aw.awid),
-         .len = static_cast<uint8_t>(env.interconnect.axi_io.aw.awlen)});
+    AwEvent ev{};
+    ev.addr = env.interconnect.axi_io.aw.awaddr;
+    ev.id = static_cast<uint8_t>(env.interconnect.axi_io.aw.awid);
+    ev.len = static_cast<uint8_t>(env.interconnect.axi_io.aw.awlen);
+    env.aw_events.push_back(ev);
   }
   if (env.interconnect.axi_io.w.wvalid && env.interconnect.axi_io.w.wready) {
-    env.w_events.push_back(
-        {.data = env.interconnect.axi_io.w.wdata,
-         .strb = static_cast<uint8_t>(env.interconnect.axi_io.w.wstrb),
-         .last = env.interconnect.axi_io.w.wlast});
+    WEvent ev{};
+    ev.data = env.interconnect.axi_io.w.wdata;
+    ev.strb = static_cast<uint8_t>(env.interconnect.axi_io.w.wstrb);
+    ev.last = env.interconnect.axi_io.w.wlast;
+    env.w_events.push_back(ev);
   }
 
   env.ddr.io.ar.arvalid = env.interconnect.axi_io.ar.arvalid;
@@ -1071,8 +1074,55 @@ bool test_llc_upstream_slot_blocks_ready() {
   return true;
 }
 
+bool test_llc_hidden_read_resp_queue_blocks_same_id_reuse() {
+  printf("=== Test 11: Hidden LLC read response queue blocks same-ID reuse ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+
+  constexpr uint8_t master = axi_interconnect::MASTER_ICACHE;
+  constexpr uint8_t reused_id = 0x2a;
+
+  // Occupy the visible response slot with a different ID so the target ID
+  // only exists in the hidden per-master response queue.
+  interconnect.llc.io.regs.read_resp_valid_r[master] = true;
+  interconnect.llc.io.regs.read_resp_id_r[master] = 0x55;
+
+  interconnect.llc.io.regs.read_resp_q_count_r[master] = 1;
+  interconnect.llc.io.regs.read_resp_q_head_r[master] = 0;
+  interconnect.llc.io.regs.read_resp_q_tail_r[master] = 1;
+  interconnect.llc.io.regs.read_resp_q_id_r[master][0] = reused_id;
+
+  interconnect.read_ports[master].req.valid = true;
+  interconnect.read_ports[master].req.addr = 0x80001234;
+  interconnect.read_ports[master].req.total_size = 15;
+  interconnect.read_ports[master].req.id = reused_id;
+
+  interconnect.comb_outputs();
+  if (!interconnect.has_read_id_conflict(master, reused_id)) {
+    printf("FAIL: hidden LLC read response queue ID was not treated as conflict\n");
+    return false;
+  }
+  if (interconnect.read_ports[master].req.ready) {
+    printf("FAIL: hidden LLC read response queue leaked ready for same ID reuse\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_llc_write_resp_holds_until_ready() {
-  printf("=== Test 11: LLC write resp holds payload until ready ===\n");
+  printf("=== Test 12: LLC write resp holds payload until ready ===\n");
 
   axi_interconnect::AXI_Interconnect interconnect;
   axi_interconnect::AXI_LLCConfig cfg;
@@ -1296,6 +1346,11 @@ int main() {
     failed++;
 
   if (test_llc_upstream_slot_blocks_ready())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_hidden_read_resp_queue_blocks_same_id_reuse())
     passed++;
   else
     failed++;
