@@ -437,6 +437,7 @@ private:
                           uint32_t line_addr_value) const;
   bool can_accept_invalidate_line_now(uint32_t line_addr) const;
   bool has_dirty_or_write_hazard(const AXI_LLC_Regs_t &regs) const;
+  bool has_read_resp_pending(const AXI_LLC_Regs_t &regs) const;
   bool can_accept_invalidate_all_now(const AXI_LLC_Regs_t &regs) const;
   bool direct_mapped_coords(uint32_t addr, uint32_t *set,
                             uint8_t *way) const;

@@ -844,8 +844,8 @@ bool test_bypass_write_hit_preserves_dirty_on_eviction() {
   return true;
 }
 
-bool test_invalidate_all_drops_stale_refill_install() {
-  std::printf("=== AXI4 LLC Integration Test 7: invalidate_all drops stale refill install ===\n");
+bool test_invalidate_all_waits_for_clean_demand_path_drain() {
+  std::printf("=== AXI4 LLC Integration Test 7: invalidate_all waits for clean demand path drain ===\n");
 
   Axi4LlcTestEnv env;
   init_env(env);
@@ -875,8 +875,22 @@ bool test_invalidate_all_drops_stale_refill_install() {
   cycle_inputs(env);
   env.interconnect.set_llc_invalidate_all(false);
 
+  if (env.interconnect.llc_invalidate_all_accepted()) {
+    std::printf("FAIL: invalidate_all should not accept while clean demand miss is in flight\n");
+    return false;
+  }
+
   if (!wait_read_resp(env, MASTER_ICACHE, 0x41, 0x9104, 0x9105)) {
     std::printf("FAIL: demand response after invalidate_all did not complete\n");
+    return false;
+  }
+
+  env.interconnect.set_llc_invalidate_all(true);
+  cycle_outputs(env);
+  cycle_inputs(env);
+  env.interconnect.set_llc_invalidate_all(false);
+  if (!env.interconnect.llc_invalidate_all_accepted()) {
+    std::printf("FAIL: invalidate_all did not accept after demand path drained\n");
     return false;
   }
 
@@ -890,7 +904,7 @@ bool test_invalidate_all_drops_stale_refill_install() {
     return false;
   }
   if (env.ar_events.size() != 1) {
-    std::printf("FAIL: second cacheable read should miss LLC once after stale refill drop, got %zu\n",
+    std::printf("FAIL: second cacheable read should miss LLC once after accepted invalidate_all, got %zu\n",
                 env.ar_events.size());
     return false;
   }
@@ -1820,8 +1834,8 @@ bool test_seeded_mixed_read_write_coherence_stress() {
   return true;
 }
 
-bool test_seeded_invalidate_all_epoch_stress() {
-  std::printf("=== AXI4 LLC Integration Test 12: seeded invalidate-all epoch stress ===\n");
+bool test_seeded_invalidate_all_drain_stress() {
+  std::printf("=== AXI4 LLC Integration Test 12: seeded invalidate-all drain stress ===\n");
 
   Axi4LlcTestEnv env;
   init_env(env);
@@ -1861,15 +1875,10 @@ bool test_seeded_invalidate_all_epoch_stress() {
     }
     shadow[line][word_idx] = write_value;
 
-    env.interconnect.set_llc_invalidate_all(true);
-    cycle_outputs(env);
-    cycle_inputs(env);
-    env.interconnect.set_llc_invalidate_all(false);
-
     env.ar_events.clear();
     const uint8_t miss_id = static_cast<uint8_t>(0x40 + step);
     if (!issue_read(env, MASTER_ICACHE, addr, 15, miss_id, false)) {
-      std::printf("FAIL: epoch stress cacheable read issue failed step=%u addr=0x%x\n",
+      std::printf("FAIL: drain stress cacheable read issue failed step=%u addr=0x%x\n",
                   step, addr);
       return false;
     }
@@ -1882,19 +1891,29 @@ bool test_seeded_invalidate_all_epoch_stress() {
       cycle_inputs(env);
     }
     if (!saw_ar) {
-      std::printf("FAIL: epoch stress did not observe DDR AR before invalidate_all step=%u\n",
+      std::printf("FAIL: drain stress did not observe DDR AR for clean demand miss step=%u\n",
                   step);
       return false;
     }
 
-    env.interconnect.set_llc_invalidate_all(true);
-    cycle_outputs(env);
-    cycle_inputs(env);
-    env.interconnect.set_llc_invalidate_all(false);
-
     if (!wait_read_resp(env, MASTER_ICACHE, miss_id, shadow[line][word_idx],
                         shadow[line][word_idx + 1])) {
-      std::printf("FAIL: epoch stress demand response failed step=%u addr=0x%x\n",
+      std::printf("FAIL: drain stress demand response failed step=%u addr=0x%x\n",
+                  step, addr);
+      return false;
+    }
+
+    bool accepted = false;
+    int accept_timeout = sim_ddr::SIM_DDR_LATENCY * 20;
+    while (!accepted && accept_timeout-- > 0) {
+      env.interconnect.set_llc_invalidate_all(true);
+      cycle_outputs(env);
+      accepted = env.interconnect.llc_invalidate_all_accepted();
+      cycle_inputs(env);
+    }
+    env.interconnect.set_llc_invalidate_all(false);
+    if (!accepted) {
+      std::printf("FAIL: drain stress invalidate_all did not accept after demand path drained step=%u addr=0x%x\n",
                   step, addr);
       return false;
     }
@@ -1904,12 +1923,12 @@ bool test_seeded_invalidate_all_epoch_stress() {
     if (!issue_read(env, MASTER_DCACHE_R, addr, 15, reread_id, false) ||
         !wait_read_resp(env, MASTER_DCACHE_R, reread_id, shadow[line][word_idx],
                         shadow[line][word_idx + 1])) {
-      std::printf("FAIL: epoch stress reread after invalidate_all failed step=%u addr=0x%x\n",
+      std::printf("FAIL: drain stress reread after invalidate_all failed step=%u addr=0x%x\n",
                   step, addr);
       return false;
     }
     if (env.ar_events.size() != 1) {
-      std::printf("FAIL: epoch stress reread should re-miss once after invalidate_all, got %zu\n",
+      std::printf("FAIL: drain stress reread should re-miss once after invalidate_all, got %zu\n",
                   env.ar_events.size());
       return false;
     }
@@ -2258,7 +2277,7 @@ int main() {
     failed++;
   }
 
-  if (test_invalidate_all_drops_stale_refill_install()) {
+  if (test_invalidate_all_waits_for_clean_demand_path_drain()) {
     passed++;
   } else {
     failed++;
@@ -2324,7 +2343,7 @@ int main() {
     failed++;
   }
 
-  if (test_seeded_invalidate_all_epoch_stress()) {
+  if (test_seeded_invalidate_all_drain_stress()) {
     passed++;
   } else {
     failed++;

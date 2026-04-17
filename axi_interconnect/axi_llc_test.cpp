@@ -1905,8 +1905,8 @@ bool test_line_invalidate_same_line_write_lookup_rejected() {
   return true;
 }
 
-bool test_invalidate_all_drops_stale_refill_install() {
-  printf("=== LLC Test 17: invalidate_all drops stale refill install ===\n");
+bool test_invalidate_all_waits_for_clean_demand_path_drain() {
+  printf("=== LLC Test 17: invalidate_all waits for clean demand path drain ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -1929,7 +1929,7 @@ bool test_invalidate_all_drops_stale_refill_install() {
   llc.comb();
   if (!llc.io.ext_out.mem.read_req_valid ||
       llc.io.ext_out.mem.read_req_addr != line_addr) {
-    printf("FAIL: stale-refill setup mem req mismatch valid=%d addr=0x%x\n",
+    printf("FAIL: demand-miss setup mem req mismatch valid=%d addr=0x%x\n",
            static_cast<int>(llc.io.ext_out.mem.read_req_valid),
            llc.io.ext_out.mem.read_req_addr);
     return false;
@@ -1939,8 +1939,8 @@ bool test_invalidate_all_drops_stale_refill_install() {
   clear_inputs(llc);
   llc.io.ext_in.mem.invalidate_all = true;
   llc.comb();
-  if (!llc.io.table_out.invalidate_all) {
-    printf("FAIL: invalidate_all pulse was not emitted\n");
+  if (llc.io.ext_out.mem.invalidate_all_accepted || llc.io.table_out.invalidate_all) {
+    printf("FAIL: invalidate_all should stall while clean demand miss is in flight\n");
     return false;
   }
   llc.seq();
@@ -1953,19 +1953,10 @@ bool test_invalidate_all_drops_stale_refill_install() {
 
   clear_inputs(llc);
   llc.comb();
-  if (llc.io.table_out.data.write || llc.io.table_out.meta.write ||
-      llc.io.table_out.repl.write) {
-    printf("FAIL: stale refill incorrectly installed into LLC\n");
-    return false;
-  }
-  llc.seq();
-
-  clear_inputs(llc);
-  llc.comb();
   if (!llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].valid ||
       llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].id != 0x41 ||
       llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].data[0] != 0x9000) {
-    printf("FAIL: stale refill did not return correct demand response id=%u d0=0x%x\n",
+    printf("FAIL: demand refill did not return correct response id=%u d0=0x%x\n",
            llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].id,
            llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].data[0]);
     return false;
@@ -1975,6 +1966,15 @@ bool test_invalidate_all_drops_stale_refill_install() {
   clear_inputs(llc);
   llc.io.ext_in.upstream.read_resp[MASTER_ICACHE].ready = true;
   cycle(llc);
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.invalidate_all = true;
+  llc.comb();
+  if (!llc.io.ext_out.mem.invalidate_all_accepted || !llc.io.table_out.invalidate_all) {
+    printf("FAIL: invalidate_all did not fire after demand path drained\n");
+    return false;
+  }
+  llc.seq();
 
   clear_inputs(llc);
   llc.io.ext_in.upstream.read_req[MASTER_DCACHE_R].valid = true;
@@ -3560,7 +3560,7 @@ int main() {
   else
     failed++;
 
-  if (test_invalidate_all_drops_stale_refill_install())
+  if (test_invalidate_all_waits_for_clean_demand_path_drain())
     passed++;
   else
     failed++;

@@ -769,8 +769,29 @@ bool AXI_LLC::has_dirty_or_write_hazard(const AXI_LLC_Regs_t &regs) const {
   return false;
 }
 
+bool AXI_LLC::has_read_resp_pending(const AXI_LLC_Regs_t &regs) const {
+  for (uint8_t master = 0; master < NUM_READ_MASTERS; ++master) {
+    if (regs.read_resp_valid_r[master] || regs.read_resp_q_count_r[master] != 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool AXI_LLC::can_accept_invalidate_all_now(const AXI_LLC_Regs_t &regs) const {
-  return !has_dirty_or_write_hazard(regs);
+  if (has_dirty_or_write_hazard(regs)) {
+    return false;
+  }
+  if (regs.lookup_valid_r) {
+    return false;
+  }
+  if (has_demand_mshr(regs)) {
+    return false;
+  }
+  if (has_read_resp_pending(regs)) {
+    return false;
+  }
+  return true;
 }
 
 bool AXI_LLC::direct_mapped_coords(uint32_t addr, uint32_t *set,
