@@ -1121,8 +1121,59 @@ bool test_llc_hidden_read_resp_queue_blocks_same_id_reuse() {
   return true;
 }
 
+bool test_llc_mode_transition_flush_blocks_write_ready() {
+  printf("=== Test 12: LLC mode transition flush blocks write ready ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+
+  constexpr uint8_t master = axi_interconnect::MASTER_DCACHE_W;
+  interconnect.runtime_mode_ = 1;
+  interconnect.mode = 2;
+  interconnect.w_req_ready_r[master] = true;
+  interconnect.llc.io.ext_out.upstream.write_req[master].ready = true;
+
+  interconnect.write_ports[master].req.valid = true;
+  interconnect.write_ports[master].req.addr = 0x80002000;
+  interconnect.write_ports[master].req.total_size = 3;
+  interconnect.write_ports[master].req.id = 0x31;
+  interconnect.write_ports[master].req.wdata[0] = 0xCAFEBABE;
+  for (int b = 0; b < 4; ++b) {
+    interconnect.write_ports[master].req.wstrb.set(b, true);
+  }
+
+  interconnect.comb_outputs();
+  if (!interconnect.mode_transition_needs_flush()) {
+    printf("FAIL: setup error, mode transition flush was not armed\n");
+    return false;
+  }
+  if (interconnect.write_ports[master].req.ready) {
+    printf("FAIL: LLC write ready leaked during mode transition flush\n");
+    return false;
+  }
+
+  interconnect.comb_inputs();
+  if (interconnect.llc_upstream_write_accept_c[master] ||
+      interconnect.llc_upstream_write_capture_c[master].valid) {
+    printf("FAIL: LLC write was captured during mode transition flush\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_llc_write_resp_holds_until_ready() {
-  printf("=== Test 12: LLC write resp holds payload until ready ===\n");
+  printf("=== Test 13: LLC write resp holds payload until ready ===\n");
 
   axi_interconnect::AXI_Interconnect interconnect;
   axi_interconnect::AXI_LLCConfig cfg;
@@ -1351,6 +1402,11 @@ int main() {
     failed++;
 
   if (test_llc_hidden_read_resp_queue_blocks_same_id_reuse())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_mode_transition_flush_blocks_write_ready())
     passed++;
   else
     failed++;

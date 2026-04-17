@@ -940,6 +940,7 @@ void AXI_Interconnect::comb_outputs() {
               AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
       write_ports[i].req.ready =
           !invalidate_all_requested() &&
+          !mode_transition_needs_flush() &&
           !blocked_by_line_invalidate &&
           (w_req_ready_r[i] ||
            (!llc_slot_busy && llc.io.ext_out.upstream.write_req[i].ready));
