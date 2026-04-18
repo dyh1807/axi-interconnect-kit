@@ -92,6 +92,18 @@ module tb_axi_llc_subsystem_equiv_replay;
     reg                                  prev_mode_valid;
     reg [MODE_BITS-1:0]                  prev_active_mode;
     reg [ADDR_BITS-1:0]                  prev_active_offset;
+    reg [NUM_READ_MASTERS-1:0]           held_read_active;
+    reg [NUM_READ_MASTERS*ADDR_BITS-1:0] held_read_addr;
+    reg [NUM_READ_MASTERS*8-1:0]         held_read_size;
+    reg [NUM_READ_MASTERS*ID_BITS-1:0]   held_read_id;
+    reg [NUM_READ_MASTERS-1:0]           held_read_bypass;
+    reg [NUM_WRITE_MASTERS-1:0]          held_write_active;
+    reg [NUM_WRITE_MASTERS*ADDR_BITS-1:0] held_write_addr;
+    reg [NUM_WRITE_MASTERS*LINE_BITS-1:0] held_write_wdata;
+    reg [NUM_WRITE_MASTERS*LINE_BYTES-1:0] held_write_wstrb;
+    reg [NUM_WRITE_MASTERS*8-1:0]        held_write_size;
+    reg [NUM_WRITE_MASTERS*ID_BITS-1:0]  held_write_id;
+    reg [NUM_WRITE_MASTERS-1:0]          held_write_bypass;
     integer                              m;
 
     function [31:0] hash_read_words;
@@ -279,19 +291,53 @@ module tb_axi_llc_subsystem_equiv_replay;
             invalidate_all_valid   = stim_invalidate_all[cycle_idx];
             invalidate_line_valid  = stim_invalidate_line_valid[cycle_idx];
             invalidate_line_addr   = stim_invalidate_line_addr[cycle_idx];
-            read_req_valid         = stim_read_req_valid[cycle_idx];
-            read_req_addr          = stim_read_req_addr[cycle_idx];
-            read_req_total_size    = stim_read_req_size[cycle_idx];
-            read_req_id            = stim_read_req_id[cycle_idx];
-            read_req_bypass        = stim_read_req_bypass[cycle_idx];
+            read_req_valid         = {NUM_READ_MASTERS{1'b0}};
+            read_req_addr          = {(NUM_READ_MASTERS*ADDR_BITS){1'b0}};
+            read_req_total_size    = {(NUM_READ_MASTERS*8){1'b0}};
+            read_req_id            = {(NUM_READ_MASTERS*ID_BITS){1'b0}};
+            read_req_bypass        = {NUM_READ_MASTERS{1'b0}};
+            for (m = 0; m < NUM_READ_MASTERS; m = m + 1) begin
+                if (held_read_active[m]) begin
+                    read_req_valid[m] = 1'b1;
+                    read_req_addr[(m*ADDR_BITS) +: ADDR_BITS] = held_read_addr[(m*ADDR_BITS) +: ADDR_BITS];
+                    read_req_total_size[(m*8) +: 8] = held_read_size[(m*8) +: 8];
+                    read_req_id[(m*ID_BITS) +: ID_BITS] = held_read_id[(m*ID_BITS) +: ID_BITS];
+                    read_req_bypass[m] = held_read_bypass[m];
+                end else begin
+                    read_req_valid[m] = stim_read_req_valid[cycle_idx][m];
+                    read_req_addr[(m*ADDR_BITS) +: ADDR_BITS] = stim_read_req_addr[cycle_idx][(m*ADDR_BITS) +: ADDR_BITS];
+                    read_req_total_size[(m*8) +: 8] = stim_read_req_size[cycle_idx][(m*8) +: 8];
+                    read_req_id[(m*ID_BITS) +: ID_BITS] = stim_read_req_id[cycle_idx][(m*ID_BITS) +: ID_BITS];
+                    read_req_bypass[m] = stim_read_req_bypass[cycle_idx][m];
+                end
+            end
             read_resp_ready        = stim_read_resp_ready_mask[cycle_idx];
-            write_req_valid        = stim_write_req_valid[cycle_idx];
-            write_req_addr         = stim_write_req_addr[cycle_idx];
-            write_req_wdata        = stim_write_req_wdata[cycle_idx];
-            write_req_wstrb        = stim_write_req_wstrb[cycle_idx];
-            write_req_total_size   = stim_write_req_size[cycle_idx];
-            write_req_id           = stim_write_req_id[cycle_idx];
-            write_req_bypass       = stim_write_req_bypass[cycle_idx];
+            write_req_valid        = {NUM_WRITE_MASTERS{1'b0}};
+            write_req_addr         = {(NUM_WRITE_MASTERS*ADDR_BITS){1'b0}};
+            write_req_wdata        = {(NUM_WRITE_MASTERS*LINE_BITS){1'b0}};
+            write_req_wstrb        = {(NUM_WRITE_MASTERS*LINE_BYTES){1'b0}};
+            write_req_total_size   = {(NUM_WRITE_MASTERS*8){1'b0}};
+            write_req_id           = {(NUM_WRITE_MASTERS*ID_BITS){1'b0}};
+            write_req_bypass       = {NUM_WRITE_MASTERS{1'b0}};
+            for (m = 0; m < NUM_WRITE_MASTERS; m = m + 1) begin
+                if (held_write_active[m]) begin
+                    write_req_valid[m] = 1'b1;
+                    write_req_addr[(m*ADDR_BITS) +: ADDR_BITS] = held_write_addr[(m*ADDR_BITS) +: ADDR_BITS];
+                    write_req_wdata[(m*LINE_BITS) +: LINE_BITS] = held_write_wdata[(m*LINE_BITS) +: LINE_BITS];
+                    write_req_wstrb[(m*LINE_BYTES) +: LINE_BYTES] = held_write_wstrb[(m*LINE_BYTES) +: LINE_BYTES];
+                    write_req_total_size[(m*8) +: 8] = held_write_size[(m*8) +: 8];
+                    write_req_id[(m*ID_BITS) +: ID_BITS] = held_write_id[(m*ID_BITS) +: ID_BITS];
+                    write_req_bypass[m] = held_write_bypass[m];
+                end else begin
+                    write_req_valid[m] = stim_write_req_valid[cycle_idx][m];
+                    write_req_addr[(m*ADDR_BITS) +: ADDR_BITS] = stim_write_req_addr[cycle_idx][(m*ADDR_BITS) +: ADDR_BITS];
+                    write_req_wdata[(m*LINE_BITS) +: LINE_BITS] = stim_write_req_wdata[cycle_idx][(m*LINE_BITS) +: LINE_BITS];
+                    write_req_wstrb[(m*LINE_BYTES) +: LINE_BYTES] = stim_write_req_wstrb[cycle_idx][(m*LINE_BYTES) +: LINE_BYTES];
+                    write_req_total_size[(m*8) +: 8] = stim_write_req_size[cycle_idx][(m*8) +: 8];
+                    write_req_id[(m*ID_BITS) +: ID_BITS] = stim_write_req_id[cycle_idx][(m*ID_BITS) +: ID_BITS];
+                    write_req_bypass[m] = stim_write_req_bypass[cycle_idx][m];
+                end
+            end
             write_resp_ready       = stim_write_resp_ready_mask[cycle_idx];
             axi_arready            = stim_axi_arready[cycle_idx];
             axi_awready            = stim_axi_awready[cycle_idx];
@@ -314,6 +360,18 @@ module tb_axi_llc_subsystem_equiv_replay;
         prev_mode_valid = 1'b0;
         prev_active_mode = {MODE_BITS{1'b0}};
         prev_active_offset = {ADDR_BITS{1'b0}};
+        held_read_active = {NUM_READ_MASTERS{1'b0}};
+        held_read_addr = {(NUM_READ_MASTERS*ADDR_BITS){1'b0}};
+        held_read_size = {(NUM_READ_MASTERS*8){1'b0}};
+        held_read_id = {(NUM_READ_MASTERS*ID_BITS){1'b0}};
+        held_read_bypass = {NUM_READ_MASTERS{1'b0}};
+        held_write_active = {NUM_WRITE_MASTERS{1'b0}};
+        held_write_addr = {(NUM_WRITE_MASTERS*ADDR_BITS){1'b0}};
+        held_write_wdata = {(NUM_WRITE_MASTERS*LINE_BITS){1'b0}};
+        held_write_wstrb = {(NUM_WRITE_MASTERS*LINE_BYTES){1'b0}};
+        held_write_size = {(NUM_WRITE_MASTERS*8){1'b0}};
+        held_write_id = {(NUM_WRITE_MASTERS*ID_BITS){1'b0}};
+        held_write_bypass = {NUM_WRITE_MASTERS{1'b0}};
         trace_file = "rtl_trace.txt";
         if (!$value$plusargs("trace_file=%s", trace_file)) begin
             trace_file = "rtl_trace.txt";
@@ -327,13 +385,13 @@ module tb_axi_llc_subsystem_equiv_replay;
         rst_n = 1'b1;
     end
 
-    always @(negedge clk) begin
+    always @(posedge clk) begin
         if (rst_n && cycle_idx < EQUIV_NUM_CYCLES) begin
             for (m = 0; m < NUM_READ_MASTERS; m = m + 1) begin
                 if (read_req_accepted[m]) begin
                     $fwrite(trace_fd,
                             "%0d READ_ACCEPT m=%0d id=%0d addr=0x%08x size=%0d bypass=%0d\n",
-                            cycle_idx,
+                            cycle_idx + 1,
                             m,
                             read_req_id[(m*ID_BITS) +: ID_BITS],
                             read_req_addr[(m*ADDR_BITS) +: ADDR_BITS],
@@ -345,7 +403,7 @@ module tb_axi_llc_subsystem_equiv_replay;
                 if (write_req_accepted[m]) begin
                     $fwrite(trace_fd,
                             "%0d WRITE_ACCEPT m=%0d id=%0d addr=0x%08x size=%0d bypass=%0d data0=0x%08x strbhash=0x%08x\n",
-                            cycle_idx,
+                            cycle_idx + 1,
                             m,
                             write_req_id[(m*ID_BITS) +: ID_BITS],
                             write_req_addr[(m*ADDR_BITS) +: ADDR_BITS],
@@ -359,7 +417,7 @@ module tb_axi_llc_subsystem_equiv_replay;
                 if (read_resp_valid[m] && read_resp_ready[m]) begin
                     $fwrite(trace_fd,
                             "%0d READ_RESP m=%0d id=%0d hash=0x%08x d0=0x%08x d1=0x%08x\n",
-                            cycle_idx,
+                            cycle_idx + 1,
                             m,
                             read_resp_id[(m*ID_BITS) +: ID_BITS],
                             hash_read_words(read_resp_data[(m*READ_RESP_BITS) +: READ_RESP_BITS]),
@@ -371,7 +429,7 @@ module tb_axi_llc_subsystem_equiv_replay;
                 if (write_resp_valid[m] && write_resp_ready[m]) begin
                     $fwrite(trace_fd,
                             "%0d WRITE_RESP m=%0d id=%0d code=%0d\n",
-                            cycle_idx,
+                            cycle_idx + 1,
                             m,
                             write_resp_id[(m*ID_BITS) +: ID_BITS],
                             write_resp_code[(m*2) +: 2]);
@@ -380,16 +438,16 @@ module tb_axi_llc_subsystem_equiv_replay;
             if (invalidate_line_valid && invalidate_line_accepted) begin
                 $fwrite(trace_fd,
                         "%0d MAINT_ACCEPT op=invalidate_line addr=0x%08x\n",
-                        cycle_idx,
+                        cycle_idx + 1,
                         invalidate_line_addr);
             end
             if (invalidate_all_valid && invalidate_all_accepted) begin
-                $fwrite(trace_fd, "%0d MAINT_ACCEPT op=invalidate_all\n", cycle_idx);
+                $fwrite(trace_fd, "%0d MAINT_ACCEPT op=invalidate_all\n", cycle_idx + 1);
             end
             if (axi_arvalid && axi_arready) begin
                 $fwrite(trace_fd,
                         "%0d AXI_AR_HS id=%0d addr=0x%08x len=%0d size=%0d burst=%0d\n",
-                        cycle_idx,
+                        cycle_idx + 1,
                         axi_arid,
                         axi_araddr,
                         axi_arlen,
@@ -399,7 +457,7 @@ module tb_axi_llc_subsystem_equiv_replay;
             if (axi_awvalid && axi_awready) begin
                 $fwrite(trace_fd,
                         "%0d AXI_AW_HS id=%0d addr=0x%08x len=%0d size=%0d burst=%0d\n",
-                        cycle_idx,
+                        cycle_idx + 1,
                         axi_awid,
                         axi_awaddr,
                         axi_awlen,
@@ -409,7 +467,7 @@ module tb_axi_llc_subsystem_equiv_replay;
             if (axi_wvalid && axi_wready) begin
                 $fwrite(trace_fd,
                         "%0d AXI_W_HS hash=0x%08x d0=0x%08x strbhash=0x%08x last=%0d\n",
-                        cycle_idx,
+                        cycle_idx + 1,
                         hash_axi_wdata(axi_wdata),
                         axi_wdata[31:0],
                         hash_axi_wstrb(axi_wstrb),
@@ -420,18 +478,41 @@ module tb_axi_llc_subsystem_equiv_replay;
                 active_offset != prev_active_offset) begin
                 $fwrite(trace_fd,
                         "%0d MODE_ACTIVE mode=%0d offset=0x%08x\n",
-                        cycle_idx,
+                        cycle_idx + 1,
                         active_mode,
                         active_offset);
                 prev_mode_valid   <= 1'b1;
                 prev_active_mode  <= active_mode;
                 prev_active_offset <= active_offset;
             end
-        end
-    end
-
-    always @(posedge clk) begin
-        if (rst_n) begin
+            for (m = 0; m < NUM_READ_MASTERS; m = m + 1) begin
+                if (stim_read_req_valid[cycle_idx][m] && stim_read_req_hold[cycle_idx][m] &&
+                    !held_read_active[m]) begin
+                    held_read_active[m] <= 1'b1;
+                    held_read_addr[(m*ADDR_BITS) +: ADDR_BITS] <= stim_read_req_addr[cycle_idx][(m*ADDR_BITS) +: ADDR_BITS];
+                    held_read_size[(m*8) +: 8] <= stim_read_req_size[cycle_idx][(m*8) +: 8];
+                    held_read_id[(m*ID_BITS) +: ID_BITS] <= stim_read_req_id[cycle_idx][(m*ID_BITS) +: ID_BITS];
+                    held_read_bypass[m] <= stim_read_req_bypass[cycle_idx][m];
+                end
+                if (held_read_active[m] && read_req_accepted[m]) begin
+                    held_read_active[m] <= 1'b0;
+                end
+            end
+            for (m = 0; m < NUM_WRITE_MASTERS; m = m + 1) begin
+                if (stim_write_req_valid[cycle_idx][m] && stim_write_req_hold[cycle_idx][m] &&
+                    !held_write_active[m]) begin
+                    held_write_active[m] <= 1'b1;
+                    held_write_addr[(m*ADDR_BITS) +: ADDR_BITS] <= stim_write_req_addr[cycle_idx][(m*ADDR_BITS) +: ADDR_BITS];
+                    held_write_wdata[(m*LINE_BITS) +: LINE_BITS] <= stim_write_req_wdata[cycle_idx][(m*LINE_BITS) +: LINE_BITS];
+                    held_write_wstrb[(m*LINE_BYTES) +: LINE_BYTES] <= stim_write_req_wstrb[cycle_idx][(m*LINE_BYTES) +: LINE_BYTES];
+                    held_write_size[(m*8) +: 8] <= stim_write_req_size[cycle_idx][(m*8) +: 8];
+                    held_write_id[(m*ID_BITS) +: ID_BITS] <= stim_write_req_id[cycle_idx][(m*ID_BITS) +: ID_BITS];
+                    held_write_bypass[m] <= stim_write_req_bypass[cycle_idx][m];
+                end
+                if (held_write_active[m] && write_req_accepted[m]) begin
+                    held_write_active[m] <= 1'b0;
+                end
+            end
             if (cycle_idx >= EQUIV_NUM_CYCLES - 1) begin
                 $fclose(trace_fd);
                 $finish;
