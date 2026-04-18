@@ -1251,8 +1251,52 @@ bool test_llc_ignored_victim_b_blocks_new_write_issue() {
   return true;
 }
 
+bool test_llc_ignored_victim_b_blocks_ghost_aw() {
+  printf("=== Test 15: ignored victim B blocks ghost AW issue ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+
+  interconnect.llc_mem_ignored_b_count_ = 1;
+  interconnect.llc_mem_write_resp_valid_ = false;
+  interconnect.w_active = false;
+  interconnect.aw_latched.valid = false;
+  interconnect.axi_io.aw.awready = true;
+
+  interconnect.llc.io.ext_out.mem.write_req_valid = true;
+  interconnect.llc.io.ext_out.mem.write_req_addr = 0x80003000u;
+  interconnect.llc.io.ext_out.mem.write_req_size = 3;
+  interconnect.llc.io.ext_out.mem.write_req_id = 2;
+  interconnect.llc.io.ext_out.mem.write_req_mode2_ddr_aligned = false;
+
+  interconnect.comb_write_request();
+  if (interconnect.axi_io.aw.awvalid) {
+    printf("FAIL: ghost AW was exposed while ignored victim B was pending\n");
+    return false;
+  }
+
+  interconnect.seq();
+  if (interconnect.w_active || interconnect.aw_latched.valid ||
+      interconnect.w_current.aw_done) {
+    printf("FAIL: ghost AW polluted local write-owner state\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_multi_write_outstanding(TestEnv &env) {
-  printf("=== Test 15: multiple write outstanding contexts ===\n");
+  printf("=== Test 16: multiple write outstanding contexts ===\n");
 
   env.clear_events();
   env.interconnect.init();
@@ -1447,6 +1491,11 @@ int main() {
     failed++;
 
   if (test_llc_ignored_victim_b_blocks_new_write_issue())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_ignored_victim_b_blocks_ghost_aw())
     passed++;
   else
     failed++;

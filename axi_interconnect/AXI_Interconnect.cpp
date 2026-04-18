@@ -1285,6 +1285,7 @@ void AXI_Interconnect::comb_write_request() {
     } else {
       axi_io.aw.awvalid = false;
       if (!w_active && !llc_mem_write_resp_valid_ &&
+          llc.io.ext_in.mem.write_req_ready &&
           llc.io.ext_out.mem.write_req_valid) {
         const uint16_t llc_write_bytes =
             static_cast<uint16_t>(llc.io.ext_out.mem.write_req_size) + 1u;
