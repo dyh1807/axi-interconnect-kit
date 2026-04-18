@@ -138,6 +138,36 @@ module tb_axi_llc_subsystem_equiv_replay;
         end
     endfunction
 
+    function [31:0] hash_axi_wdata;
+        input [AXI_DATA_BITS-1:0] data_value;
+        integer idx;
+        reg [31:0] h;
+        reg [31:0] word;
+        begin
+            h = 32'h2468ace1;
+            for (idx = 0; idx < (AXI_DATA_BITS / 32); idx = idx + 1) begin
+                word = data_value[(idx * 32) +: 32];
+                h = {h[26:0], h[31:27]} ^ word ^ idx[31:0];
+            end
+            hash_axi_wdata = h;
+        end
+    endfunction
+
+    function [31:0] hash_axi_wstrb;
+        input [AXI_STRB_BITS-1:0] strb_value;
+        integer idx;
+        reg [31:0] h;
+        reg [3:0] nib;
+        begin
+            h = 32'h5a5a1357;
+            for (idx = 0; idx < AXI_STRB_BITS; idx = idx + 4) begin
+                nib = strb_value[idx +: 4];
+                h = {h[28:0], h[31:29]} ^ {28'd0, nib} ^ idx[31:0];
+            end
+            hash_axi_wstrb = h;
+        end
+    endfunction
+
     axi_llc_subsystem dut (
         .clk                   (clk),
         .rst_n                 (rst_n),
@@ -347,14 +377,43 @@ module tb_axi_llc_subsystem_equiv_replay;
                             write_resp_code[(m*2) +: 2]);
                 end
             end
-            if (invalidate_line_accepted) begin
+            if (invalidate_line_valid && invalidate_line_accepted) begin
                 $fwrite(trace_fd,
                         "%0d MAINT_ACCEPT op=invalidate_line addr=0x%08x\n",
                         cycle_idx,
                         invalidate_line_addr);
             end
-            if (invalidate_all_accepted) begin
+            if (invalidate_all_valid && invalidate_all_accepted) begin
                 $fwrite(trace_fd, "%0d MAINT_ACCEPT op=invalidate_all\n", cycle_idx);
+            end
+            if (axi_arvalid && axi_arready) begin
+                $fwrite(trace_fd,
+                        "%0d AXI_AR_HS id=%0d addr=0x%08x len=%0d size=%0d burst=%0d\n",
+                        cycle_idx,
+                        axi_arid,
+                        axi_araddr,
+                        axi_arlen,
+                        axi_arsize,
+                        axi_arburst);
+            end
+            if (axi_awvalid && axi_awready) begin
+                $fwrite(trace_fd,
+                        "%0d AXI_AW_HS id=%0d addr=0x%08x len=%0d size=%0d burst=%0d\n",
+                        cycle_idx,
+                        axi_awid,
+                        axi_awaddr,
+                        axi_awlen,
+                        axi_awsize,
+                        axi_awburst);
+            end
+            if (axi_wvalid && axi_wready) begin
+                $fwrite(trace_fd,
+                        "%0d AXI_W_HS hash=0x%08x d0=0x%08x strbhash=0x%08x last=%0d\n",
+                        cycle_idx,
+                        hash_axi_wdata(axi_wdata),
+                        axi_wdata[31:0],
+                        hash_axi_wstrb(axi_wstrb),
+                        axi_wlast);
             end
             if (!prev_mode_valid ||
                 active_mode != prev_active_mode ||
