@@ -1,4 +1,5 @@
 #include "AXI_LLC.h"
+#include "axi_mmio_map.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -1668,7 +1669,7 @@ void AXI_LLC::drive_write_path() {
     ctx.bypass = entry->bypass;
     ctx.direct_mapped = entry->direct_mapped;
     ctx.mode2_ddr_aligned = entry->mode2_ddr_aligned;
-    ctx.lookup_pending = true;
+    ctx.lookup_pending = !(entry->bypass && is_mmio_addr(entry->addr));
     ctx.id = entry->id;
     ctx.total_size = entry->total_size;
     ctx.addr = entry->addr;

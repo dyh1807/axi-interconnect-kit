@@ -387,7 +387,7 @@ bool AXI_Interconnect::effective_llc_bypass(uint32_t addr, uint8_t total_size,
     return true;
   }
   if (runtime_mode_ == 1u) {
-    return upstream_bypass;
+    return upstream_bypass || is_mmio_addr(addr);
   }
   return true;
 }

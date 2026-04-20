@@ -132,6 +132,8 @@ module tb_axi_llc_subsystem_equiv_replay;
     reg  [ADDR_BITS-1:0]                 order_write_addr [0:15];
     reg                                  final_mem_known [0:EQUIV_NUM_FINAL_MEM_STORAGE_SAMPLES-1];
     reg  [31:0]                          final_mem_value [0:EQUIV_NUM_FINAL_MEM_STORAGE_SAMPLES-1];
+    reg                                  final_mmio_known [0:EQUIV_NUM_FINAL_MMIO_STORAGE_SAMPLES-1];
+    reg  [31:0]                          final_mmio_value [0:EQUIV_NUM_FINAL_MMIO_STORAGE_SAMPLES-1];
     reg                                  final_mapped_known [0:EQUIV_NUM_FINAL_MAPPED_STORAGE_SAMPLES-1];
     reg  [31:0]                          final_mapped_value [0:EQUIV_NUM_FINAL_MAPPED_STORAGE_SAMPLES-1];
     integer                              sample_idx;
@@ -452,6 +454,10 @@ module tb_axi_llc_subsystem_equiv_replay;
             final_mem_known[sample_idx] = 1'b0;
             final_mem_value[sample_idx] = 32'd0;
         end
+        for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MMIO_STORAGE_SAMPLES; sample_idx = sample_idx + 1) begin
+            final_mmio_known[sample_idx] = 1'b0;
+            final_mmio_value[sample_idx] = 32'd0;
+        end
         for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MAPPED_STORAGE_SAMPLES; sample_idx = sample_idx + 1) begin
             final_mapped_known[sample_idx] = 1'b0;
             final_mapped_value[sample_idx] = 32'd0;
@@ -611,6 +617,24 @@ module tb_axi_llc_subsystem_equiv_replay;
                             final_mem_value[sample_idx] <= sample_merge_word;
                         end
                     end
+                    for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MMIO_SAMPLES; sample_idx = sample_idx + 1) begin
+                        if (stim_final_mmio_sample_addr[sample_idx] >=
+                                (final_mem_write_addr + final_mem_write_beat_idx * AXI_STRB_BITS) &&
+                            stim_final_mmio_sample_addr[sample_idx] <
+                                (final_mem_write_addr + final_mem_write_beat_idx * AXI_STRB_BITS + AXI_STRB_BITS)) begin
+                            sample_merge_word = final_mmio_known[sample_idx] ? final_mmio_value[sample_idx] : 32'd0;
+                            sample_byte_off = stim_final_mmio_sample_addr[sample_idx] -
+                                              (final_mem_write_addr + final_mem_write_beat_idx * AXI_STRB_BITS);
+                            for (sample_byte_idx = 0; sample_byte_idx < 4; sample_byte_idx = sample_byte_idx + 1) begin
+                                if (axi_wstrb[sample_byte_off + sample_byte_idx]) begin
+                                    sample_merge_word[(sample_byte_idx*8) +: 8] =
+                                        axi_wdata[((sample_byte_off + sample_byte_idx)*8) +: 8];
+                                end
+                            end
+                            final_mmio_known[sample_idx] <= 1'b1;
+                            final_mmio_value[sample_idx] <= sample_merge_word;
+                        end
+                    end
                     if (axi_wlast) begin
                         final_mem_write_pending_valid <= 1'b0;
                         final_mem_write_beat_idx <= 8'd0;
@@ -722,6 +746,14 @@ module tb_axi_llc_subsystem_equiv_replay;
                             stim_final_mem_sample_addr[sample_idx],
                             final_mem_known[sample_idx],
                             final_mem_value[sample_idx]);
+                end
+                for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MMIO_SAMPLES; sample_idx = sample_idx + 1) begin
+                    $fwrite(trace_fd,
+                            "%0d FINAL_MMIO addr=0x%08x known=%0d val=0x%08x\n",
+                            EQUIV_NUM_CYCLES + 1,
+                            stim_final_mmio_sample_addr[sample_idx],
+                            final_mmio_known[sample_idx],
+                            final_mmio_value[sample_idx]);
                 end
                 for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MAPPED_SAMPLES; sample_idx = sample_idx + 1) begin
                     final_mapped_known[sample_idx] = 1'b0;

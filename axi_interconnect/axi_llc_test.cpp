@@ -424,6 +424,51 @@ bool test_write_passthrough() {
   return true;
 }
 
+bool test_mmio_bypass_write_skips_lookup() {
+  printf("=== LLC Test 4b: mmio bypass write skips lookup ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  clear_inputs(llc);
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].valid = true;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].addr = 0x10000004;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].total_size = 3;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].id = 2;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wdata[0] = 0xCAFEBABE;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].wstrb = 0xFu;
+  llc.io.ext_in.upstream.write_req[MASTER_DCACHE_W].bypass = true;
+  llc.comb();
+  if (!llc.io.ext_out.upstream.write_req[MASTER_DCACHE_W].ready ||
+      llc.io.ext_out.mem.write_req_valid) {
+    printf("FAIL: mmio bypass write req mismatch\n");
+    return false;
+  }
+  llc.seq();
+
+  clear_inputs(llc);
+  llc.io.ext_in.mem.write_req_ready = true;
+  llc.comb();
+  if (llc.io.table_out.data.enable || llc.io.table_out.meta.enable ||
+      llc.io.table_out.repl.enable || llc.io.regs.lookup_valid_r) {
+    printf("FAIL: mmio bypass write should not issue lookup\n");
+    return false;
+  }
+  if (!llc.io.ext_out.mem.write_req_valid ||
+      llc.io.ext_out.mem.write_req_addr != 0x10000004 ||
+      llc.io.ext_out.mem.write_req_data[0] != 0xCAFEBABE) {
+    printf("FAIL: mmio bypass mem req mismatch valid=%d addr=0x%x data0=0x%x\n",
+           static_cast<int>(llc.io.ext_out.mem.write_req_valid),
+           llc.io.ext_out.mem.write_req_addr,
+           llc.io.ext_out.mem.write_req_data[0]);
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_bypass_write_hit_updates_table() {
   printf("=== LLC Test 19: bypass write hit updates resident line ===\n");
   AXI_LLC llc;
@@ -3471,6 +3516,11 @@ int main() {
     failed++;
 
   if (test_write_passthrough())
+    passed++;
+  else
+    failed++;
+
+  if (test_mmio_bypass_write_skips_lookup())
     passed++;
   else
     failed++;
