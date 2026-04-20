@@ -10,6 +10,12 @@ module tb_axi_llc_subsystem_equiv_replay;
     localparam ADDR_BITS = `AXI_LLC_ADDR_BITS;
     localparam LINE_BYTES = `AXI_LLC_LINE_BYTES;
     localparam LINE_BITS = `AXI_LLC_LINE_BITS;
+    localparam LINE_OFFSET_BITS = `AXI_LLC_LINE_OFFSET_BITS;
+    localparam SET_COUNT = `AXI_LLC_SET_COUNT;
+    localparam SET_BITS = `AXI_LLC_SET_BITS;
+    localparam WAY_COUNT = `AXI_LLC_WAY_COUNT;
+    localparam WINDOW_BYTES = `AXI_LLC_WINDOW_BYTES;
+    localparam WINDOW_WAYS = `AXI_LLC_WINDOW_WAYS;
     localparam AXI_ID_BITS = `AXI_LLC_AXI_ID_BITS;
     localparam AXI_DATA_BITS = `AXI_LLC_AXI_DATA_BITS;
     localparam AXI_STRB_BITS = `AXI_LLC_AXI_STRB_BITS;
@@ -126,10 +132,17 @@ module tb_axi_llc_subsystem_equiv_replay;
     reg  [ADDR_BITS-1:0]                 order_write_addr [0:15];
     reg                                  final_mem_known [0:EQUIV_NUM_FINAL_MEM_STORAGE_SAMPLES-1];
     reg  [31:0]                          final_mem_value [0:EQUIV_NUM_FINAL_MEM_STORAGE_SAMPLES-1];
+    reg                                  final_mapped_known [0:EQUIV_NUM_FINAL_MAPPED_STORAGE_SAMPLES-1];
+    reg  [31:0]                          final_mapped_value [0:EQUIV_NUM_FINAL_MAPPED_STORAGE_SAMPLES-1];
     integer                              sample_idx;
     integer                              sample_word_idx;
     integer                              sample_byte_idx;
     integer                              sample_byte_off;
+    integer                              sample_local_addr;
+    integer                              sample_line_idx;
+    integer                              sample_set_idx;
+    integer                              sample_way_idx;
+    integer                              sample_base_bit;
     reg  [31:0]                          sample_merge_word;
     integer                              m;
     integer                              beat_word;
@@ -439,6 +452,10 @@ module tb_axi_llc_subsystem_equiv_replay;
             final_mem_known[sample_idx] = 1'b0;
             final_mem_value[sample_idx] = 32'd0;
         end
+        for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MAPPED_STORAGE_SAMPLES; sample_idx = sample_idx + 1) begin
+            final_mapped_known[sample_idx] = 1'b0;
+            final_mapped_value[sample_idx] = 32'd0;
+        end
         trace_file = "rtl_trace.txt";
         if (!$value$plusargs("trace_file=%s", trace_file)) begin
             trace_file = "rtl_trace.txt";
@@ -705,6 +722,35 @@ module tb_axi_llc_subsystem_equiv_replay;
                             stim_final_mem_sample_addr[sample_idx],
                             final_mem_known[sample_idx],
                             final_mem_value[sample_idx]);
+                end
+                for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MAPPED_SAMPLES; sample_idx = sample_idx + 1) begin
+                    final_mapped_known[sample_idx] = 1'b0;
+                    final_mapped_value[sample_idx] = 32'd0;
+                    if (active_mode == 2 &&
+                        stim_final_mapped_sample_addr[sample_idx] >= active_offset &&
+                        stim_final_mapped_sample_addr[sample_idx] < (active_offset + WINDOW_BYTES)) begin
+                        sample_local_addr =
+                            stim_final_mapped_sample_addr[sample_idx] - active_offset;
+                        sample_line_idx = sample_local_addr >> LINE_OFFSET_BITS;
+                        sample_set_idx = sample_line_idx % SET_COUNT;
+                        sample_way_idx = sample_line_idx / SET_COUNT;
+                        sample_word_idx =
+                            (sample_local_addr & (LINE_BYTES - 1)) >> 2;
+                        if (sample_way_idx < WINDOW_WAYS &&
+                            dut.compat.core.valid_ram.valid_mem[sample_set_idx][sample_way_idx]) begin
+                            sample_base_bit =
+                                (sample_way_idx * LINE_BITS) + (sample_word_idx * 32);
+                            final_mapped_known[sample_idx] = 1'b1;
+                            final_mapped_value[sample_idx] =
+                                dut.compat.core.data_store.gen_generic.u_impl.row_mem[sample_set_idx][sample_base_bit +: 32];
+                        end
+                    end
+                    $fwrite(trace_fd,
+                            "%0d FINAL_MAPPED addr=0x%08x known=%0d val=0x%08x\n",
+                            EQUIV_NUM_CYCLES + 1,
+                            stim_final_mapped_sample_addr[sample_idx],
+                            final_mapped_known[sample_idx],
+                            final_mapped_value[sample_idx]);
                 end
                 $fclose(trace_fd);
                 $finish;
