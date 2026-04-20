@@ -117,6 +117,13 @@ module tb_axi_llc_subsystem_equiv_replay;
     reg                                  final_mem_write_pending_valid;
     reg  [ADDR_BITS-1:0]                 final_mem_write_addr;
     reg  [7:0]                           final_mem_write_beat_idx;
+    reg                                  order_read_valid [0:15];
+    reg  [AXI_ID_BITS-1:0]               order_read_id [0:15];
+    reg  [ADDR_BITS-1:0]                 order_read_addr [0:15];
+    reg  [7:0]                           order_read_beats_left [0:15];
+    reg                                  order_write_valid [0:15];
+    reg  [AXI_ID_BITS-1:0]               order_write_id [0:15];
+    reg  [ADDR_BITS-1:0]                 order_write_addr [0:15];
     reg                                  final_mem_known [0:EQUIV_NUM_FINAL_MEM_STORAGE_SAMPLES-1];
     reg  [31:0]                          final_mem_value [0:EQUIV_NUM_FINAL_MEM_STORAGE_SAMPLES-1];
     integer                              sample_idx;
@@ -126,6 +133,7 @@ module tb_axi_llc_subsystem_equiv_replay;
     reg  [31:0]                          sample_merge_word;
     integer                              m;
     integer                              beat_word;
+    integer                              order_idx;
 
     function [31:0] hash_read_words;
         input [READ_RESP_BITS-1:0] data_value;
@@ -418,6 +426,15 @@ module tb_axi_llc_subsystem_equiv_replay;
         final_mem_write_pending_valid = 1'b0;
         final_mem_write_addr = {ADDR_BITS{1'b0}};
         final_mem_write_beat_idx = 8'd0;
+        for (order_idx = 0; order_idx < 16; order_idx = order_idx + 1) begin
+            order_read_valid[order_idx] = 1'b0;
+            order_read_id[order_idx] = {AXI_ID_BITS{1'b0}};
+            order_read_addr[order_idx] = {ADDR_BITS{1'b0}};
+            order_read_beats_left[order_idx] = 8'd0;
+            order_write_valid[order_idx] = 1'b0;
+            order_write_id[order_idx] = {AXI_ID_BITS{1'b0}};
+            order_write_addr[order_idx] = {ADDR_BITS{1'b0}};
+        end
         for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MEM_STORAGE_SAMPLES; sample_idx = sample_idx + 1) begin
             final_mem_known[sample_idx] = 1'b0;
             final_mem_value[sample_idx] = 32'd0;
@@ -495,6 +512,21 @@ module tb_axi_llc_subsystem_equiv_replay;
                 $fwrite(trace_fd, "%0d MAINT_ACCEPT op=invalidate_all\n", cycle_idx + 1);
             end
             if (axi_arvalid && axi_arready) begin
+                for (order_idx = 0; order_idx < 16; order_idx = order_idx + 1) begin
+                    if (order_write_valid[order_idx] &&
+                        order_write_addr[order_idx] == axi_araddr) begin
+                        $fatal(1, "DDR_ORDER_FAIL: AR overlapped same-address pending AW addr=0x%08x", axi_araddr);
+                    end
+                end
+                for (order_idx = 0; order_idx < 16; order_idx = order_idx + 1) begin
+                    if (!order_read_valid[order_idx]) begin
+                        order_read_valid[order_idx] <= 1'b1;
+                        order_read_id[order_idx] <= axi_arid;
+                        order_read_addr[order_idx] <= axi_araddr;
+                        order_read_beats_left[order_idx] <= axi_arlen + 8'd1;
+                        order_idx = 16;
+                    end
+                end
                 $fwrite(trace_fd,
                         "%0d AXI_AR_HS id=%0d addr=0x%08x len=%0d size=%0d burst=%0d\n",
                         cycle_idx + 1,
@@ -509,6 +541,20 @@ module tb_axi_llc_subsystem_equiv_replay;
                 mem_read_line_pending_addr <= axi_araddr;
             end
             if (axi_awvalid && axi_awready) begin
+                for (order_idx = 0; order_idx < 16; order_idx = order_idx + 1) begin
+                    if (order_read_valid[order_idx] &&
+                        order_read_addr[order_idx] == axi_awaddr) begin
+                        $fatal(1, "DDR_ORDER_FAIL: AW overlapped same-address pending AR addr=0x%08x", axi_awaddr);
+                    end
+                end
+                for (order_idx = 0; order_idx < 16; order_idx = order_idx + 1) begin
+                    if (!order_write_valid[order_idx]) begin
+                        order_write_valid[order_idx] <= 1'b1;
+                        order_write_id[order_idx] <= axi_awid;
+                        order_write_addr[order_idx] <= axi_awaddr;
+                        order_idx = 16;
+                    end
+                end
                 $fwrite(trace_fd,
                         "%0d AXI_AW_HS id=%0d addr=0x%08x len=%0d size=%0d burst=%0d\n",
                         cycle_idx + 1,
@@ -553,6 +599,27 @@ module tb_axi_llc_subsystem_equiv_replay;
                         final_mem_write_beat_idx <= 8'd0;
                     end else begin
                         final_mem_write_beat_idx <= final_mem_write_beat_idx + 8'd1;
+                    end
+                end
+            end
+            if (axi_rvalid && axi_rready) begin
+                for (order_idx = 0; order_idx < 16; order_idx = order_idx + 1) begin
+                    if (!order_read_valid[order_idx] || order_read_id[order_idx] != axi_rid) begin
+                        continue;
+                    end
+                    if (order_read_beats_left[order_idx] > 0) begin
+                        order_read_beats_left[order_idx] <= order_read_beats_left[order_idx] - 8'd1;
+                    end
+                    if (axi_rlast || order_read_beats_left[order_idx] <= 8'd1) begin
+                        order_read_valid[order_idx] <= 1'b0;
+                        order_read_beats_left[order_idx] <= 8'd0;
+                    end
+                end
+            end
+            if (axi_bvalid && axi_bready) begin
+                for (order_idx = 0; order_idx < 16; order_idx = order_idx + 1) begin
+                    if (order_write_valid[order_idx] && order_write_id[order_idx] == axi_bid) begin
+                        order_write_valid[order_idx] <= 1'b0;
                     end
                 end
             end
