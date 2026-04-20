@@ -13,6 +13,7 @@ module tb_axi_llc_subsystem_equiv_replay;
     localparam AXI_ID_BITS = `AXI_LLC_AXI_ID_BITS;
     localparam AXI_DATA_BITS = `AXI_LLC_AXI_DATA_BITS;
     localparam AXI_STRB_BITS = `AXI_LLC_AXI_STRB_BITS;
+    localparam AXI_BEAT_WORDS = AXI_DATA_BITS / 32;
     localparam READ_RESP_BITS = `AXI_LLC_READ_RESP_BITS;
     localparam NUM_READ_MASTERS = 4;
     localparam NUM_WRITE_MASTERS = 2;
@@ -104,7 +105,16 @@ module tb_axi_llc_subsystem_equiv_replay;
     reg [NUM_WRITE_MASTERS*8-1:0]        held_write_size;
     reg [NUM_WRITE_MASTERS*ID_BITS-1:0]  held_write_id;
     reg [NUM_WRITE_MASTERS-1:0]          held_write_bypass;
+    reg                                  mem_read_line_resp_active;
+    reg  [AXI_ID_BITS-1:0]               mem_read_line_resp_id;
+    reg  [7:0]                           mem_read_line_resp_total_beats;
+    reg  [7:0]                           mem_read_line_resp_beat_idx;
+    reg  [LINE_BITS-1:0]                 mem_read_line_resp_data;
+    reg                                  mem_read_line_pending_valid;
+    reg  [AXI_ID_BITS-1:0]               mem_read_line_pending_id;
+    reg  [7:0]                           mem_read_line_pending_beats;
     integer                              m;
+    integer                              beat_word;
 
     function [31:0] hash_read_words;
         input [READ_RESP_BITS-1:0] data_value;
@@ -350,6 +360,19 @@ module tb_axi_llc_subsystem_equiv_replay;
             axi_rresp              = stim_axi_rresp[cycle_idx];
             axi_rlast              = stim_axi_rlast[cycle_idx];
             axi_rdata              = stim_axi_rdata[cycle_idx];
+            if (mem_read_line_resp_active) begin
+                axi_rvalid = 1'b1;
+                axi_rid = mem_read_line_resp_id;
+                axi_rresp = 2'b00;
+                axi_rlast = (mem_read_line_resp_beat_idx + 1 >= mem_read_line_resp_total_beats);
+                axi_rdata = {AXI_DATA_BITS{1'b0}};
+                for (beat_word = 0; beat_word < AXI_BEAT_WORDS; beat_word = beat_word + 1) begin
+                    if (((mem_read_line_resp_beat_idx * AXI_BEAT_WORDS) + beat_word) < 16) begin
+                        axi_rdata[(beat_word*32) +: 32] =
+                            mem_read_line_resp_data[((mem_read_line_resp_beat_idx * AXI_BEAT_WORDS) + beat_word) * 32 +: 32];
+                    end
+                end
+            end
         end
     end
 
@@ -372,6 +395,14 @@ module tb_axi_llc_subsystem_equiv_replay;
         held_write_size = {(NUM_WRITE_MASTERS*8){1'b0}};
         held_write_id = {(NUM_WRITE_MASTERS*ID_BITS){1'b0}};
         held_write_bypass = {NUM_WRITE_MASTERS{1'b0}};
+        mem_read_line_resp_active = 1'b0;
+        mem_read_line_resp_id = {AXI_ID_BITS{1'b0}};
+        mem_read_line_resp_total_beats = 8'd0;
+        mem_read_line_resp_beat_idx = 8'd0;
+        mem_read_line_resp_data = {LINE_BITS{1'b0}};
+        mem_read_line_pending_valid = 1'b0;
+        mem_read_line_pending_id = {AXI_ID_BITS{1'b0}};
+        mem_read_line_pending_beats = 8'd0;
         trace_file = "rtl_trace.txt";
         if (!$value$plusargs("trace_file=%s", trace_file)) begin
             trace_file = "rtl_trace.txt";
@@ -453,6 +484,9 @@ module tb_axi_llc_subsystem_equiv_replay;
                         axi_arlen,
                         axi_arsize,
                         axi_arburst);
+                mem_read_line_pending_valid <= 1'b1;
+                mem_read_line_pending_id <= axi_arid;
+                mem_read_line_pending_beats <= axi_arlen + 8'd1;
             end
             if (axi_awvalid && axi_awready) begin
                 $fwrite(trace_fd,
@@ -511,6 +545,26 @@ module tb_axi_llc_subsystem_equiv_replay;
                 end
                 if (held_write_active[m] && write_req_accepted[m]) begin
                     held_write_active[m] <= 1'b0;
+                end
+            end
+            if (!mem_read_line_resp_active &&
+                stim_mem_read_line_resp_valid[cycle_idx] &&
+                mem_read_line_pending_valid) begin
+                mem_read_line_resp_active <= 1'b1;
+                mem_read_line_resp_id <= mem_read_line_pending_id;
+                mem_read_line_resp_total_beats <= mem_read_line_pending_beats;
+                mem_read_line_resp_beat_idx <= 8'd0;
+                mem_read_line_resp_data <= stim_mem_read_line_resp_data[cycle_idx];
+                mem_read_line_pending_valid <= 1'b0;
+            end else if (mem_read_line_resp_active && axi_rvalid && axi_rready) begin
+                if (mem_read_line_resp_beat_idx + 1 >= mem_read_line_resp_total_beats) begin
+                    mem_read_line_resp_active <= 1'b0;
+                    mem_read_line_resp_id <= {AXI_ID_BITS{1'b0}};
+                    mem_read_line_resp_total_beats <= 8'd0;
+                    mem_read_line_resp_beat_idx <= 8'd0;
+                    mem_read_line_resp_data <= {LINE_BITS{1'b0}};
+                end else begin
+                    mem_read_line_resp_beat_idx <= mem_read_line_resp_beat_idx + 8'd1;
                 end
             end
             if (cycle_idx >= EQUIV_NUM_CYCLES - 1) begin

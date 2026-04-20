@@ -143,7 +143,12 @@ public:
   void set_llc_lookup_in(const AXI_LLC_LookupIn_t &lookup_in) {
     llc.io.lookup_in = lookup_in;
   }
-  void set_llc_invalidate_all(bool invalidate) { llc_invalidate_all_req_ = invalidate; }
+  void set_llc_invalidate_all(bool invalidate) {
+    llc_invalidate_all_req_ = invalidate;
+    if (!invalidate) {
+      llc_invalidate_all_blocked_ = false;
+    }
+  }
   void set_llc_invalidate_line(bool valid, uint32_t addr) {
     llc_invalidate_line_valid_ = valid;
     llc_invalidate_line_addr_ = addr;
@@ -255,6 +260,7 @@ private:
   AXI_LLCConfig llc_config{};
   AXI_LLC llc{};
   bool llc_invalidate_all_req_ = false;
+  bool llc_invalidate_all_blocked_ = false;
   bool llc_invalidate_line_valid_ = false;
   uint32_t llc_invalidate_line_addr_ = 0;
   ReadReqHoldLatch read_req_hold[NUM_READ_MASTERS] = {};

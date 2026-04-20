@@ -348,7 +348,8 @@ bool AXI_Interconnect::mode_transition_invalidate_requested() const {
 }
 
 bool AXI_Interconnect::invalidate_all_requested() const {
-  return llc_invalidate_all_req_ || mode_transition_invalidate_requested();
+  return (llc_invalidate_all_req_ && !llc_invalidate_all_blocked_) ||
+         mode_transition_invalidate_requested();
 }
 
 bool AXI_Interconnect::request_in_mapped_window(uint32_t addr,
@@ -2031,6 +2032,11 @@ read_handshake_done:
     }
 
     llc.seq();
+    if (llc_invalidate_all_req_ && llc.io.ext_out.mem.invalidate_all_accepted) {
+      llc_invalidate_all_blocked_ = true;
+    } else if (!llc_invalidate_all_req_) {
+      llc_invalidate_all_blocked_ = false;
+    }
     if (requested_diff) {
       reconfig_pending_ = true;
       reconfig_target_mode_ = req_mode;
@@ -2205,6 +2211,11 @@ read_handshake_done:
   refresh_non_llc_w_active();
 
   llc.seq();
+  if (llc_invalidate_all_req_ && llc.io.ext_out.mem.invalidate_all_accepted) {
+    llc_invalidate_all_blocked_ = true;
+  } else if (!llc_invalidate_all_req_) {
+    llc_invalidate_all_blocked_ = false;
+  }
   if (requested_diff) {
     reconfig_pending_ = true;
     reconfig_target_mode_ = req_mode;

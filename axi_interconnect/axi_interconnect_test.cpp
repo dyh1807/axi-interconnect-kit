@@ -125,7 +125,7 @@ void cycle_inputs(TestEnv &env) {
   }
   if (env.interconnect.axi_io.w.wvalid && env.interconnect.axi_io.w.wready) {
     WEvent ev{};
-    ev.data = env.interconnect.axi_io.w.wdata;
+    ev.data = axi_compat::get_u32(env.interconnect.axi_io.w.wdata, 0);
     ev.strb = static_cast<uint8_t>(env.interconnect.axi_io.w.wstrb);
     ev.last = env.interconnect.axi_io.w.wlast;
     env.w_events.push_back(ev);
@@ -1295,8 +1295,50 @@ bool test_llc_ignored_victim_b_blocks_ghost_aw() {
   return true;
 }
 
+bool test_llc_invalidate_all_level_accepts_once() {
+  printf("=== Test 16: held invalidate_all request accepts once ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  interconnect.init();
+
+  interconnect.set_llc_invalidate_all(true);
+  if (!interconnect.invalidate_all_requested()) {
+    printf("FAIL: invalidate_all request was not visible before accept\n");
+    return false;
+  }
+
+  interconnect.llc.io.ext_out.mem.invalidate_all_accepted = true;
+  interconnect.seq();
+  if (interconnect.invalidate_all_requested()) {
+    printf("FAIL: invalidate_all request remained visible after accept\n");
+    return false;
+  }
+
+  interconnect.llc.io.ext_out.mem.invalidate_all_accepted = false;
+  interconnect.seq();
+  if (interconnect.invalidate_all_requested()) {
+    printf("FAIL: invalidate_all request re-armed while input stayed high\n");
+    return false;
+  }
+
+  interconnect.set_llc_invalidate_all(false);
+  if (interconnect.invalidate_all_requested()) {
+    printf("FAIL: invalidate_all request stayed visible after deassert\n");
+    return false;
+  }
+
+  interconnect.set_llc_invalidate_all(true);
+  if (!interconnect.invalidate_all_requested()) {
+    printf("FAIL: invalidate_all request did not re-arm after deassert\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_multi_write_outstanding(TestEnv &env) {
-  printf("=== Test 16: multiple write outstanding contexts ===\n");
+  printf("=== Test 17: multiple write outstanding contexts ===\n");
 
   env.clear_events();
   env.interconnect.init();
@@ -1496,6 +1538,11 @@ int main() {
     failed++;
 
   if (test_llc_ignored_victim_b_blocks_ghost_aw())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_invalidate_all_level_accepts_once())
     passed++;
   else
     failed++;
