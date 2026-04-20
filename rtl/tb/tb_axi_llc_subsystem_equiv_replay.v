@@ -113,6 +113,17 @@ module tb_axi_llc_subsystem_equiv_replay;
     reg                                  mem_read_line_pending_valid;
     reg  [AXI_ID_BITS-1:0]               mem_read_line_pending_id;
     reg  [7:0]                           mem_read_line_pending_beats;
+    reg  [ADDR_BITS-1:0]                 mem_read_line_pending_addr;
+    reg                                  final_mem_write_pending_valid;
+    reg  [ADDR_BITS-1:0]                 final_mem_write_addr;
+    reg  [7:0]                           final_mem_write_beat_idx;
+    reg                                  final_mem_known [0:EQUIV_NUM_FINAL_MEM_STORAGE_SAMPLES-1];
+    reg  [31:0]                          final_mem_value [0:EQUIV_NUM_FINAL_MEM_STORAGE_SAMPLES-1];
+    integer                              sample_idx;
+    integer                              sample_word_idx;
+    integer                              sample_byte_idx;
+    integer                              sample_byte_off;
+    reg  [31:0]                          sample_merge_word;
     integer                              m;
     integer                              beat_word;
 
@@ -403,6 +414,14 @@ module tb_axi_llc_subsystem_equiv_replay;
         mem_read_line_pending_valid = 1'b0;
         mem_read_line_pending_id = {AXI_ID_BITS{1'b0}};
         mem_read_line_pending_beats = 8'd0;
+        mem_read_line_pending_addr = {ADDR_BITS{1'b0}};
+        final_mem_write_pending_valid = 1'b0;
+        final_mem_write_addr = {ADDR_BITS{1'b0}};
+        final_mem_write_beat_idx = 8'd0;
+        for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MEM_STORAGE_SAMPLES; sample_idx = sample_idx + 1) begin
+            final_mem_known[sample_idx] = 1'b0;
+            final_mem_value[sample_idx] = 32'd0;
+        end
         trace_file = "rtl_trace.txt";
         if (!$value$plusargs("trace_file=%s", trace_file)) begin
             trace_file = "rtl_trace.txt";
@@ -487,6 +506,7 @@ module tb_axi_llc_subsystem_equiv_replay;
                 mem_read_line_pending_valid <= 1'b1;
                 mem_read_line_pending_id <= axi_arid;
                 mem_read_line_pending_beats <= axi_arlen + 8'd1;
+                mem_read_line_pending_addr <= axi_araddr;
             end
             if (axi_awvalid && axi_awready) begin
                 $fwrite(trace_fd,
@@ -497,6 +517,9 @@ module tb_axi_llc_subsystem_equiv_replay;
                         axi_awlen,
                         axi_awsize,
                         axi_awburst);
+                final_mem_write_pending_valid <= 1'b1;
+                final_mem_write_addr <= axi_awaddr;
+                final_mem_write_beat_idx <= 8'd0;
             end
             if (axi_wvalid && axi_wready) begin
                 $fwrite(trace_fd,
@@ -506,6 +529,32 @@ module tb_axi_llc_subsystem_equiv_replay;
                         axi_wdata[31:0],
                         hash_axi_wstrb(axi_wstrb),
                         axi_wlast);
+                if (final_mem_write_pending_valid) begin
+                    for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MEM_SAMPLES; sample_idx = sample_idx + 1) begin
+                        if (stim_final_mem_sample_addr[sample_idx] >=
+                                (final_mem_write_addr + final_mem_write_beat_idx * AXI_STRB_BITS) &&
+                            stim_final_mem_sample_addr[sample_idx] <
+                                (final_mem_write_addr + final_mem_write_beat_idx * AXI_STRB_BITS + AXI_STRB_BITS)) begin
+                            sample_merge_word = final_mem_known[sample_idx] ? final_mem_value[sample_idx] : 32'd0;
+                            sample_byte_off = stim_final_mem_sample_addr[sample_idx] -
+                                              (final_mem_write_addr + final_mem_write_beat_idx * AXI_STRB_BITS);
+                            for (sample_byte_idx = 0; sample_byte_idx < 4; sample_byte_idx = sample_byte_idx + 1) begin
+                                if (axi_wstrb[sample_byte_off + sample_byte_idx]) begin
+                                    sample_merge_word[(sample_byte_idx*8) +: 8] =
+                                        axi_wdata[((sample_byte_off + sample_byte_idx)*8) +: 8];
+                                end
+                            end
+                            final_mem_known[sample_idx] <= 1'b1;
+                            final_mem_value[sample_idx] <= sample_merge_word;
+                        end
+                    end
+                    if (axi_wlast) begin
+                        final_mem_write_pending_valid <= 1'b0;
+                        final_mem_write_beat_idx <= 8'd0;
+                    end else begin
+                        final_mem_write_beat_idx <= final_mem_write_beat_idx + 8'd1;
+                    end
+                end
             end
             if (!prev_mode_valid ||
                 active_mode != prev_active_mode ||
@@ -556,6 +605,20 @@ module tb_axi_llc_subsystem_equiv_replay;
                 mem_read_line_resp_beat_idx <= 8'd0;
                 mem_read_line_resp_data <= stim_mem_read_line_resp_data[cycle_idx];
                 mem_read_line_pending_valid <= 1'b0;
+                mem_read_line_pending_id <= {AXI_ID_BITS{1'b0}};
+                mem_read_line_pending_beats <= 8'd0;
+                for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MEM_SAMPLES; sample_idx = sample_idx + 1) begin
+                    if (stim_final_mem_sample_addr[sample_idx] >= mem_read_line_pending_addr &&
+                        stim_final_mem_sample_addr[sample_idx] < (mem_read_line_pending_addr + LINE_BYTES)) begin
+                        sample_word_idx =
+                            (stim_final_mem_sample_addr[sample_idx] - mem_read_line_pending_addr) >> 2;
+                        if (sample_word_idx < 16) begin
+                            final_mem_known[sample_idx] <= 1'b1;
+                            final_mem_value[sample_idx] <=
+                                stim_mem_read_line_resp_data[cycle_idx][(sample_word_idx*32) +: 32];
+                        end
+                    end
+                end
             end else if (mem_read_line_resp_active && axi_rvalid && axi_rready) begin
                 if (mem_read_line_resp_beat_idx + 1 >= mem_read_line_resp_total_beats) begin
                     mem_read_line_resp_active <= 1'b0;
@@ -568,6 +631,14 @@ module tb_axi_llc_subsystem_equiv_replay;
                 end
             end
             if (cycle_idx >= EQUIV_NUM_CYCLES - 1) begin
+                for (sample_idx = 0; sample_idx < EQUIV_NUM_FINAL_MEM_SAMPLES; sample_idx = sample_idx + 1) begin
+                    $fwrite(trace_fd,
+                            "%0d FINAL_MEM addr=0x%08x known=%0d val=0x%08x\n",
+                            EQUIV_NUM_CYCLES + 1,
+                            stim_final_mem_sample_addr[sample_idx],
+                            final_mem_known[sample_idx],
+                            final_mem_value[sample_idx]);
+                end
                 $fclose(trace_fd);
                 $finish;
             end
