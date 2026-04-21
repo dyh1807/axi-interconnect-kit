@@ -255,6 +255,7 @@ private:
                             bool upstream_bypass) const;
   bool non_llc_path_quiescent() const;
   bool llc_path_quiescent() const;
+  bool llc_maintenance_quiescent() const;
   bool reconfig_path_quiescent() const;
 
   AXI_LLCConfig llc_config{};

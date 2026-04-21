@@ -1337,8 +1337,47 @@ bool test_llc_invalidate_all_level_accepts_once() {
   return true;
 }
 
+bool test_llc_invalidate_line_waits_for_other_write_retire() {
+  printf("=== Test 17: invalidate_line waits for unrelated write retirement ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+  interconnect.set_llc_invalidate_line(true, 0x80001000);
+  interconnect.llc.io.regs.write_resp_valid_r[axi_interconnect::MASTER_DCACHE_W] = true;
+  interconnect.llc.io.regs.write_resp_line_addr_r[axi_interconnect::MASTER_DCACHE_W] =
+      0x10000000;
+
+  interconnect.prepare_llc_inputs();
+  interconnect.llc.comb();
+  if (interconnect.llc.io.ext_in.mem.invalidate_line_valid ||
+      interconnect.llc.io.ext_out.mem.invalidate_line_accepted) {
+    printf("FAIL: invalidate_line leaked through while unrelated write retirement was pending\n");
+    return false;
+  }
+
+  interconnect.llc.io.regs.write_resp_valid_r[axi_interconnect::MASTER_DCACHE_W] = false;
+  interconnect.prepare_llc_inputs();
+  interconnect.llc.comb();
+  if (!interconnect.llc.io.ext_in.mem.invalidate_line_valid) {
+    printf("FAIL: invalidate_line stayed blocked after unrelated write retirement cleared\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_multi_write_outstanding(TestEnv &env) {
-  printf("=== Test 17: multiple write outstanding contexts ===\n");
+  printf("=== Test 18: multiple write outstanding contexts ===\n");
 
   env.clear_events();
   env.interconnect.init();
@@ -1543,6 +1582,11 @@ int main() {
     failed++;
 
   if (test_llc_invalidate_all_level_accepts_once())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_invalidate_line_waits_for_other_write_retire())
     passed++;
   else
     failed++;

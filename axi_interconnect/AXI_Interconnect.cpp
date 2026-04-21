@@ -627,6 +627,50 @@ bool AXI_Interconnect::llc_path_quiescent() const {
   return true;
 }
 
+bool AXI_Interconnect::llc_maintenance_quiescent() const {
+  if (!llc_enabled()) {
+    return true;
+  }
+  // Keep invalidate_line aligned with the RTL compat wrapper: maintenance
+  // does not enter the LLC while compat-local ownership or buffered traffic
+  // is still draining, even if the target line itself is otherwise clean.
+  if (ar_latched.valid || !r_pending.empty() || aw_latched.valid || w_active ||
+      !w_pending.empty() || llc_mem_write_resp_valid_ ||
+      llc_mem_ignored_b_count_ != 0) {
+    return false;
+  }
+  for (int master = 0; master < NUM_READ_MASTERS; ++master) {
+    if (req_ready_r[master] || llc_upstream_req[master].valid ||
+        llc.io.regs.read_resp_valid_r[master] ||
+        llc.io.regs.read_resp_q_count_r[master] != 0) {
+      return false;
+    }
+  }
+  for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    if (w_req_ready_r[master] || llc_upstream_write_req[master].valid ||
+        !llc_upstream_write_q[master].empty()) {
+      return false;
+    }
+    if (llc.io.regs.write_ctx[master].valid ||
+        llc.io.regs.write_q_count_r[master] != 0 ||
+        llc.io.regs.write_resp_valid_r[master]) {
+      return false;
+    }
+  }
+  if (llc.io.regs.lookup_valid_r || llc.io.regs.victim_wb_valid_r ||
+      llc.io.regs.read_victim_wb_q_count_r != 0 ||
+      llc.io.ext_out.mem.read_req_valid || llc.io.ext_out.mem.write_req_valid) {
+    return false;
+  }
+  for (uint32_t slot = 0; slot < llc_config.mshr_num && slot < MAX_OUTSTANDING;
+       ++slot) {
+    if (llc.io.regs.mshr[slot].valid) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool AXI_Interconnect::reconfig_path_quiescent() const {
   return llc_enabled() ? llc_path_quiescent() : non_llc_path_quiescent();
 }
@@ -827,8 +871,9 @@ void AXI_Interconnect::prepare_llc_inputs() {
   const bool line_hazard =
       llc_invalidate_line_valid_ &&
       has_same_line_write_hazard(invalidate_line_addr);
+  const bool maintenance_quiescent = llc_maintenance_quiescent();
   llc.io.ext_in.mem.invalidate_line_valid =
-      llc_invalidate_line_valid_ && !line_hazard;
+      llc_invalidate_line_valid_ && maintenance_quiescent && !line_hazard;
   llc.io.ext_in.mem.invalidate_line_addr = llc_invalidate_line_addr_;
   bool any_upstream_capture_pending = false;
   bool any_upstream_req_visible = false;
