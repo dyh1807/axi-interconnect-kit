@@ -1121,8 +1121,54 @@ bool test_llc_hidden_read_resp_queue_blocks_same_id_reuse() {
   return true;
 }
 
+bool test_llc_hidden_write_state_blocks_same_id_reuse() {
+  printf("=== Test 12: Hidden LLC write state blocks same-ID reuse ===\n");
+
+  axi_interconnect::AXI_Interconnect interconnect;
+  axi_interconnect::AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 512;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  interconnect.set_llc_config(cfg);
+  interconnect.init();
+
+  clear_upstream_inputs(interconnect);
+
+  constexpr uint8_t master = axi_interconnect::MASTER_DCACHE_W;
+  constexpr uint8_t reused_id = 0x2b;
+
+  interconnect.llc.io.regs.write_resp_valid_r[master] = true;
+  interconnect.llc.io.regs.write_resp_id_r[master] = reused_id;
+
+  interconnect.write_ports[master].req.valid = true;
+  interconnect.write_ports[master].req.addr = 0x10000008;
+  interconnect.write_ports[master].req.total_size = 3;
+  interconnect.write_ports[master].req.id = reused_id;
+  interconnect.write_ports[master].req.wdata[0] = 0x0badf00d;
+  interconnect.write_ports[master].req.wstrb.set(0, true);
+  interconnect.write_ports[master].req.wstrb.set(1, true);
+  interconnect.write_ports[master].req.wstrb.set(2, true);
+  interconnect.write_ports[master].req.wstrb.set(3, true);
+
+  interconnect.comb_outputs();
+  interconnect.comb_inputs();
+  if (!interconnect.has_write_id_conflict(master, reused_id)) {
+    printf("FAIL: hidden LLC write response ID was not treated as conflict\n");
+    return false;
+  }
+  if (interconnect.write_ports[master].req.ready) {
+    printf("FAIL: hidden LLC write response leaked ready for same ID reuse\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
 bool test_llc_mode_transition_flush_blocks_write_ready() {
-  printf("=== Test 12: LLC mode transition flush blocks write ready ===\n");
+  printf("=== Test 13: LLC mode transition flush blocks write ready ===\n");
 
   axi_interconnect::AXI_Interconnect interconnect;
   axi_interconnect::AXI_LLCConfig cfg;
@@ -1557,6 +1603,11 @@ int main() {
     failed++;
 
   if (test_llc_hidden_read_resp_queue_blocks_same_id_reuse())
+    passed++;
+  else
+    failed++;
+
+  if (test_llc_hidden_write_state_blocks_same_id_reuse())
     passed++;
   else
     failed++;

@@ -853,6 +853,31 @@ bool AXI_Interconnect::has_read_id_conflict(uint8_t master_id,
   return false;
 }
 
+bool AXI_Interconnect::has_write_id_conflict(uint8_t master_id,
+                                             uint8_t orig_id) const {
+  if (!llc_enabled() || master_id >= NUM_WRITE_MASTERS) {
+    return false;
+  }
+  if (llc_upstream_write_req[master_id].valid &&
+      llc_upstream_write_req[master_id].id == orig_id) {
+    return true;
+  }
+  for (const auto &entry : llc_upstream_write_q[master_id]) {
+    if (entry.valid && entry.id == orig_id) {
+      return true;
+    }
+  }
+  if (llc.io.regs.write_ctx[master_id].valid &&
+      llc.io.regs.write_ctx[master_id].id == orig_id) {
+    return true;
+  }
+  if (llc.io.regs.write_resp_valid_r[master_id] &&
+      llc.io.regs.write_resp_id_r[master_id] == orig_id) {
+    return true;
+  }
+  return false;
+}
+
 bool AXI_Interconnect::can_issue_llc_read_req() const {
   return !ar_latched.valid && count_total_read_inflight() < MAX_OUTSTANDING &&
          alloc_read_axi_id() != kInvalidAxiReadId;
@@ -865,13 +890,14 @@ void AXI_Interconnect::prepare_llc_inputs() {
     return;
   }
 
-  llc.io.ext_in.mem.invalidate_all = invalidate_all_requested();
   const uint32_t invalidate_line_addr =
       AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
   const bool line_hazard =
       llc_invalidate_line_valid_ &&
       has_same_line_write_hazard(invalidate_line_addr);
   const bool maintenance_quiescent = llc_maintenance_quiescent();
+  llc.io.ext_in.mem.invalidate_all =
+      invalidate_all_requested() && maintenance_quiescent;
   llc.io.ext_in.mem.invalidate_line_valid =
       llc_invalidate_line_valid_ && maintenance_quiescent && !line_hazard;
   llc.io.ext_in.mem.invalidate_line_addr = llc_invalidate_line_addr_;
@@ -1382,6 +1408,10 @@ void AXI_Interconnect::comb_write_request() {
             AXI_LLC::line_addr(llc_config, write_ports[idx].req.addr) ==
                 AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
         if (blocked_by_line_invalidate) {
+          continue;
+        }
+        if (has_write_id_conflict(static_cast<uint8_t>(idx),
+                                  static_cast<uint8_t>(write_ports[idx].req.id))) {
           continue;
         }
         if (w_req_ready_curr[idx]) {
