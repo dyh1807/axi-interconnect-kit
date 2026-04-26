@@ -421,6 +421,10 @@ private:
   bool has_pending_upstream_write_line(uint32_t line_addr) const;
   bool can_allocate_prefetch_mshr(const AXI_LLC_Regs_t &regs) const;
   bool write_line_pending(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
+  bool read_victim_snapshot_present(const AXI_LLC_Regs_t &regs,
+                                    uint32_t victim_addr) const;
+  bool victim_snapshot_waits_for_write_resolution(const AXI_LLC_Regs_t &regs,
+                                                  uint32_t victim_addr) const;
   bool victim_line_pending(const AXI_LLC_Regs_t &regs, uint32_t line_addr) const;
   bool way_reserved_by_pending_write(const AXI_LLC_Regs_t &regs, uint32_t set,
                                      uint8_t way,

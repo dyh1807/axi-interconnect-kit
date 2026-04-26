@@ -101,7 +101,6 @@ module tb_axi_llc_subsystem_compat_read_accept_contract;
     reg  [ID_BITS-1:0]                    lower_id_a;
     reg  [ID_BITS-1:0]                    lower_id_b;
     reg  [ID_BITS-1:0]                    lower_id_c;
-    reg  [ID_BITS-1:0]                    lower_id_d;
     integer                               timeout;
 
     always #5 clk = ~clk;
@@ -421,7 +420,6 @@ module tb_axi_llc_subsystem_compat_read_accept_contract;
         lower_id_a = {ID_BITS{1'b0}};
         lower_id_b = {ID_BITS{1'b0}};
         lower_id_c = {ID_BITS{1'b0}};
-        lower_id_d = {ID_BITS{1'b0}};
 
         wait_cycles(5);
         rst_n = 1'b1;
@@ -438,9 +436,7 @@ module tb_axi_llc_subsystem_compat_read_accept_contract;
         $display("STEP 3 first response arrives and occupies front response slot");
         read_resp_ready[0] = 1'b0;
         drive_cache_resp(lower_id_a, line_a);
-        if (!read_resp_valid[0]) begin
-            fail_now("read response should occupy master0 response slot");
-        end
+        wait_read_resp(0, ID_A, line_a);
 
         $display("STEP 4 front response busy still blocks new cacheable read accept");
         hold_read_blocked(0, ADDR_C, ID_C, 6);
@@ -461,9 +457,7 @@ module tb_axi_llc_subsystem_compat_read_accept_contract;
         $display("STEP 7 dcache response slot busy must also block a new cacheable read");
         read_resp_ready[1] = 1'b0;
         drive_cache_resp(lower_id_b, line_b);
-        if (!read_resp_valid[1]) begin
-            fail_now("dcache response should occupy front slot");
-        end
+        wait_read_resp(1, ID_B, line_b);
         hold_read_blocked(1, ADDR_A, ID_A, 6);
 
         $display("STEP 8 once dcache response slot clears, next cacheable read may proceed");
@@ -471,8 +465,6 @@ module tb_axi_llc_subsystem_compat_read_accept_contract;
         @(posedge clk);
         wait_cycles(2);
         issue_read(1, ADDR_A, ID_A);
-        wait_cache_req(1'b0, ADDR_A, lower_id_d);
-        drive_cache_resp(lower_id_d, line_a);
         wait_read_resp(1, ID_A, line_a);
 
         if (bypass_req_valid) begin

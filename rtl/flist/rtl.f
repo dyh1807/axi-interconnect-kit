@@ -3,6 +3,7 @@ src/axi_reconfig_ctrl.v
 src/llc_valid_ram.v
 src/llc_repl_ram.v
 src/llc_smic12_data_1024x128_bw.v
+src/llc_smic12_data_4096x256_sass_bw.v
 src/llc_smic12_meta_1024x128.v
 src/llc_data_store_generic.v
 src/llc_meta_store_generic.v

@@ -469,13 +469,19 @@ module tb_axi_llc_subsystem_compat_victim_snapshot_refresh_contract;
         issue_write(VICTIM_ADDR, REFRESH_ID, refreshed_line, {LINE_BYTES{1'b1}});
         wait_write_resp(REFRESH_ID);
 
-        $display("STEP 5 refill returns, then victim writeback must use refreshed snapshot");
+        $display("STEP 5 refill returns, miss response must not wait for victim writeback issue");
+        @(negedge clk);
+        cache_req_ready = 1'b0;
         drive_cache_resp(lower_miss_id, miss_line);
+        wait_read_resp(MISS_ID, miss_line);
+
+        $display("STEP 6 once lower writeback path unblocks, victim snapshot must use refreshed data");
+        @(negedge clk);
+        cache_req_ready = 1'b1;
         wait_cache_req(1'b1, VICTIM_ADDR, lower_victim_wb_id);
         if (cache_req_wdata !== refreshed_line) begin
             fail_now("victim writeback data did not refresh to latest write-hit snapshot");
         end
-        wait_read_resp(MISS_ID, miss_line);
         drive_cache_resp(lower_victim_wb_id, {LINE_BITS{1'b0}});
 
         if (bypass_req_valid) begin

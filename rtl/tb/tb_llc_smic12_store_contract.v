@@ -41,6 +41,8 @@ module tb_llc_smic12_store_contract;
     wire                     meta_busy_generic;
 
     reg [DATA_ROW_BITS-1:0] expect_data_row;
+    reg [DATA_ROW_BITS-1:0] expect_data_row_bank0;
+    reg [DATA_ROW_BITS-1:0] expect_data_row_bank1;
     reg [META_ROW_BITS-1:0] expect_meta_row;
     reg [WAY_COUNT-1:0]     expect_data_way_mask;
     reg [WAY_COUNT-1:0]     expect_meta_way_mask;
@@ -355,6 +357,8 @@ module tb_llc_smic12_store_contract;
         meta_wr_way_mask = {WAY_COUNT{1'b0}};
         meta_wr_row      = {META_ROW_BITS{1'b0}};
         expect_data_row  = {DATA_ROW_BITS{1'b0}};
+        expect_data_row_bank0 = {DATA_ROW_BITS{1'b0}};
+        expect_data_row_bank1 = {DATA_ROW_BITS{1'b0}};
         expect_meta_row  = {META_ROW_BITS{1'b0}};
         expect_data_way_mask = {WAY_COUNT{1'b0}};
         expect_meta_way_mask = {WAY_COUNT{1'b0}};
@@ -375,6 +379,23 @@ module tb_llc_smic12_store_contract;
         expect_data_way_mask = 16'h0284;
         drive_data_write(13'd19, 16'h0204, expect_data_row);
         check_data_read(13'd19, expect_data_row, expect_data_way_mask);
+
+        expect_data_row_bank0 = {DATA_ROW_BITS{1'b0}};
+        expect_data_row_bank0[(0 * LINE_BITS) +: 64] = 64'h0102_0304_0506_0708;
+        drive_data_write(13'd0, 16'h0001, expect_data_row_bank0);
+        check_data_read(13'd0, expect_data_row_bank0, 16'h0001);
+
+        expect_data_row_bank1 = {DATA_ROW_BITS{1'b0}};
+        expect_data_row_bank1[(0 * LINE_BITS) + 256 +: 64]  = 64'h1111_2222_3333_4444;
+        expect_data_row_bank1[(15 * LINE_BITS) + 448 +: 64] = 64'h5555_6666_7777_8888;
+        drive_data_write(13'd4096, 16'h8001, expect_data_row_bank1);
+        check_data_read(13'd4096, expect_data_row_bank1, 16'h8001);
+        check_data_read(13'd0, expect_data_row_bank0, 16'h0001);
+
+        expect_data_row = {DATA_ROW_BITS{1'b0}};
+        expect_data_row[(15 * LINE_BITS) + 384 +: 64] = 64'h9999_AAAA_BBBB_CCCC;
+        drive_data_write(13'd8191, 16'h8000, expect_data_row);
+        check_data_read(13'd8191, expect_data_row, 16'h8000);
 
         expect_meta_row = {META_ROW_BITS{1'b0}};
         expect_meta_way_mask = 16'h0021;

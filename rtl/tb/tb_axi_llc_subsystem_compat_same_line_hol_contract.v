@@ -23,7 +23,7 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
 
     localparam [MODE_BITS-1:0] MODE_CACHE = 2'b01;
     localparam [ADDR_BITS-1:0] ADDR_A0    = 32'h0000_0000;
-    localparam [ADDR_BITS-1:0] ADDR_A1    = 32'h0000_0004;
+    localparam [ADDR_BITS-1:0] ADDR_A1    = 32'h0000_0000;
     localparam [ADDR_BITS-1:0] ADDR_B     = 32'h0000_0008;
     localparam [ID_BITS-1:0]   ID_A0      = 4'h1;
     localparam [ID_BITS-1:0]   ID_A1      = 4'h2;
@@ -99,7 +99,6 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
     reg  [LINE_BITS-1:0]                  line_b;
     reg  [ID_BITS-1:0]                    lower_id_a0;
     reg  [ID_BITS-1:0]                    lower_id_b;
-    reg  [ID_BITS-1:0]                    lower_id_a1;
     integer                               timeout;
 
     always #5 clk = ~clk;
@@ -418,7 +417,6 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
         line_b = make_line(8'h80);
         lower_id_a0 = {ID_BITS{1'b0}};
         lower_id_b = {ID_BITS{1'b0}};
-        lower_id_a1 = {ID_BITS{1'b0}};
 
         wait_cycles(5);
         rst_n = 1'b1;
@@ -447,8 +445,6 @@ module tb_axi_llc_subsystem_compat_same_line_hol_contract;
         drive_cache_resp(lower_id_a0, line_a);
         wait_read_resp(0, ID_A0, line_a);
         issue_read(0, ADDR_A1, ID_A1);
-        wait_cache_req(1'b0, ADDR_A0, lower_id_a1);
-        drive_cache_resp(lower_id_a1, line_a);
         wait_read_resp(0, ID_A1, line_a);
 
         if (bypass_req_valid) begin

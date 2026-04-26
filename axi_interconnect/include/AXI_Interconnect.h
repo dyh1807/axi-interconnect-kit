@@ -148,6 +148,8 @@ public:
     llc_invalidate_line_valid_ = valid;
     llc_invalidate_line_addr_ = addr;
   }
+  uint8_t active_mode() const { return runtime_mode_; }
+  uint32_t active_llc_mapped_offset() const { return llc_mapped_offset_; }
   bool llc_invalidate_all_accepted() const {
     return llc.io.ext_out.mem.invalidate_all_accepted;
   }

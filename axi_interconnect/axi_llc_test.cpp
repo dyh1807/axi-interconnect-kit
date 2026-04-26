@@ -123,6 +123,25 @@ WideReadData_t make_line_data(uint32_t base_word) {
   return data;
 }
 
+WideWriteData_t make_write_line_data(uint32_t base_word) {
+  WideWriteData_t data;
+  data.clear();
+  for (uint32_t i = 0; i < 16; ++i) {
+    data[i] = base_word + i;
+  }
+  return data;
+}
+
+WideWriteStrb_t make_full_line_strobe(const AXI_LLCConfig &config) {
+  WideWriteStrb_t strobe;
+  strobe.clear();
+  for (uint32_t i = 0;
+       i < config.line_bytes && i < MAX_WRITE_TRANSACTION_BYTES; ++i) {
+    strobe.set(i, true);
+  }
+  return strobe;
+}
+
 void drive_lookup_miss(AXI_LLC &llc, const AXI_LLCConfig &config, uint32_t repl_way = 0) {
   clear_inputs(llc);
   llc.comb();
@@ -2940,8 +2959,8 @@ bool test_unarmed_refill_ready_victim_blocks_victim_line_access() {
   return true;
 }
 
-bool test_refill_ready_victim_waits_for_pending_victim_write() {
-  printf("=== LLC Test 20f: refill-ready victim waits for pending victim-line write ===\n");
+bool test_refill_ready_victim_waits_for_cache_resolved_victim_write() {
+  printf("=== LLC Test 20f: refill-ready victim waits for cache-resolved victim-line write ===\n");
   AXI_LLC llc;
   auto config = make_config();
   llc.set_config(config);
@@ -2972,23 +2991,150 @@ bool test_refill_ready_victim_waits_for_pending_victim_write() {
   ctx.bypass = false;
   ctx.lookup_pending = false;
   ctx.cache_done = false;
-  ctx.cache_pending = false;
+  ctx.cache_pending = true;
   ctx.line_addr = victim_line;
   ctx.addr = victim_line;
 
   clear_inputs(llc);
   llc.comb();
   if (llc.io.reg_write.victim_wb_valid_r) {
-    printf("FAIL: victim writeback armed while same victim line still has pending write\n");
+    printf("FAIL: victim writeback armed while cache-resolved victim-line write still owns cache state\n");
     return false;
   }
 
-  llc.io.regs.write_ctx[MASTER_DCACHE_W].cache_done = true;
+  llc.io.regs.write_ctx[MASTER_DCACHE_W].cache_pending = false;
   clear_inputs(llc);
   llc.comb();
   if (!llc.io.reg_write.victim_wb_valid_r ||
       llc.io.reg_write.victim_wb_addr_r != victim_line) {
-    printf("FAIL: victim writeback did not arm after pending victim write cleared\n");
+    printf("FAIL: victim writeback did not arm after cache-resolved victim write cleared\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_refill_ready_victim_commits_with_unissued_same_line_lookup() {
+  printf("=== LLC Test 20g: refill-ready victim commits despite unissued same-line write lookup ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim_line = AXI_LLC::line_addr(config, 0x940);
+  const uint32_t fill_line = AXI_LLC::line_addr(config, 0x840);
+
+  auto &pending = llc.io.regs.mshr[0];
+  pending.valid = true;
+  pending.bypass = false;
+  pending.is_write = false;
+  pending.refill_valid = true;
+  pending.refill_committed = false;
+  pending.addr = fill_line;
+  pending.line_addr = fill_line;
+  pending.set = AXI_LLC::set_index(config, fill_line);
+  pending.tag = AXI_LLC::tag_of(config, fill_line);
+  pending.way = 0;
+  pending.victim_dirty = true;
+  pending.victim_writeback_done = false;
+  pending.victim_addr = victim_line;
+  pending.refill_data = make_line_data(0x7b00);
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    pending.victim_data[i] = 0x7a00 + i;
+  }
+
+  auto &ctx = llc.io.regs.write_ctx[MASTER_DCACHE_W];
+  ctx.valid = true;
+  ctx.bypass = false;
+  ctx.lookup_pending = false;
+  ctx.cache_done = false;
+  ctx.cache_pending = false;
+  ctx.line_addr = victim_line;
+  ctx.addr = victim_line;
+
+  llc.io.regs.lookup_valid_r = true;
+  llc.io.regs.lookup_issued_r = false;
+  llc.io.regs.lookup_addr_r = victim_line;
+  llc.io.regs.lookup_size_r = 3;
+  llc.io.regs.lookup_master_r = MASTER_DCACHE_W;
+  llc.io.regs.lookup_id_r = 0x69;
+  llc.io.regs.lookup_is_write_r = true;
+  llc.io.regs.lookup_is_bypass_r = false;
+
+  clear_inputs(llc);
+  llc.comb();
+  if (!llc.io.reg_write.victim_wb_valid_r ||
+      llc.io.reg_write.victim_wb_addr_r != victim_line) {
+    printf("FAIL: victim snapshot was not externalized while same-line write lookup was still unissued\n");
+    return false;
+  }
+  if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
+      !llc.io.reg_write.mshr[0].refill_committed) {
+    printf("FAIL: refill commit still stalled behind unissued same-line write lookup\n");
+    return false;
+  }
+
+  printf("PASS\n");
+  return true;
+}
+
+bool test_refill_ready_victim_queues_snapshot_when_global_slot_busy() {
+  printf("=== LLC Test 20h: refill-ready victim queues snapshot when global slot is busy ===\n");
+  AXI_LLC llc;
+  auto config = make_config();
+  llc.set_config(config);
+  llc.reset();
+
+  const uint32_t victim_line = AXI_LLC::line_addr(config, 0x940);
+  const uint32_t fill_line = AXI_LLC::line_addr(config, 0x840);
+  const uint32_t busy_victim_line = AXI_LLC::line_addr(config, 0xa40);
+
+  auto &pending = llc.io.regs.mshr[0];
+  pending.valid = true;
+  pending.bypass = false;
+  pending.is_write = false;
+  pending.refill_valid = true;
+  pending.refill_committed = false;
+  pending.addr = fill_line;
+  pending.line_addr = fill_line;
+  pending.set = AXI_LLC::set_index(config, fill_line);
+  pending.tag = AXI_LLC::tag_of(config, fill_line);
+  pending.way = 0;
+  pending.victim_dirty = true;
+  pending.victim_writeback_done = false;
+  pending.victim_addr = victim_line;
+  pending.refill_data = make_line_data(0x7d00);
+  for (uint32_t i = 0; i < config.line_bytes / sizeof(uint32_t); ++i) {
+    pending.victim_data[i] = 0x7c00 + i;
+  }
+
+  llc.io.regs.victim_wb_valid_r = true;
+  llc.io.regs.victim_wb_issued_r = false;
+  llc.io.regs.victim_wb_for_write_r = true;
+  llc.io.regs.victim_wb_write_master_r = MASTER_DCACHE_W;
+  llc.io.regs.victim_wb_addr_r = busy_victim_line;
+  llc.io.regs.victim_wb_data_r = make_write_line_data(0x1234);
+  llc.io.regs.victim_wb_strobe_r = make_full_line_strobe(config);
+
+  clear_inputs(llc);
+  llc.comb();
+  if (llc.io.reg_write.read_victim_wb_q_count_r != 1) {
+    printf("FAIL: victim snapshot was not queued while global victim slot was busy count=%u\n",
+           static_cast<unsigned>(llc.io.reg_write.read_victim_wb_q_count_r));
+    return false;
+  }
+  const auto &queued = llc.io.reg_write.read_victim_wb_q[0];
+  if (!queued.valid || queued.victim_addr != victim_line ||
+      queued.owner_slot != 0) {
+    printf("FAIL: queued victim snapshot metadata mismatch valid=%d addr=0x%x owner=%u\n",
+           static_cast<int>(queued.valid), queued.victim_addr,
+           static_cast<unsigned>(queued.owner_slot));
+    return false;
+  }
+  if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
+      !llc.io.reg_write.mshr[0].refill_committed) {
+    printf("FAIL: refill commit still stalled while global victim slot was busy\n");
     return false;
   }
 
@@ -3484,7 +3630,17 @@ int main() {
   else
     failed++;
 
-  if (test_refill_ready_victim_waits_for_pending_victim_write())
+  if (test_refill_ready_victim_waits_for_cache_resolved_victim_write())
+    passed++;
+  else
+    failed++;
+
+  if (test_refill_ready_victim_commits_with_unissued_same_line_lookup())
+    passed++;
+  else
+    failed++;
+
+  if (test_refill_ready_victim_queues_snapshot_when_global_slot_busy())
     passed++;
   else
     failed++;
