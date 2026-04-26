@@ -197,6 +197,70 @@ cacheable write 始终由 LLC 接管，不会绕开 LLC 直接下发。
 - dirty victim writeback 数据正确
 - partial write miss + dirty victim 的交错
 
+### 7.1 dirty victim snapshot 的三个阶段
+
+当前实现里，dirty victim line 在替换路径上会经历三个不同的保存阶段：
+
+1. `mshr[].victim_addr / victim_data`
+   - 这是在 read miss / partial-write miss 选择 victim way 后，从 LLC data/meta 表中抓出的快照
+   - 它仍然附着在对应的 MSHR / miss entry 上
+   - 此时只能说明 “victim snapshot 已生成”，不能说明它已经脱离 refill slot 独立托管
+2. `read_victim_wb_q`
+   - 这是只服务于 read refill victim 的等待队列
+   - 当 active victim writeback 槽正在被其它 victim 占用时，read refill 可以先把自己的 dirty victim snapshot 排进这里
+   - 一旦进入这里，就说明 snapshot 已经脱离 refill slot 独立保存
+3. `victim_wb_*`
+   - 这是 LLC 内部全局唯一的 active victim writeback 槽
+   - 它保存当前真正准备向 downstream memory 发出的 victim writeback 请求
+   - read victim 和 write victim 最终都会经过这里完成 DDR writeback
+
+因此：
+
+- `mshr.victim_data` 表示 “snapshot 已抓出”
+- `read_victim_wb_q` / `victim_wb_*` 表示 “snapshot 已被独立托管”
+
+### 7.2 `victim_wb` 与 `read_victim_wb_q` 的职责分工
+
+当前实现显式区分：
+
+- `victim_wb_*`
+  - 负责 active writeback 的协议推进
+  - 负责 `issued` / `write_resp` / owner bookkeeping
+  - 是真正与 downstream 写口对接的执行槽
+- `read_victim_wb_q`
+  - 只负责 read refill victim 的排队缓冲
+  - 不直接与 downstream 写口握手
+  - 当 `victim_wb_*` 空闲后，再由队头搬入 active 槽继续推进
+
+write miss 的 dirty victim 仍然直接占用 `victim_wb_*`，因为 write path 的完成条件与
+`victim_mem_done` 直接绑定；read refill 的 dirty victim 则允许先进入 `read_victim_wb_q`
+做解耦。
+
+### 7.3 当前 read refill victim 的前进条件
+
+当前版本保留了 “`pick_refill_commit_slot()` 固定选择第一个 `refill_valid` slot” 的仲裁方式；
+forward progress 不再依赖跳过 blocked slot，而依赖更明确的 victim snapshot 外部化语义：
+
+1. read refill 遇到 dirty victim 时，先检查是否存在已经真正占用 cache state 的 same-line
+   write
+   - 例如已发出的 write lookup
+   - 或已经进入 `cache_pending` 的 write context
+2. 若不存在上述 blocker，则把 `mshr.victim_data` 外部化到：
+   - active `victim_wb_*`
+   - 或 `read_victim_wb_q`
+3. 一旦 snapshot 已进入这两个独立存储之一，refill commit 就可以继续
+
+这意味着 read refill commit 的依赖从：
+
+- “write path 是否已经推进到 `cache_done` / victim writeback issued”
+
+收敛为：
+
+- “dirty victim snapshot 是否已经被独立托管”
+
+因此即使 refill commit 一直只看第一个 slot，也不会再因为同 slot 的 victim snapshot 仍挂在
+本地内部状态上而形成自锁。
+
 ## 8. 多 master 读写竞争
 
 ### 8.1 读侧
@@ -364,6 +428,9 @@ mode 切换现在首先依赖 `drain -> invalidate_all -> activate` 合同来保
 - `invalidate_all` hold-until-accept 合同
 - `invalidate_all` 接受后 stale refill 不会重新安装
 - victim writeback + maintenance + demand miss 三方交错
+- refill-ready read victim 只等待真正 cache-resolved 的 same-line write
+- 尚未 issued 的 same-line write lookup 不会阻塞 refill commit
+- active `victim_wb` 忙时，read victim snapshot 可进入 `read_victim_wb_q` 而不阻塞 refill commit
 
 ## 11. 当前阶段边界
 

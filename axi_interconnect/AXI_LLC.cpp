@@ -536,6 +536,9 @@ bool AXI_LLC::victim_snapshot_waits_for_write_resolution(
   if (victim_addr == 0) {
     return false;
   }
+  // Only writes that have already consumed cache state can block the victim
+  // snapshot. Pre-lookup / queued writes must wait and retry after the refill
+  // path has externalized the snapshot.
   if (regs.lookup_valid_r && regs.lookup_is_write_r && regs.lookup_issued_r &&
       !regs.lookup_is_bypass_r &&
       line_addr(config_, regs.lookup_addr_r) == victim_addr) {
@@ -2696,8 +2699,7 @@ void AXI_LLC::drive_mem_read_path() {
     if (!entry.victim_dirty || entry.victim_writeback_done) {
       return true;
     }
-    if (victim_snapshot_waits_for_write_resolution(io.regs,
-                                                   entry.victim_addr)) {
+    if (victim_snapshot_waits_for_write_resolution(io.regs, entry.victim_addr)) {
       if (llc_focus_line(entry.line_addr) || llc_focus_line(entry.victim_addr)) {
         std::printf(
             "[AXI-LLC][VICTIM-WAIT-WRITE] cyc=%lld slot=%d line=0x%08x "
@@ -2710,6 +2712,8 @@ void AXI_LLC::drive_mem_read_path() {
         read_victim_snapshot_present(io.reg_write, entry.victim_addr)) {
       return true;
     }
+    // Once the dirty victim snapshot is captured in the dedicated victim slot
+    // or queue, refill commit no longer depends on write-path cache_done.
     if (!io.reg_write.victim_wb_valid_r) {
       io.reg_write.victim_wb_valid_r = true;
       io.reg_write.victim_wb_issued_r = false;
