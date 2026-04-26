@@ -8,7 +8,7 @@ module llc_data_store #(
     parameter LINE_BITS  = `AXI_LLC_LINE_BITS,
     parameter ROW_BITS   = WAY_COUNT * LINE_BITS,
     parameter READ_LATENCY_CYCLES = `AXI_LLC_TABLE_READ_LATENCY,
-    parameter USE_SMIC12 = 0
+    parameter USE_SMIC12 = 1
 ) (
     input                         clk,
     input                         rst_n,

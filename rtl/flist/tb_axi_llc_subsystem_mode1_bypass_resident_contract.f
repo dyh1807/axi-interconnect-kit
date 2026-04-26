@@ -1,2 +1,2 @@
--f flist/rtl.f
+-f flist/axi_llc_rtl.f
 tb/tb_axi_llc_subsystem_mode1_bypass_resident_contract.v

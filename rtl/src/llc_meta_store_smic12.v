@@ -74,7 +74,7 @@ module llc_meta_store_smic12 #(
     generate
         for (bank_idx = 0; bank_idx < BANK_COUNT; bank_idx = bank_idx + 1) begin : gen_bank
             for (way_idx = 0; way_idx < WAY_COUNT; way_idx = way_idx + 1) begin : gen_way
-                llc_smic12_meta_1024x128 u_macro (
+                llc_smic12_meta_4096x16_bw u_macro (
                     .clk  (clk),
                     .rst_n(rst_n),
                     .me   ((write_pending_r &&

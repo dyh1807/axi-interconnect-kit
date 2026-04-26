@@ -100,15 +100,15 @@ axi_llc_subsystem
 - `src/llc_data_store.v`
   - `mode=1/2` 共享的 resident data set-row 存储
   - 当前已支持两种实现：
-    - 默认通用数组实现
-    - `USE_SMIC12_STORES=1` 时的 SMIC12 宏封装实现
-  - 读返回通过 `rd_valid` 显式标记，默认 `TABLE_READ_LATENCY=1`
+    - 默认 SMIC12 宏封装实现
+    - 不匹配宏几何或显式 `USE_SMIC12_STORES=0` 时回退通用数组实现
+  - 读返回通过 `rd_valid` 显式标记，默认 `TABLE_READ_LATENCY=3`
 - `src/llc_meta_store.v`
   - 预留给 `mode=1` cache 语义使用的 resident meta set-row 存储
   - 当前已支持两种实现：
-    - 默认通用数组实现
-    - `USE_SMIC12_STORES=1` 时的 SMIC12 宏封装实现
-  - 读返回通过 `rd_valid` 显式标记，默认 `TABLE_READ_LATENCY=1`
+    - 默认 SMIC12 宏封装实现
+    - 不匹配宏几何或显式 `USE_SMIC12_STORES=0` 时回退通用数组实现
+  - 读返回通过 `rd_valid` 显式标记，默认 `TABLE_READ_LATENCY=3`
 - `src/llc_valid_ram.v`
   - 独立 valid bit-array
   - 不做整表 reset，依赖 startup / reconfig sweep 清零
@@ -273,8 +273,8 @@ axi_llc_subsystem
 - `mode=1` bypass 请求当前已经通过 compat 重新接回 core，不再在顶层直接绕过 core。
   - `mode=1` lookup 会等四表同拍返回后再消费
   - `mode=2` direct-window 会等 `data + valid` 返回后再消费
-- `TABLE_READ_LATENCY` 默认值是 `1`，保持当前功能回归时序；如果做更保守的 SMIC12
-  wrapper 级 timing 建模，可提到 `2/3`
+- `TABLE_READ_LATENCY` 默认值是 `3`，与当前 SMIC12 SRAM wrapper timing 口径一致；
+  如果做纯功能小规模 bench，可显式覆盖成 `1`
 - `data/meta` 当前都采用同步单端口行为模型，因此 `mode=2` 写路径已经改成“先读
   row，再 merge，再写回”的顺序语义。
 - bypass 读命中当前直接从 resident 返回；只有 miss 才通过 `bypass_*` 口访问 lower memory。
@@ -331,7 +331,7 @@ axi_llc_subsystem
 - 当前 AXI 顶层仍保持 C++ 原型的简化合同：
   - 只使用 `addr/len/size/burst/id/data/strb/last/resp/ready/valid`
   - 不引入 `axcache` 等当前 simulator 未使用的 AXI 扩展侧带
-- 共享 `data/meta` 当前支持 `USE_SMIC12_STORES=1` 的宏封装实现；在真实外部宏模型
+- 共享 `data/meta` 当前默认使用 `USE_SMIC12_STORES=1` 的宏封装实现；在真实外部宏模型
   上做功能仿真时，当前建议关闭 timing check（例如 `+notimingcheck`），因为零延迟
   RTL 直接连接详细 timing model 还会触发 hold 违例。
 - 当前 DC 可直接综合到“宏实例 + 标准单元”这一级；但 SRAM 目前只有文本 `Liberty (.lib)`，

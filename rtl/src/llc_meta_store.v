@@ -8,7 +8,7 @@ module llc_meta_store #(
     parameter META_BITS  = `AXI_LLC_META_BITS,
     parameter ROW_BITS   = WAY_COUNT * META_BITS,
     parameter READ_LATENCY_CYCLES = `AXI_LLC_TABLE_READ_LATENCY,
-    parameter USE_SMIC12 = 0
+    parameter USE_SMIC12 = 1
 ) (
     input                         clk,
     input                         rst_n,

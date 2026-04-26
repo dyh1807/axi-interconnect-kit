@@ -1,2 +1,2 @@
--f flist/rtl.f
+-f flist/axi_llc_rtl.f
 tb/tb_axi_llc_subsystem_compat_non_dcache_bypass_master_contract.v

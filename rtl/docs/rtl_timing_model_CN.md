@@ -32,13 +32,13 @@
 口径如下：
 
 - `1`
-  - 保持当前功能回归默认时序
-  - 适合日常功能 bench
+  - 显式覆盖后的快速功能时序
+  - 适合纯功能小规模 bench
 - `2`
   - 适合更保守的 SMIC12 wrapper 级 timing 评估
   - 对应“延后 first-capture”而不是“response 后补拍”的设计意图
 - `3`
-  - 更进一步的保守结构评估值
+  - 当前默认 SMIC12 wrapper timing 评估值
 
 ## 与功能语义的关系
 

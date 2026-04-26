@@ -36,7 +36,7 @@ module axi_llc_subsystem_compat #(
     parameter MMIO_SIZE         = `AXI_LLC_MMIO_SIZE,
     parameter RESET_MODE        = {{(`AXI_LLC_MODE_BITS-2){1'b0}}, 2'b01},
     parameter RESET_OFFSET      = {`AXI_LLC_ADDR_BITS{1'b0}},
-    parameter USE_SMIC12_STORES = 0,
+    parameter USE_SMIC12_STORES = 1,
     parameter TABLE_READ_LATENCY = `AXI_LLC_TABLE_READ_LATENCY,
     parameter NUM_READ_MASTERS  = 4,
     parameter NUM_WRITE_MASTERS = 2,

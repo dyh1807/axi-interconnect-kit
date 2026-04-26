@@ -32,7 +32,7 @@ module axi_llc_subsystem_core #(
     parameter MMIO_SIZE        = `AXI_LLC_MMIO_SIZE,
     parameter RESET_MODE       = {{(`AXI_LLC_MODE_BITS-2){1'b0}}, 2'b01},
     parameter RESET_OFFSET     = {`AXI_LLC_ADDR_BITS{1'b0}},
-    parameter USE_SMIC12_STORES = 0,
+    parameter USE_SMIC12_STORES = 1,
     parameter TABLE_READ_LATENCY = `AXI_LLC_TABLE_READ_LATENCY,
     parameter READ_RESP_BYTES  = `AXI_LLC_READ_RESP_BYTES,
     parameter READ_RESP_BITS   = `AXI_LLC_READ_RESP_BITS,

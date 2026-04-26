@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 `include "axi_llc_params.vh"
 
-module llc_smic12_meta_1024x128 (
+module llc_smic12_meta_4096x16_bw (
     input               clk,
     input               rst_n,
     input               me,
