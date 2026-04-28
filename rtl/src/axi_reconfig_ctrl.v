@@ -94,6 +94,12 @@ module axi_reconfig_ctrl #(
                 if (!sweep_busy && !sweep_started_r) begin
                     sweep_start        = 1'b1;
                     next_sweep_started = 1'b1;
+                end else if (!sweep_busy && !sweep_done) begin
+                    // If the one-cycle start pulse was missed around reset or
+                    // a simulator scheduling edge, reissue it instead of
+                    // parking forever in INV_SWEEP.
+                    sweep_start        = 1'b1;
+                    next_sweep_started = 1'b1;
                 end
 
                 if (sweep_done) begin

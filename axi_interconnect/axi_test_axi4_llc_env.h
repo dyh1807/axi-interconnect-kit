@@ -309,6 +309,19 @@ inline void write_memory_line(uint32_t line_addr, uint32_t base_word) {
   }
 }
 
+inline bool wait_mem_word(Axi4LlcTestEnv &env, uint32_t addr,
+                          uint32_t expected,
+                          int timeout = sim_ddr::SIM_DDR_LATENCY * 80) {
+  while (timeout-- > 0) {
+    if (read_mem_word(addr) == expected) {
+      return true;
+    }
+    cycle_outputs(env);
+    cycle_inputs(env);
+  }
+  return read_mem_word(addr) == expected;
+}
+
 inline WideWriteStrb_t make_full_write_strobe(uint32_t bytes = 64) {
   WideWriteStrb_t wstrb;
   wstrb.clear();

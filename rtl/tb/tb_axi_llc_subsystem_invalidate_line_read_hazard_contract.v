@@ -17,7 +17,7 @@ module tb_axi_llc_subsystem_invalidate_line_read_hazard_contract;
     localparam LLC_SIZE_BYTES   = LINE_BYTES * SET_COUNT * WAY_COUNT;
     localparam WINDOW_WAYS      = 1;
     localparam WINDOW_BYTES     = LINE_BYTES * SET_COUNT * WINDOW_WAYS;
-    localparam TABLE_READ_LATENCY = 2;
+    localparam TABLE_READ_LATENCY = `AXI_LLC_TABLE_READ_LATENCY;
     localparam READ_RESP_BYTES  = `AXI_LLC_READ_RESP_BYTES;
     localparam READ_RESP_BITS   = `AXI_LLC_READ_RESP_BITS;
 
@@ -311,6 +311,7 @@ module tb_axi_llc_subsystem_invalidate_line_read_hazard_contract;
         begin
             invalidate_line_valid <= 1'b1;
             invalidate_line_addr  <= invalidate_addr_value;
+            cache_req_ready       <= 1'b1;
             timeout = 100;
             while (!(cache_req_valid &&
                      cache_req_ready &&
@@ -501,11 +502,12 @@ module tb_axi_llc_subsystem_invalidate_line_read_hazard_contract;
                       {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}});
         hold_invalidate_blocked_until_cache_req(1'b0, MISS_ADDR,
                                                 VICTIM_ADDR, lower_req_id);
+        cache_req_ready <= 1'b0;
         drive_cache_resp(lower_req_id, miss_line);
+        wait_read_response(MISS_REQ_ID, miss_line);
         hold_invalidate_blocked_until_cache_req(1'b1, VICTIM_ADDR,
                                                 VICTIM_ADDR, lower_req_id);
         drive_cache_resp(lower_req_id, {LINE_BITS{1'b0}});
-        wait_read_response(MISS_REQ_ID, miss_line);
         do_invalidate_accept(VICTIM_ADDR);
 
         if (bypass_req_valid) begin

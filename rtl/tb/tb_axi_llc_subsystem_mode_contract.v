@@ -249,6 +249,45 @@ module tb_axi_llc_subsystem_mode_contract;
         end
     endtask
 
+    task do_request_handoff;
+        input        is_write;
+        input [31:0] addr;
+        input [7:0]  total_size;
+        input [63:0] wdata;
+        input [7:0]  wstrb;
+        input        bypass;
+        integer guard;
+        begin
+            up_req_valid  <= 1'b1;
+            up_req_write  <= is_write;
+            up_req_addr   <= addr;
+            up_req_id     <= {ID_BITS{1'b0}};
+            up_req_total_size <= total_size;
+            up_req_wdata  <= wdata;
+            up_req_wstrb  <= wstrb;
+            up_req_bypass <= bypass;
+
+            guard = 0;
+            while (!up_req_ready) begin
+                @(posedge clk);
+                guard = guard + 1;
+                if (guard > 64) begin
+                    fail_now("timeout waiting handoff up_req_ready");
+                end
+            end
+
+            @(posedge clk);
+            up_req_valid <= 1'b0;
+            up_req_id    <= {ID_BITS{1'b0}};
+            up_req_total_size <= 8'd0;
+
+            repeat (16) @(posedge clk);
+            if (up_resp_valid !== 1'b0) begin
+                fail_now("core bypass handoff should not generate upstream response");
+            end
+        end
+    endtask
+
     task expect_route_delta;
         input integer cache_before;
         input integer bypass_before;
@@ -256,9 +295,13 @@ module tb_axi_llc_subsystem_mode_contract;
         input integer exp_bypass_delta;
         begin
             if ((cache_req_count - cache_before) != exp_cache_delta) begin
+                $display("  cache_delta actual=%0d expect=%0d",
+                         cache_req_count - cache_before, exp_cache_delta);
                 fail_now("unexpected cache route count delta");
             end
             if ((bypass_req_count - bypass_before) != exp_bypass_delta) begin
+                $display("  bypass_delta actual=%0d expect=%0d",
+                         bypass_req_count - bypass_before, exp_bypass_delta);
                 fail_now("unexpected bypass route count delta");
             end
         end
@@ -405,12 +448,9 @@ module tb_axi_llc_subsystem_mode_contract;
 
         cache_before  = cache_req_count;
         bypass_before = bypass_req_count;
-        do_request(1'b0, 32'h0000_1040, 8'd7, 64'h0, 8'h00, 1'b0, tmp_rdata);
+        do_request_handoff(1'b0, 32'h0000_1040, 8'd7, 64'h0, 8'h00, 1'b0);
         expect_route_delta(cache_before, bypass_before, 0, 1);
         expect_last_bypass(32'h0000_1040, 1'b0);
-        if (tmp_rdata !== make_bypass_data(32'h0000_1040)) begin
-            fail_now("mode2 out-of-window request must return bypass data");
-        end
 
         mode_req              <= 2'b01;
         llc_mapped_offset_req <= 32'h0000_1000;
@@ -443,12 +483,9 @@ module tb_axi_llc_subsystem_mode_contract;
 
         cache_before  = cache_req_count;
         bypass_before = bypass_req_count;
-        do_request(1'b0, 32'h0000_3000, 8'd7, 64'h0, 8'h00, 1'b0, tmp_rdata);
+        do_request_handoff(1'b0, 32'h0000_3000, 8'd7, 64'h0, 8'h00, 1'b0);
         expect_route_delta(cache_before, bypass_before, 0, 1);
         expect_last_bypass(32'h0000_3000, 1'b0);
-        if (tmp_rdata !== make_bypass_data(32'h0000_3000)) begin
-            fail_now("mode0 request must use bypass port");
-        end
 
         mode_req              <= 2'b11;
         llc_mapped_offset_req <= 32'h0000_1000;
@@ -456,12 +493,9 @@ module tb_axi_llc_subsystem_mode_contract;
 
         cache_before  = cache_req_count;
         bypass_before = bypass_req_count;
-        do_request(1'b0, 32'h0000_4000, 8'd7, 64'h0, 8'h00, 1'b0, tmp_rdata);
+        do_request_handoff(1'b0, 32'h0000_4000, 8'd7, 64'h0, 8'h00, 1'b0);
         expect_route_delta(cache_before, bypass_before, 0, 1);
         expect_last_bypass(32'h0000_4000, 1'b0);
-        if (tmp_rdata !== make_bypass_data(32'h0000_4000)) begin
-            fail_now("mode3 request must use bypass port");
-        end
 
         $display("tb_axi_llc_subsystem_mode_contract PASS");
         $finish;

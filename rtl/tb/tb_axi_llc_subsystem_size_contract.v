@@ -438,9 +438,9 @@ module tb_axi_llc_subsystem_size_contract;
                       {LINE_BITS{1'b0}},
                       {LINE_BYTES{1'b0}},
                       1'b0);
-        wait_for_response;
-        if (tmp_rdata !== make_bypass_line(MAPPED_OFFSET + 32'h0000_0039)) begin
-            fail_now("cross-window request should return bypass data");
+        repeat (16) @(posedge clk);
+        if (up_resp_valid !== 1'b0) begin
+            fail_now("core cross-window handoff should not return bypass data");
         end
         if (cache_req_count !== 0) begin
             fail_now("cross-window request must not route to cache");

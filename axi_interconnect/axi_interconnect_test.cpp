@@ -285,7 +285,8 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
 
     cycle_inputs(env);
     for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
-      if (!issued[i] && ready_snapshot[i]) {
+      if (!issued[i] &&
+          (ready_snapshot[i] || env.interconnect.read_req_accepted[i])) {
         issued[i] = true;
       }
     }
@@ -505,9 +506,7 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
     printf("FAIL: expected 1 AW handshake, got %zu\n", env.aw_events.size());
     return false;
   }
-  uint8_t exp_awid =
-      static_cast<uint8_t>((axi_interconnect::MASTER_DCACHE_W << 2) |
-                           (req_id & 0x3));
+  const uint8_t exp_awid = 0;
   if (env.aw_events[0].addr != base_addr || env.aw_events[0].len != 15 ||
       env.aw_events[0].id != exp_awid) {
     printf("FAIL: AW mismatch addr=0x%x len=%u id=0x%x\n", env.aw_events[0].addr,

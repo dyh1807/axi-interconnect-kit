@@ -103,6 +103,14 @@ struct LlcUpstreamWriteReqLatch {
   bool mode2_ddr_aligned = false;
 };
 
+struct LlcCoreReqStage {
+  bool valid = false;
+  bool is_write = false;
+  uint8_t master = 0;
+  LlcUpstreamReqLatch read{};
+  LlcUpstreamWriteReqLatch write{};
+};
+
 struct WritePendingTxn {
   uint8_t axi_id;
   uint8_t master_id;
@@ -231,7 +239,7 @@ private:
   void comb_read_response();
   void comb_write_request();
   void comb_write_response();
-  void prepare_llc_inputs();
+  void prepare_llc_inputs(bool sample_upstream_ready);
   bool can_issue_llc_read_req() const;
   bool has_same_line_write_hazard(uint32_t line_addr) const;
 
@@ -266,6 +274,8 @@ private:
   LlcUpstreamWriteReqLatch llc_upstream_write_capture_c[NUM_WRITE_MASTERS] = {};
   bool llc_upstream_write_accept_c[NUM_WRITE_MASTERS] = {};
   std::deque<LlcUpstreamWriteReqLatch> llc_upstream_write_q[NUM_WRITE_MASTERS];
+  LlcCoreReqStage llc_core_req_stage_ = {};
+  uint8_t llc_core_dispatch_rr_ = 0;
   bool llc_mem_write_resp_valid_ = false;
   uint8_t llc_mem_write_resp_ = 0;
   uint32_t llc_mem_ignored_b_count_ = 0;

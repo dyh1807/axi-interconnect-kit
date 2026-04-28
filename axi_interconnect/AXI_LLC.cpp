@@ -20,6 +20,14 @@ namespace {
 #define CONFIG_AXI_LLC_DEBUG_LOG 0
 #endif
 
+#ifndef CONFIG_AXI_LLC_RESP_TRACE_BEGIN
+#define CONFIG_AXI_LLC_RESP_TRACE_BEGIN 0LL
+#endif
+
+#ifndef CONFIG_AXI_LLC_RESP_TRACE_END
+#define CONFIG_AXI_LLC_RESP_TRACE_END 0LL
+#endif
+
 constexpr uint8_t kInvalidReadMaster = NUM_READ_MASTERS;
 
 bool allow_parallel_demand_mshr(uint8_t master) {
@@ -57,6 +65,13 @@ bool llc_focus_set(const AXI_LLCConfig &config, uint32_t set) {
   (void)config;
   (void)set;
   return false;
+}
+
+bool llc_resp_trace_active() {
+  return CONFIG_AXI_LLC_DEBUG_LOG != 0 &&
+         CONFIG_AXI_LLC_RESP_TRACE_END >= CONFIG_AXI_LLC_RESP_TRACE_BEGIN &&
+         sim_time >= static_cast<long long>(CONFIG_AXI_LLC_RESP_TRACE_BEGIN) &&
+         sim_time <= static_cast<long long>(CONFIG_AXI_LLC_RESP_TRACE_END);
 }
 
 void llc_dump_words(const char *tag, uint32_t line_addr, uint8_t slot,
@@ -432,7 +447,6 @@ void AXI_LLC::debug_print() const {
 
 bool AXI_LLC::can_accept_read_now(uint8_t master, bool bypass,
                                   uint32_t addr) const {
-  (void)bypass;
   if (master >= NUM_READ_MASTERS || config_.mshr_num == 0) {
     return false;
   }
@@ -454,7 +468,7 @@ bool AXI_LLC::can_accept_read_now(uint8_t master, bool bypass,
   if (find_mshr_by_line_addr(io.regs, line_addr(config_, addr)) >= 0) {
     return false;
   }
-  if (!allow_parallel_demand_mshr(master) &&
+  if (!bypass && !allow_parallel_demand_mshr(master) &&
       has_mshr_for_master(io.regs, master)) {
     return false;
   }
@@ -1003,7 +1017,7 @@ int AXI_LLC::pick_new_read_master(const AXI_LLC_Regs_t &regs) const {
     if (find_mshr_by_line_addr(regs, line_addr(config_, req.addr)) >= 0) {
       continue;
     }
-    if (!allow_parallel_demand_mshr(static_cast<uint8_t>(idx)) &&
+    if (!req.bypass && !allow_parallel_demand_mshr(static_cast<uint8_t>(idx)) &&
         has_mshr_for_master(regs, static_cast<uint8_t>(idx))) {
       continue;
     }
@@ -1230,6 +1244,22 @@ void AXI_LLC::drive_read_responses() {
     io.ext_out.upstream.read_resp[i].valid = io.regs.read_resp_valid_r[i];
     io.ext_out.upstream.read_resp[i].data = io.regs.read_resp_data_r[i];
     io.ext_out.upstream.read_resp[i].id = io.regs.read_resp_id_r[i];
+    if (llc_resp_trace_active() && i == MASTER_DCACHE_R &&
+        (io.regs.read_resp_valid_r[i] ||
+         io.regs.read_resp_q_count_r[i] != 0 ||
+         io.ext_in.upstream.read_resp[i].ready)) {
+      std::printf(
+          "[AXI-LLC][RESP-SLOT] cyc=%lld master=%u valid=%d id=%u fresh=%d "
+          "ready=%d q_count=%u q_head=%u q_tail=%u\n",
+          sim_time, static_cast<unsigned>(i),
+          static_cast<int>(io.regs.read_resp_valid_r[i]),
+          static_cast<unsigned>(io.regs.read_resp_id_r[i]),
+          static_cast<int>(io.regs.read_resp_fresh_r[i]),
+          static_cast<int>(io.ext_in.upstream.read_resp[i].ready),
+          static_cast<unsigned>(io.regs.read_resp_q_count_r[i]),
+          static_cast<unsigned>(io.regs.read_resp_q_head_r[i]),
+          static_cast<unsigned>(io.regs.read_resp_q_tail_r[i]));
+    }
     // In the shared top-level fabric, upstream ready is sampled one phase
     // earlier than the consumer computes its current-cycle backpressure. Keep
     // a newly-produced response visible for one full cycle before letting the
@@ -1738,7 +1768,10 @@ void AXI_LLC::accept_maintenance_request() {
 }
 
 void AXI_LLC::drive_lookup_request() {
-  if (!io.reg_write.lookup_valid_r) {
+  if (!io.regs.lookup_valid_r || !io.reg_write.lookup_valid_r) {
+    return;
+  }
+  if (io.regs.lookup_issued_r) {
     return;
   }
   const uint32_t lookup_line = line_addr(config_, io.reg_write.lookup_addr_r);
@@ -1816,7 +1849,8 @@ void AXI_LLC::drive_lookup_request() {
 
 bool AXI_LLC::try_complete_lookup() {
   const bool valid_table_ready =
-      io.lookup_in.valid_valid || io.lookup_in.valid.size() == 0;
+      io.lookup_in.valid_valid &&
+      io.lookup_in.valid.size() >= valid_row_bytes(config_);
   if (!io.regs.lookup_valid_r || !io.regs.lookup_issued_r ||
       !io.lookup_in.data_valid || !io.lookup_in.meta_valid || !valid_table_ready ||
       !io.lookup_in.repl_valid) {

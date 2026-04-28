@@ -81,6 +81,9 @@ Contract:
    older epoch are dropped instead of being re-installed into the LLC.
 5. In the current prototype, effective line validity comes from a dedicated
    `valid` table; `meta.flags.VALID` remains only as a shadow/debug-compat bit.
+   Lookup completion therefore requires an explicit `lookup_in.valid_valid`
+   response with a complete valid row; the model must not infer validity from
+   `meta.flags.VALID`.
 
 ### 1.6 Submodule Runtime Mode Controls
 

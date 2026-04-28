@@ -382,6 +382,11 @@ module tb_axi_llc_subsystem_handshake_contract;
         input [63:0] data;
         integer guard;
         begin
+            @(negedge clk);
+            cache_resp_rdata <= pack_read_resp_line(data);
+            cache_resp_id    <= last_cache_id;
+            cache_resp_valid <= 1'b1;
+
             guard = 0;
             while (!cache_resp_ready) begin
                 @(posedge clk);
@@ -391,11 +396,6 @@ module tb_axi_llc_subsystem_handshake_contract;
                 end
             end
 
-            @(negedge clk);
-            cache_resp_rdata <= pack_read_resp_line(data);
-            cache_resp_id    <= last_cache_id;
-            cache_resp_valid <= 1'b1;
-            @(posedge clk);
             @(negedge clk);
             cache_resp_valid <= 1'b0;
             cache_resp_rdata <= {READ_RESP_BITS{1'b0}};
@@ -573,17 +573,12 @@ module tb_axi_llc_subsystem_handshake_contract;
             fail_now("bypass write handshake metadata mismatch");
         end
 
-        if (up_req_ready !== 1'b0) begin
-            fail_now("up_req_ready should stay low while bypass response is outstanding");
+        if (up_req_ready !== 1'b1) begin
+            fail_now("up_req_ready should reassert after core bypass handoff");
         end
-
-        up_resp_ready <= 1'b0;
-        pulse_bypass_resp(64'hBEEF_BEEF_0000_0001);
-        wait_up_resp(64'h0000_0000_0000_0000);
-        hold_up_resp_blocked(64'h0000_0000_0000_0000, 2);
-        up_resp_ready <= 1'b1;
-        @(posedge clk);
-        wait_resp_clear;
+        if (up_resp_valid !== 1'b0) begin
+            fail_now("core bypass handoff should not generate upstream response");
+        end
 
         mode_req <= 2'b01;
         wait_idle_mode(2'b01, 32'h0000_0000);
@@ -606,10 +601,12 @@ module tb_axi_llc_subsystem_handshake_contract;
             (last_bypass_wstrb !== 8'hf0)) begin
             fail_now("mode1 bypass metadata mismatch");
         end
-        pulse_bypass_resp(64'hCAFE_0000_0000_1111);
-        wait_up_resp(64'h0000_0000_0000_0000);
-        @(posedge clk);
-        wait_resp_clear;
+        if (up_req_ready !== 1'b1) begin
+            fail_now("mode1 bypass miss should release core after lower handoff");
+        end
+        if (up_resp_valid !== 1'b0) begin
+            fail_now("mode1 bypass miss completion belongs to compat/top");
+        end
 
         cache_before  = cache_req_count;
         bypass_before = bypass_req_count;
@@ -628,8 +625,6 @@ module tb_axi_llc_subsystem_handshake_contract;
             fail_now("cache read handshake metadata mismatch");
         end
 
-        cache_resp_id <= last_cache_id;
-        wait_cache_resp_ready_match;
         if (up_req_ready !== 1'b0) begin
             fail_now("up_req_ready should stay low while cache miss is outstanding");
         end

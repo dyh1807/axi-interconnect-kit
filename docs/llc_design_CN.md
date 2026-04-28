@@ -86,6 +86,8 @@ upstream read/write masters
 
 - 命中/失效语义上的“真实有效性”只以独立 `valid` 表为准
 - `meta.flags.VALID` 当前只作为兼容位保留，不再参与 hit / victim valid 判定
+- lookup 完成必须收到显式的 `lookup_in.valid_valid` 和完整 valid row；模型不能从
+  `meta.flags.VALID` 推导有效性
 - 外部 `valid` 宿主当前采用 regfile 风格 bit-array，并按 `way` 做 bit update
 - 当前 `meta` 已从原型早期的较宽表示压缩到 `4B/line`
 

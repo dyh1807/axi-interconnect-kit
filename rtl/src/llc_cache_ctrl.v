@@ -388,6 +388,13 @@ module llc_cache_ctrl #(
         end
     endfunction
 
+    function mshr_invalidate_victim_hazard_active;
+        input victim_dirty_value;
+        begin
+            mshr_invalidate_victim_hazard_active = victim_dirty_value;
+        end
+    endfunction
+
     function [READ_RESP_BITS-1:0] extract_read_response;
         input [ADDR_BITS-1:0] addr_value;
         input [LINE_BITS-1:0] line_value;
@@ -446,13 +453,8 @@ module llc_cache_ctrl #(
                 invalidate_line_mshr_pending_r = 1'b1;
             end
             if (mshr_valid_r[mshr_idx] &&
-                mshr_victim_hazard_active(
-                    mshr_is_write_r[mshr_idx],
-                    mshr_victim_dirty_r[mshr_idx],
-                    mshr_wb_done_r[mshr_idx],
-                    mshr_wb_issued_r[mshr_idx],
-                    mshr_refill_valid_r[mshr_idx],
-                    mshr_need_refill_r[mshr_idx]) &&
+                mshr_invalidate_victim_hazard_active(
+                    mshr_victim_dirty_r[mshr_idx]) &&
                 (line_align_addr(mshr_victim_addr_r[mshr_idx]) ==
                  line_align_addr(invalidate_line_addr))) begin
                 invalidate_line_victim_pending_r = 1'b1;

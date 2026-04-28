@@ -23,6 +23,7 @@ module tb_axi_llc_subsystem_directed;
     reg         up_resp_ready;
     wire [READ_RESP_BITS-1:0] up_resp_rdata;
     wire [ID_BITS-1:0] up_resp_id;
+    wire [1:0]  up_resp_code;
     wire        cache_req_valid;
     reg         cache_req_ready;
     wire        cache_req_write;
@@ -35,6 +36,7 @@ module tb_axi_llc_subsystem_directed;
     wire        cache_resp_ready;
     reg  [READ_RESP_BITS-1:0] cache_resp_rdata;
     reg  [ID_BITS-1:0] cache_resp_id;
+    reg  [1:0]  cache_resp_code;
     wire        bypass_req_valid;
     reg         bypass_req_ready;
     wire        bypass_req_write;
@@ -47,6 +49,7 @@ module tb_axi_llc_subsystem_directed;
     wire        bypass_resp_ready;
     reg  [READ_RESP_BITS-1:0] bypass_resp_rdata;
     reg  [ID_BITS-1:0] bypass_resp_id;
+    reg  [1:0]  bypass_resp_code;
     wire [1:0]  active_mode;
     wire [31:0] active_offset;
     wire        reconfig_busy;
@@ -66,6 +69,8 @@ module tb_axi_llc_subsystem_directed;
     reg [ID_BITS-1:0] bypass_next_id;
     reg [ID_BITS-1:0] cache_next_id;
     wire [63:0] up_resp_line;
+    wire [`AXI_LLC_MAX_OUTSTANDING-1:0] victim_line_valid;
+    wire [(`AXI_LLC_MAX_OUTSTANDING*32)-1:0] victim_line_addr;
 
     assign up_resp_line = up_resp_rdata[63:0];
 
@@ -110,6 +115,7 @@ module tb_axi_llc_subsystem_directed;
         .up_resp_ready         (up_resp_ready),
         .up_resp_rdata         (up_resp_rdata),
         .up_resp_id            (up_resp_id),
+        .up_resp_code          (up_resp_code),
         .cache_req_valid       (cache_req_valid),
         .cache_req_ready       (cache_req_ready),
         .cache_req_write       (cache_req_write),
@@ -122,6 +128,7 @@ module tb_axi_llc_subsystem_directed;
         .cache_resp_ready      (cache_resp_ready),
         .cache_resp_rdata      (cache_resp_rdata),
         .cache_resp_id         (cache_resp_id),
+        .cache_resp_code       (cache_resp_code),
         .bypass_req_valid      (bypass_req_valid),
         .bypass_req_ready      (bypass_req_ready),
         .bypass_req_write      (bypass_req_write),
@@ -134,6 +141,7 @@ module tb_axi_llc_subsystem_directed;
         .bypass_resp_ready     (bypass_resp_ready),
         .bypass_resp_rdata     (bypass_resp_rdata),
         .bypass_resp_id        (bypass_resp_id),
+        .bypass_resp_code      (bypass_resp_code),
         .invalidate_line_valid (invalidate_line_valid),
         .invalidate_line_addr  (invalidate_line_addr),
         .invalidate_line_accepted(invalidate_line_accepted),
@@ -143,7 +151,9 @@ module tb_axi_llc_subsystem_directed;
         .active_offset         (active_offset),
         .reconfig_busy         (reconfig_busy),
         .reconfig_state        (reconfig_state),
-        .config_error          (config_error)
+        .config_error          (config_error),
+        .victim_line_valid     (victim_line_valid),
+        .victim_line_addr      (victim_line_addr)
     );
 
     always #5 clk = ~clk;
@@ -181,7 +191,9 @@ module tb_axi_llc_subsystem_directed;
         input [7:0]  wstrb;
         input        bypass;
         output [63:0] rdata;
+        integer guard;
         begin
+            guard = 0;
             up_req_valid  <= 1'b1;
             up_req_write  <= is_write;
             up_req_addr   <= addr;
@@ -191,19 +203,87 @@ module tb_axi_llc_subsystem_directed;
             up_req_wstrb  <= wstrb;
             up_req_bypass <= bypass;
 
+            @(posedge clk);
             while (!up_req_ready) begin
                 @(posedge clk);
+                guard = guard + 1;
+                if (guard > 128) begin
+                    $display("tb_axi_llc_subsystem_directed FAIL: timeout waiting request ready mode=%0d addr=%h write=%b bypass=%b busy=%b state=%0d",
+                             active_mode, addr, is_write, bypass, reconfig_busy, reconfig_state);
+                    $finish;
+                end
             end
             @(posedge clk);
             up_req_valid <= 1'b0;
             up_req_id    <= {ID_BITS{1'b0}};
             up_req_total_size <= 8'd0;
 
+            guard = 0;
             while (!up_resp_valid) begin
                 @(posedge clk);
+                guard = guard + 1;
+                if (guard > 256) begin
+                    $display("tb_axi_llc_subsystem_directed FAIL: timeout waiting response mode=%0d addr=%h write=%b bypass=%b cache_req=%b bypass_req=%b",
+                             active_mode, addr, is_write, bypass, cache_req_valid, bypass_req_valid);
+                    $finish;
+                end
             end
             rdata = up_resp_line;
             @(posedge clk);
+        end
+    endtask
+
+    task do_bypass_handoff;
+        input        is_write;
+        input [31:0] addr;
+        input [7:0]  total_size;
+        input [63:0] wdata;
+        input [7:0]  wstrb;
+        input        bypass;
+        integer guard;
+        begin
+            guard = 0;
+            up_req_valid  <= 1'b1;
+            up_req_write  <= is_write;
+            up_req_addr   <= addr;
+            up_req_id     <= {ID_BITS{1'b0}};
+            up_req_total_size <= total_size;
+            up_req_wdata  <= wdata;
+            up_req_wstrb  <= wstrb;
+            up_req_bypass <= bypass;
+
+            @(posedge clk);
+            while (!up_req_ready) begin
+                @(posedge clk);
+                guard = guard + 1;
+                if (guard > 128) begin
+                    $display("tb_axi_llc_subsystem_directed FAIL: timeout waiting bypass handoff request ready");
+                    $finish;
+                end
+            end
+            @(posedge clk);
+            up_req_valid <= 1'b0;
+            up_req_id    <= {ID_BITS{1'b0}};
+            up_req_total_size <= 8'd0;
+
+            guard = 0;
+            while (!bypass_req_valid) begin
+                @(posedge clk);
+                guard = guard + 1;
+                if (guard > 256) begin
+                    $display("tb_axi_llc_subsystem_directed FAIL: timeout waiting bypass handoff");
+                    $finish;
+                end
+            end
+            if ((bypass_req_addr !== addr) || (bypass_req_write !== is_write)) begin
+                $display("tb_axi_llc_subsystem_directed FAIL: bypass handoff metadata mismatch");
+                $finish;
+            end
+            @(posedge clk);
+            if (up_resp_valid !== 1'b0) begin
+                $display("tb_axi_llc_subsystem_directed FAIL: core bypass handoff should not produce response");
+                $finish;
+            end
         end
     endtask
 
@@ -217,6 +297,8 @@ module tb_axi_llc_subsystem_directed;
             cache_resp_rdata    <= {READ_RESP_BITS{1'b0}};
             bypass_resp_id      <= {ID_BITS{1'b0}};
             cache_resp_id       <= {ID_BITS{1'b0}};
+            bypass_resp_code    <= 2'b00;
+            cache_resp_code     <= 2'b00;
             bypass_next_id      <= {ID_BITS{1'b0}};
             cache_next_id       <= {ID_BITS{1'b0}};
         end else begin
@@ -236,11 +318,14 @@ module tb_axi_llc_subsystem_directed;
             cache_resp_valid  <= 1'b0;
             bypass_resp_id    <= {ID_BITS{1'b0}};
             cache_resp_id     <= {ID_BITS{1'b0}};
+            bypass_resp_code  <= 2'b00;
+            cache_resp_code   <= 2'b00;
 
             if (bypass_resp_pending) begin
                 bypass_resp_valid   <= 1'b1;
                 bypass_resp_rdata   <= pack_read_resp_line(bypass_next_data);
                 bypass_resp_id      <= bypass_next_id;
+                bypass_resp_code    <= 2'b00;
                 bypass_resp_pending <= 1'b0;
             end
 
@@ -248,6 +333,7 @@ module tb_axi_llc_subsystem_directed;
                 cache_resp_valid   <= 1'b1;
                 cache_resp_rdata   <= pack_read_resp_line(cache_next_data);
                 cache_resp_id      <= cache_next_id;
+                cache_resp_code    <= 2'b00;
                 cache_resp_pending <= 1'b0;
             end
         end
@@ -272,9 +358,11 @@ module tb_axi_llc_subsystem_directed;
         cache_resp_valid      = 1'b0;
         cache_resp_rdata      = {READ_RESP_BITS{1'b0}};
         cache_resp_id         = {ID_BITS{1'b0}};
+        cache_resp_code       = 2'b00;
         bypass_resp_valid     = 1'b0;
         bypass_resp_rdata     = {READ_RESP_BITS{1'b0}};
         bypass_resp_id        = {ID_BITS{1'b0}};
+        bypass_resp_code      = 2'b00;
         bypass_resp_pending   = 1'b0;
         cache_resp_pending    = 1'b0;
         bypass_next_data      = 64'h0;
@@ -309,11 +397,7 @@ module tb_axi_llc_subsystem_directed;
         mode_req              <= 2'b00;
         llc_mapped_offset_req <= 32'h0000_1000;
         wait_idle_mode(2'b00, 32'h0000_1000);
-        do_request(1'b0, 32'h0000_3000, 8'd7, 64'h0, 8'h00, 1'b0, tmp_rdata);
-        if (tmp_rdata !== 64'hB0F0_0000_0000_0000) begin
-            $display("tb_axi_llc_subsystem_directed FAIL: mode0 should route to bypass");
-            $finish;
-        end
+        do_bypass_handoff(1'b0, 32'h0000_3000, 8'd7, 64'h0, 8'h00, 1'b0);
 
         mode_req              <= 2'b01;
         llc_mapped_offset_req <= 32'h0000_1000;

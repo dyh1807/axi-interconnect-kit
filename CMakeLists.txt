@@ -299,7 +299,7 @@ if(AXI_KIT_BUILD_TESTS)
       axi_interconnect/axi_interconnect_llc_axi4_test.cpp
   )
   target_compile_definitions(axi_interconnect_llc_axi4_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
-  target_link_libraries(axi_interconnect_llc_axi4_test PRIVATE axi_kit_axi4_test)
+  target_link_libraries(axi_interconnect_llc_axi4_test PRIVATE axi_kit_axi4_test_32b)
 
   add_executable(mmio_router_axi4_test
       mmio/mmio_router_axi4_test.cpp

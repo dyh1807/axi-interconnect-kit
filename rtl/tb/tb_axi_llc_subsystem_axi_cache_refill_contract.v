@@ -159,6 +159,19 @@ module tb_axi_llc_subsystem_axi_cache_refill_contract;
         end
     end
 
+`ifdef DEBUG_REFILL_CONTRACT
+    always @(posedge clk) begin
+        if (axi_rvalid && axi_rready) begin
+            $display("  r_hs data=0x%0h last=%0b done0=%0d total0=%0d complete0=%0b",
+                     axi_rdata,
+                     axi_rlast,
+                     dut.bridge.rd_beats_done_r[0],
+                     dut.bridge.rd_total_beats_r[0],
+                     dut.bridge.rd_complete_r[0]);
+        end
+    end
+`endif
+
     axi_llc_subsystem #(
         .ADDR_BITS         (ADDR_BITS),
         .ID_BITS           (ID_BITS),
@@ -352,30 +365,31 @@ module tb_axi_llc_subsystem_axi_cache_refill_contract;
     task drive_r_beat;
         input [AXI_DATA_BITS-1:0] beat_data;
         input                     beat_last;
-        integer start_r_count;
         integer timeout;
-        reg     handshake_seen;
         begin
+            timeout = 40;
+            while (!axi_rready && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("AXI R ready timeout");
+            end
+
+            @(negedge clk);
             axi_rid = seen_arid;
             axi_rdata = beat_data;
             axi_rresp = 2'b00;
             axi_rlast = beat_last;
             axi_rvalid = 1'b1;
-            start_r_count = r_count;
-            handshake_seen = 1'b0;
-            timeout = 40;
-            while ((timeout > 0) && !handshake_seen) begin
-                @(posedge clk);
-                #1;
-                if (r_count != start_r_count) begin
-                    handshake_seen = 1'b1;
-                end
-                timeout = timeout - 1;
-            end
-            if (!handshake_seen) begin
+
+            @(posedge clk);
+            #1;
+            if (!axi_rready) begin
                 fail_now("AXI R handshake timeout");
             end
-            #1;
+
+            @(negedge clk);
             axi_rvalid = 1'b0;
             axi_rlast = 1'b0;
             axi_rdata = {AXI_DATA_BITS{1'b0}};
@@ -398,6 +412,8 @@ module tb_axi_llc_subsystem_axi_cache_refill_contract;
                 fail_now("upstream read response id mismatch");
             end
             if (read_line !== expected_line) begin
+                $display("  actual = 0x%0h", read_line);
+                $display("  expect = 0x%0h", expected_line);
                 fail_now("two-beat refill assembly mismatch");
             end
             @(posedge clk);

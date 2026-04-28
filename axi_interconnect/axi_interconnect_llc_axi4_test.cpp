@@ -417,6 +417,11 @@ bool test_partial_cacheable_write_miss_refill_merge_and_dirty_eviction() {
     return false;
   }
 
+  if (!wait_mem_word(env, line_a + 8, write_value)) {
+    std::printf("FAIL: dirty victim writeback did not reach backing memory got=0x%x\n",
+                read_mem_word(line_a + 8));
+    return false;
+  }
   if (read_mem_word(line_a + 0) != 0x1000 || read_mem_word(line_a + 4) != 0x1001 ||
       read_mem_word(line_a + 8) != write_value || read_mem_word(line_a + 12) != 0x1003) {
     std::printf("FAIL: dirty victim writeback corrupted backing memory w0=0x%x w1=0x%x w2=0x%x w3=0x%x\n",
@@ -822,6 +827,11 @@ bool test_bypass_write_hit_preserves_dirty_on_eviction() {
     return false;
   }
 
+  if (!wait_mem_word(env, line_a, 0xA100)) {
+    std::printf("FAIL: evicted dirty line A writeback did not reach memory mem0=0x%08x\n",
+                read_mem_word(line_a));
+    return false;
+  }
   if (read_mem_word(line_a) != 0xA100 || read_mem_word(addr_a) != write_value) {
     std::printf("FAIL: evicted dirty line A did not write back latest data mem0=0x%08x mem4=0x%08x\n",
                 read_mem_word(line_a), read_mem_word(addr_a));

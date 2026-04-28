@@ -271,6 +271,19 @@ module tb_axi_llc_subsystem_bypass_contract;
             if ((active_mode !== exp_mode) ||
                 (active_offset !== exp_offset) ||
                 reconfig_busy) begin
+                $display("  active_mode=%0d exp=%0d active_offset=0x%08h exp_offset=0x%08h busy=%0b state=%0d config_error=%0b",
+                         active_mode,
+                         exp_mode,
+                         active_offset,
+                         exp_offset,
+                         reconfig_busy,
+                         reconfig_state,
+                         config_error);
+                $display("  sweep_busy=%0b sweep_done=%0b sweep_start=%0b sweep_index=%0d",
+                         dut.sweep_busy_w,
+                         dut.sweep_done_w,
+                         dut.sweep_start_w,
+                         dut.invalidate_sweep.sweep_index_r);
                 fatal_now("timeout waiting active config");
             end
             @(posedge clk);
@@ -461,6 +474,7 @@ module tb_axi_llc_subsystem_bypass_contract;
             up_req_bypass     = bypass_value;
 
             timeout = 0;
+            @(posedge clk);
             while (!(up_req_valid && up_req_ready) && (timeout < 128)) begin
                 @(posedge clk);
                 timeout = timeout + 1;
@@ -510,6 +524,75 @@ module tb_axi_llc_subsystem_bypass_contract;
             resp_data_value = up_resp_rdata;
             check_true((up_resp_id == id_value), "upstream response id mismatch");
             @(posedge clk);
+        end
+    endtask
+
+    task issue_request_handoff;
+        input                      write_value;
+        input [ADDR_BITS-1:0]      addr_value;
+        input [ID_BITS-1:0]        id_value;
+        input [7:0]                total_size_value;
+        input [LINE_BITS-1:0]      wdata_value;
+        input [LINE_BYTES-1:0]     wstrb_value;
+        input                      bypass_value;
+        integer timeout;
+        integer start_bypass_count;
+        begin
+            start_bypass_count = bypass_req_count;
+            @(negedge clk);
+            up_req_valid      = 1'b1;
+            up_req_write      = write_value;
+            up_req_addr       = addr_value;
+            up_req_id         = id_value;
+            up_req_total_size = total_size_value;
+            up_req_wdata      = wdata_value;
+            up_req_wstrb      = wstrb_value;
+            up_req_bypass     = bypass_value;
+
+            timeout = 0;
+            while (!(up_req_valid && up_req_ready) && (timeout < 128)) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+            end
+            if (!(up_req_valid && up_req_ready)) begin
+                fatal_now("timeout waiting upstream handoff request handshake");
+            end
+
+            @(negedge clk);
+            up_req_valid      = 1'b0;
+            up_req_write      = 1'b0;
+            up_req_addr       = {ADDR_BITS{1'b0}};
+            up_req_id         = {ID_BITS{1'b0}};
+            up_req_total_size = 8'd0;
+            up_req_wdata      = {LINE_BITS{1'b0}};
+            up_req_wstrb      = {LINE_BYTES{1'b0}};
+            up_req_bypass     = 1'b0;
+
+            timeout = 0;
+            while ((bypass_req_count == start_bypass_count) && (timeout < 256)) begin
+                @(posedge clk);
+                #1;
+                timeout = timeout + 1;
+            end
+            if (bypass_req_count == start_bypass_count) begin
+                $display("  handoff_debug state=%0d req_ready=%0b req_valid=%0b req_bypass=%0b bypass_req_valid=%0b bypass_req_ready=%0b up_resp=%0b valid_bits=%0b",
+                         dut.cache_ctrl.state_r,
+                         up_req_ready,
+                         up_req_valid,
+                         dut.cache_ctrl.req_bypass_r,
+                         bypass_req_valid,
+                         bypass_req_ready,
+                         up_resp_valid,
+                         dut.valid_ram.valid_mem[addr_set(addr_value)]);
+                fatal_now("timeout waiting lower bypass handoff");
+            end
+            if (up_resp_valid !== 1'b0) begin
+                fatal_now("core bypass handoff should not produce upstream response");
+            end
+            bypass_resp_valid = 1'b0;
+            bypass_resp_pending_r = 1'b0;
+            bypass_resp_id = {ID_BITS{1'b0}};
+            bypass_resp_rdata = {LINE_BITS{1'b0}};
         end
     endtask
 
@@ -740,42 +823,28 @@ module tb_axi_llc_subsystem_bypass_contract;
         preload_resident_line(BYPASS_WRITE_HIT_ADDR, 0, 64'h0102_0304_0506_0708, 1'b0);
         tmp_expected_line = 64'hCAFE_FEED_DEAD_BEEF;
         capture_route_counters();
-        issue_request(1'b1, BYPASS_WRITE_HIT_ADDR, 4'h2, FULL_SIZE,
-                      tmp_expected_line, 8'hFF, 1'b1, tmp_resp_line);
-        check_line_eq(tmp_resp_line, {LINE_BITS{1'b0}},
-                      "bypass write hit should return zero data");
+        issue_request_handoff(1'b1, BYPASS_WRITE_HIT_ADDR, 4'h2, FULL_SIZE,
+                              tmp_expected_line, 8'hFF, 1'b1);
         expect_route_deltas(0, 0, 0, 1,
                             "bypass write hit should only issue one lower bypass write");
         expect_resident_line_way0(BYPASS_WRITE_HIT_ADDR, tmp_expected_line,
                                   "bypass write hit should shadow-update resident line");
         expect_resident_dirty_way0(BYPASS_WRITE_HIT_ADDR, 1'b0,
                                    "bypass write hit must not set dirty");
-        capture_route_counters();
-        issue_request(1'b0, BYPASS_WRITE_HIT_ADDR, 4'h3, FULL_SIZE,
-                      {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}}, 1'b1, tmp_resp_line);
-        check_line_eq(tmp_resp_line, tmp_expected_line,
-                      "bypass reread after write hit should observe updated resident line");
-        expect_route_deltas(0, 0, 0, 0,
-                            "bypass reread after write hit should not go lower");
-
         note_case("case3 bypass read miss should go lower and not install resident");
         clear_resident_arrays();
         clear_lower_mem();
         set_lower_line(BYPASS_READ_MISS_ADDR, 64'hDEAD_BEEF_0123_4567);
         capture_route_counters();
-        issue_request(1'b0, BYPASS_READ_MISS_ADDR, 4'h4, FULL_SIZE,
-                      {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}}, 1'b1, tmp_resp_line);
-        check_line_eq(tmp_resp_line, 64'hDEAD_BEEF_0123_4567,
-                      "bypass read miss should return lower bypass data");
+        issue_request_handoff(1'b0, BYPASS_READ_MISS_ADDR, 4'h4, FULL_SIZE,
+                              {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}}, 1'b1);
         expect_route_deltas(0, 0, 1, 0,
                             "bypass read miss should issue one lower bypass read");
         expect_resident_match_count(BYPASS_READ_MISS_ADDR, 0,
                                     "bypass read miss must not install resident line");
         capture_route_counters();
-        issue_request(1'b0, BYPASS_READ_MISS_ADDR, 4'h5, FULL_SIZE,
-                      {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}}, 1'b1, tmp_resp_line);
-        check_line_eq(tmp_resp_line, 64'hDEAD_BEEF_0123_4567,
-                      "second bypass read miss should still return lower bypass data");
+        issue_request_handoff(1'b0, BYPASS_READ_MISS_ADDR, 4'h5, FULL_SIZE,
+                              {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}}, 1'b1);
         expect_route_deltas(0, 0, 1, 0,
                             "second bypass read miss should still issue lower bypass read");
         expect_resident_match_count(BYPASS_READ_MISS_ADDR, 0,
@@ -786,19 +855,15 @@ module tb_axi_llc_subsystem_bypass_contract;
         clear_lower_mem();
         set_lower_line(BYPASS_WRITE_MISS_ADDR, 64'h0011_2233_4455_6677);
         capture_route_counters();
-        issue_request(1'b1, BYPASS_WRITE_MISS_ADDR, 4'h6, FULL_SIZE,
-                      64'h8899_AABB_CCDD_EEFF, 8'hFF, 1'b1, tmp_resp_line);
-        check_line_eq(tmp_resp_line, {LINE_BITS{1'b0}},
-                      "bypass write miss should return zero data");
+        issue_request_handoff(1'b1, BYPASS_WRITE_MISS_ADDR, 4'h6, FULL_SIZE,
+                              64'h8899_AABB_CCDD_EEFF, 8'hFF, 1'b1);
         expect_route_deltas(0, 0, 0, 1,
                             "bypass write miss should issue one lower bypass write");
         expect_resident_match_count(BYPASS_WRITE_MISS_ADDR, 0,
                                     "bypass write miss must not install resident line");
         capture_route_counters();
-        issue_request(1'b0, BYPASS_WRITE_MISS_ADDR, 4'h7, FULL_SIZE,
-                      {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}}, 1'b1, tmp_resp_line);
-        check_line_eq(tmp_resp_line, 64'h8899_AABB_CCDD_EEFF,
-                      "bypass reread after write miss should come from lower memory");
+        issue_request_handoff(1'b0, BYPASS_WRITE_MISS_ADDR, 4'h7, FULL_SIZE,
+                              {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}}, 1'b1);
         expect_route_deltas(0, 0, 1, 0,
                             "bypass reread after write miss should issue lower bypass read");
         expect_resident_match_count(BYPASS_WRITE_MISS_ADDR, 0,

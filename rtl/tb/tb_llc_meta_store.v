@@ -36,6 +36,27 @@ module tb_llc_meta_store;
 
     always #5 clk = ~clk;
 
+    task wait_read_valid;
+        integer wait_cycles;
+        reg seen;
+        begin
+            seen = 1'b0;
+            for (wait_cycles = 0; wait_cycles < 16; wait_cycles = wait_cycles + 1) begin
+                #1;
+                if (rd_valid) begin
+                    seen = 1'b1;
+                    wait_cycles = 16;
+                end else begin
+                    @(posedge clk);
+                end
+            end
+            if (!seen || busy) begin
+                $display("tb_llc_meta_store FAIL: expected valid read after write");
+                $finish;
+            end
+        end
+    endtask
+
     initial begin
         clk         = 1'b0;
         rst_n       = 1'b0;
@@ -71,11 +92,7 @@ module tb_llc_meta_store;
 
         @(posedge clk);
         rd_en <= 1'b0;
-        #1;
-        if (!rd_valid || busy) begin
-            $display("tb_llc_meta_store FAIL: expected valid read after write");
-            $finish;
-        end
+        wait_read_valid();
         if (rd_row[23:0] !== 24'h00AA11 || rd_row[71:48] !== 24'hBB22CC) begin
             $display("tb_llc_meta_store FAIL: masked meta update mismatch");
             $finish;

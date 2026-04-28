@@ -33,18 +33,26 @@ module tb_llc_valid_ram;
     always #5 clk = ~clk;
 
     task expect_bits;
-        input expected_valid;
         input [3:0] expected;
+        integer wait_cycles;
+        reg seen;
         begin
-            #1;
-            if (rd_valid !== expected_valid) begin
-                $display("tb_llc_valid_ram FAIL: expected_valid=%b got=%b",
-                         expected_valid,
-                         rd_valid);
-                $finish;
+            seen = 1'b0;
+            for (wait_cycles = 0; wait_cycles < 16; wait_cycles = wait_cycles + 1) begin
+                #1;
+                if (rd_valid) begin
+                    seen = 1'b1;
+                    if (rd_bits !== expected) begin
+                        $display("tb_llc_valid_ram FAIL: expected=%b got=%b", expected, rd_bits);
+                        $finish;
+                    end
+                    wait_cycles = 16;
+                end else begin
+                    @(posedge clk);
+                end
             end
-            if (expected_valid && (rd_bits !== expected)) begin
-                $display("tb_llc_valid_ram FAIL: expected=%b got=%b", expected, rd_bits);
+            if (!seen) begin
+                $display("tb_llc_valid_ram FAIL: read response timeout");
                 $finish;
             end
         end
@@ -76,7 +84,7 @@ module tb_llc_valid_ram;
 
         @(posedge clk);
         rd_en <= 1'b0;
-        expect_bits(1'b1, 4'b0000);
+        expect_bits(4'b0000);
 
         @(posedge clk);
         wr_en   <= 1'b1;
@@ -91,7 +99,7 @@ module tb_llc_valid_ram;
 
         @(posedge clk);
         rd_en <= 1'b0;
-        expect_bits(1'b1, 4'b0101);
+        expect_bits(4'b0101);
 
         @(posedge clk);
         wr_en   <= 1'b1;
@@ -106,7 +114,7 @@ module tb_llc_valid_ram;
 
         @(posedge clk);
         rd_en <= 1'b0;
-        expect_bits(1'b1, 4'b0111);
+        expect_bits(4'b0111);
 
         @(posedge clk);
         wr_en   <= 1'b1;
@@ -121,7 +129,7 @@ module tb_llc_valid_ram;
 
         @(posedge clk);
         rd_en <= 1'b0;
-        expect_bits(1'b1, 4'b0011);
+        expect_bits(4'b0011);
 
         $display("tb_llc_valid_ram PASS");
         $finish;

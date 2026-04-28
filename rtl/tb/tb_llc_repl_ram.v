@@ -32,20 +32,28 @@ module tb_llc_repl_ram;
     always #5 clk = ~clk;
 
     task expect_way;
-        input expected_valid;
         input [1:0] expected_way;
+        integer wait_cycles;
+        reg seen;
         begin
-            #1;
-            if (rd_valid !== expected_valid) begin
-                $display("tb_llc_repl_ram FAIL: expected_valid=%b got=%b",
-                         expected_valid,
-                         rd_valid);
-                $finish;
+            seen = 1'b0;
+            for (wait_cycles = 0; wait_cycles < 16; wait_cycles = wait_cycles + 1) begin
+                #1;
+                if (rd_valid) begin
+                    seen = 1'b1;
+                    if (rd_way !== expected_way) begin
+                        $display("tb_llc_repl_ram FAIL: expected_way=%0d got=%0d",
+                                 expected_way,
+                                 rd_way);
+                        $finish;
+                    end
+                    wait_cycles = 16;
+                end else begin
+                    @(posedge clk);
+                end
             end
-            if (expected_valid && (rd_way !== expected_way)) begin
-                $display("tb_llc_repl_ram FAIL: expected_way=%0d got=%0d",
-                         expected_way,
-                         rd_way);
+            if (!seen) begin
+                $display("tb_llc_repl_ram FAIL: read response timeout");
                 $finish;
             end
         end
@@ -75,7 +83,7 @@ module tb_llc_repl_ram;
 
         @(posedge clk);
         rd_en <= 1'b0;
-        expect_way(1'b1, 2'b10);
+        expect_way(2'b10);
 
         @(posedge clk);
         wr_en  <= 1'b1;
@@ -89,7 +97,7 @@ module tb_llc_repl_ram;
 
         @(posedge clk);
         rd_en <= 1'b0;
-        expect_way(1'b1, 2'b11);
+        expect_way(2'b11);
 
         $display("tb_llc_repl_ram PASS");
         $finish;

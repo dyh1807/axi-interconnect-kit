@@ -21,7 +21,7 @@ module tb_axi_llc_subsystem_id_contract;
     localparam [MODE_BITS-1:0] MODE_OFF    = 2'b00;
     localparam [MODE_BITS-1:0] MODE_CACHE  = 2'b01;
     localparam [MODE_BITS-1:0] MODE_MAPPED = 2'b10;
-    localparam [ID_BITS-1:0]   CACHE_MEM_ID = {{(ID_BITS-1){1'b0}}, 1'b1};
+    localparam [ID_BITS-1:0]   CACHE_MEM_ID = 4'h3;
 
     localparam [ADDR_BITS-1:0] CACHE_ADDR  = 32'h0000_0000;
     localparam [ADDR_BITS-1:0] BYPASS_ADDR = 32'h0000_0120;
@@ -508,8 +508,19 @@ module tb_axi_llc_subsystem_id_contract;
         issue_request(1'b0, BYPASS_ADDR, 4'h9, 8'd7, {LINE_BITS{1'b0}}, {LINE_BYTES{1'b0}}, 1'b0);
         wait_for_bypass_request(count_before, BYPASS_ADDR, 4'h9);
         hold_wrong_bypass_response(4'h8, 64'hDEAD_BEEF_0000_0001, 2);
-        send_bypass_response(4'h9, 64'hDEAD_BEEF_0000_0002);
-        wait_for_upstream_response(4'h9, 64'hDEAD_BEEF_0000_0002);
+        bypass_resp_valid = 1'b1;
+        bypass_resp_id    = 4'h9;
+        bypass_resp_rdata = 64'hDEAD_BEEF_0000_0002;
+        wait_cycles(2);
+        if (bypass_resp_ready !== 1'b0) begin
+            fail_now("core bypass completion should be owned by compat/top");
+        end
+        if (up_resp_valid !== 1'b0) begin
+            fail_now("core bypass handoff should not create upstream response");
+        end
+        bypass_resp_valid = 1'b0;
+        bypass_resp_id    = {ID_BITS{1'b0}};
+        bypass_resp_rdata = {LINE_BITS{1'b0}};
 
         mode_req              = MODE_CACHE;
         llc_mapped_offset_req = {ADDR_BITS{1'b0}};
