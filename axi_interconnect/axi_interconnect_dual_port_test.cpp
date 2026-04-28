@@ -110,6 +110,45 @@ bool test_mmio_read_routes_to_port1() {
   return true;
 }
 
+bool test_mmio_large_read_blocks() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+  auto &req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  req.valid = true;
+  req.addr = 0x10000000u;
+  req.total_size = 63;
+  req.id = 5;
+  dut.comb_inputs();
+
+  if (dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid || req.ready) {
+    std::printf("FAIL: unsupported MMIO cacheline read was accepted\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_mmio_large_write_blocks() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+  auto &req = dut.write_ports[axi_interconnect::MASTER_DCACHE_W].req;
+  req.valid = true;
+  req.addr = 0x10000000u;
+  req.total_size = 63;
+  req.id = 6;
+  req.wdata[0] = 0x55667788u;
+  req.wstrb = 0xFu;
+  dut.comb_inputs();
+
+  if (dut.axi_ddr_io.aw.awvalid || dut.axi_mmio_io.aw.awvalid ||
+      dut.axi_ddr_io.w.wvalid || dut.axi_mmio_io.w.wvalid || req.ready) {
+    std::printf("FAIL: unsupported MMIO cacheline write was accepted\n");
+    return false;
+  }
+  return true;
+}
+
 bool test_same_line_write_waits_for_read_return() {
   axi_interconnect::AXI_Interconnect dut;
   init_dut(dut);
@@ -174,6 +213,8 @@ int main() {
 
   run("DDR read routes to port0", test_ddr_read_routes_to_port0);
   run("MMIO read routes to port1", test_mmio_read_routes_to_port1);
+  run("MMIO cacheline read blocks", test_mmio_large_read_blocks);
+  run("MMIO cacheline write blocks", test_mmio_large_write_blocks);
   run("same-line AW waits for R", test_same_line_write_waits_for_read_return);
 
   std::printf("dual-port routing results: %d passed, %d failed\n", passed,

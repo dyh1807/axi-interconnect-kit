@@ -135,10 +135,20 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 
 - 地址 `>= CONFIG_AXI_KIT_DDR_BASE` 走 DDR 口；parent simulator profile 中该值为 `0x4000_0000`。
 - active LLC mapped-window 仍优先走 LLC 本地映射。
-- 其它地址走 MMIO 口，并强制为 32-bit、1 beat 事务。
+- 其它地址走 MMIO 口，并只接受 32-bit、1 beat 事务；MMIO 大读写请求会 backpressure，
+  不会被静默截断为 4B。
 - DDR 口小于 32B 的请求对齐到 32B beat，读响应在 interconnect 内截取，写请求同步移位 `wdata/wstrb`。
 - DDR 口 64B cacheline 维持 2 beat、同一 AXI transaction。
 - 同 line AR/AW hazard gate 已加入，覆盖已发 AR、latched AR、pending R、latched AW、active W、pending B。
+
+当前 C++ 仍不是最终的“集成双外部 AXI 口”调度结构：
+
+- `axi_ddr_io` 和 `axi_mmio_io` 已经拆开，地址分类和事务形状已经按双口语义运行。
+- 但 AR/AW/W 调度仍保留单口时代的全局 latch/state，例如单个 `ar_latched`、单个
+  `aw_latched`、单个 `w_active/w_current`。
+- 因此当前 C++ 每周期仍最多发出一组 AR 或 AW/W，尚不能表达 DDR 与 MMIO 同周期并行
+  发射。下一步应先把 C++ scheduler 拆成 per-port issue/latch，同时保持共享
+  read/write outstanding 上限，再迁移 RTL 顶层和 EC harness。
 
 ## Simulator Reset PC 约束
 
@@ -154,7 +164,8 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 
 已通过的 targeted tests：
 
-- `axi_interconnect_dual_port_test`：3 passed, 0 failed。
+- `axi_interconnect_dual_port_test`：5 passed, 0 failed。
+  覆盖 DDR/MMIO 路由、MMIO 大读写阻塞、同 line AR/AW hazard gate。
 - `axi_interconnect_llc_axi4_test`：29 passed, 0 failed。
 
 已通过的 RTL VCS targeted tests：

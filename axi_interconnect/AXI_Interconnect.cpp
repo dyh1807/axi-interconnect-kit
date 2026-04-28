@@ -28,6 +28,7 @@ constexpr uint8_t kDownstreamBeatWords =
     kDownstreamBeatBytes / static_cast<uint8_t>(sizeof(uint32_t));
 constexpr uint8_t kDownstreamAxiSize = sim_ddr::AXI_SIZE_CODE;
 constexpr uint8_t kMmioAxiSize = 2u; // 32-bit single-beat MMIO.
+constexpr uint8_t kMmioTransactionSize = 3u;
 constexpr uint8_t kUpstreamStrbBytes =
     (MAX_WRITE_TRANSACTION_BYTES + 7u) / 8u;
 #ifndef AXI_KIT_DDR_BASE
@@ -101,6 +102,14 @@ bool focus_write_line(uint32_t addr) {
   const uint32_t line_addr =
       addr & ~static_cast<uint32_t>(MAX_WRITE_TRANSACTION_BYTES - 1u);
   return llc_focus_line(line_addr);
+}
+
+bool mmio_request_supported(uint8_t total_size) {
+  return total_size == kMmioTransactionSize;
+}
+
+bool downstream_request_supported(DownstreamPort port, uint8_t total_size) {
+  return port != DownstreamPort::MMIO || mmio_request_supported(total_size);
 }
 
 bool focus_read_txn(const ReadPendingTxn &txn) {
@@ -295,7 +304,7 @@ DownstreamReadIssue make_downstream_read_issue(DownstreamPort port,
   out.extract_from_aligned_beat = false;
   const uint16_t bytes = static_cast<uint16_t>(total_size) + 1u;
   if (port == DownstreamPort::MMIO) {
-    out.total_size = 3u;
+    out.total_size = kMmioTransactionSize;
     return out;
   }
   if (force_line_aligned) {
@@ -337,7 +346,7 @@ DownstreamWriteIssue make_downstream_write_issue(DownstreamPort port,
   out.wstrb = wstrb;
   const uint16_t bytes = static_cast<uint16_t>(total_size) + 1u;
   if (port == DownstreamPort::MMIO) {
-    out.total_size = 3u;
+    out.total_size = kMmioTransactionSize;
     return out;
   }
   if (force_line_aligned) {
@@ -1134,14 +1143,28 @@ void AXI_Interconnect::prepare_llc_inputs(bool sample_upstream_ready) {
 
   llc.io.ext_in.mem.prefetch_allow =
       !any_upstream_capture_pending && !any_upstream_req_visible;
+  const uint8_t llc_mem_read_req_size =
+      static_cast<uint8_t>(llc.io.ext_out.mem.read_req_size);
+  const DownstreamPort llc_mem_read_req_port = classify_downstream_port(
+      llc.io.ext_out.mem.read_req_addr, llc_mem_read_req_size);
+  const bool llc_mem_read_req_supported =
+      downstream_request_supported(llc_mem_read_req_port, llc_mem_read_req_size);
   llc.io.ext_in.mem.read_req_ready =
       can_issue_llc_read_req() &&
       (!llc.io.ext_out.mem.read_req_valid ||
-       can_issue_external_read(llc.io.ext_out.mem.read_req_addr));
+       (llc_mem_read_req_supported &&
+        can_issue_external_read(llc.io.ext_out.mem.read_req_addr)));
+  const uint8_t llc_mem_write_req_size =
+      static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size);
+  const DownstreamPort llc_mem_write_req_port = classify_downstream_port(
+      llc.io.ext_out.mem.write_req_addr, llc_mem_write_req_size);
+  const bool llc_mem_write_req_supported = downstream_request_supported(
+      llc_mem_write_req_port, llc_mem_write_req_size);
   llc.io.ext_in.mem.write_req_ready =
       !w_active && !aw_latched.valid && !llc_mem_write_resp_valid_ &&
       (!llc.io.ext_out.mem.write_req_valid ||
-       can_issue_external_write(llc.io.ext_out.mem.write_req_addr));
+       (llc_mem_write_req_supported &&
+        can_issue_external_write(llc.io.ext_out.mem.write_req_addr)));
   llc.io.ext_in.mem.write_resp_valid = llc_mem_write_resp_valid_;
   llc.io.ext_in.mem.write_resp = llc_mem_write_resp_;
 
@@ -1312,35 +1335,39 @@ void AXI_Interconnect::comb_read_arbiter() {
   if (llc_enabled()) {
     if (llc.io.ext_out.mem.read_req_valid && can_issue_llc_read_req() &&
         can_issue_external_read(llc.io.ext_out.mem.read_req_addr)) {
-      const auto issue = make_downstream_read_issue(
-          classify_downstream_port(llc.io.ext_out.mem.read_req_addr,
-                                   llc.io.ext_out.mem.read_req_size),
-          llc.io.ext_out.mem.read_req_addr,
-          static_cast<uint8_t>(llc.io.ext_out.mem.read_req_size),
-          llc_config.line_bytes,
-          llc.io.ext_out.mem.read_req_mode2_ddr_aligned);
-      if (llc_focus_line(llc.io.ext_out.mem.read_req_addr)) {
-        std::printf(
-            "[AXI-LLC][AR-ISSUE] cyc=%lld addr=0x%08x slot=%u size=%u\n",
-            sim_time, issue.addr,
-            static_cast<unsigned>(llc.io.ext_out.mem.read_req_id),
-            static_cast<unsigned>(issue.total_size));
+      const uint8_t issue_size =
+          static_cast<uint8_t>(llc.io.ext_out.mem.read_req_size);
+      const auto issue_port = classify_downstream_port(
+          llc.io.ext_out.mem.read_req_addr, issue_size);
+      if (downstream_request_supported(issue_port, issue_size)) {
+        const auto issue = make_downstream_read_issue(
+            issue_port, llc.io.ext_out.mem.read_req_addr, issue_size,
+            llc_config.line_bytes,
+            llc.io.ext_out.mem.read_req_mode2_ddr_aligned);
+        if (llc_focus_line(llc.io.ext_out.mem.read_req_addr)) {
+          std::printf(
+              "[AXI-LLC][AR-ISSUE] cyc=%lld addr=0x%08x slot=%u size=%u\n",
+              sim_time, issue.addr,
+              static_cast<unsigned>(llc.io.ext_out.mem.read_req_id),
+              static_cast<unsigned>(issue.total_size));
+        }
+        ar_from_llc_c = true;
+        ar_llc_mem_id_c = llc.io.ext_out.mem.read_req_id;
+        ar_llc_resp_extract_from_aligned_beat_c =
+            issue.extract_from_aligned_beat;
+        ar_llc_upstream_addr_c = llc.io.ext_out.mem.read_req_addr;
+        ar_llc_upstream_total_size_c = llc.io.ext_out.mem.read_req_size;
+        ar_port_c = issue.port;
+        auto &ar_io = downstream_io(issue.port);
+        ar_io.ar.arvalid = true;
+        ar_io.ar.araddr = issue.addr;
+        ar_io.ar.arlen = calc_burst_len(issue.total_size);
+        ar_io.ar.arsize = issue.port == DownstreamPort::MMIO
+                              ? kMmioAxiSize
+                              : kDownstreamAxiSize;
+        ar_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
+        ar_io.ar.arid = alloc_read_axi_id();
       }
-      ar_from_llc_c = true;
-      ar_llc_mem_id_c = llc.io.ext_out.mem.read_req_id;
-      ar_llc_resp_extract_from_aligned_beat_c =
-          issue.extract_from_aligned_beat;
-      ar_llc_upstream_addr_c = llc.io.ext_out.mem.read_req_addr;
-      ar_llc_upstream_total_size_c = llc.io.ext_out.mem.read_req_size;
-      ar_port_c = issue.port;
-      auto &ar_io = downstream_io(issue.port);
-      ar_io.ar.arvalid = true;
-      ar_io.ar.araddr = issue.addr;
-      ar_io.ar.arlen = calc_burst_len(issue.total_size);
-      ar_io.ar.arsize =
-          issue.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
-      ar_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-      ar_io.ar.arid = alloc_read_axi_id();
     }
     for (int master = 0; master < NUM_READ_MASTERS; ++master) {
       const bool stage_busy_for_master =
@@ -1355,12 +1382,18 @@ void AXI_Interconnect::comb_read_arbiter() {
                                static_cast<uint8_t>(read_ports[master].req.id))) {
         continue;
       }
+      const uint32_t req_addr =
+          static_cast<uint32_t>(read_ports[master].req.addr);
+      const uint8_t req_total_size =
+          static_cast<uint8_t>(read_ports[master].req.total_size);
+      const DownstreamPort req_port =
+          classify_downstream_port(req_addr, req_total_size);
+      if (!request_uses_direct_mapped_llc(req_addr, req_total_size) &&
+          !downstream_request_supported(req_port, req_total_size)) {
+        continue;
+      }
       const bool allow_same_cycle_accept = (master == MASTER_DCACHE_R);
       if (req_ready_curr[master] || allow_same_cycle_accept) {
-        const uint32_t req_addr =
-            static_cast<uint32_t>(read_ports[master].req.addr);
-        const uint8_t req_total_size =
-            static_cast<uint8_t>(read_ports[master].req.total_size);
         read_ports[master].req.ready = true;
         llc_upstream_accept_c[master] = true;
         llc_upstream_capture_c[master].valid = true;
@@ -1431,6 +1464,10 @@ void AXI_Interconnect::comb_read_arbiter() {
     if (!can_issue_external_read(cap.addr)) {
       continue;
     }
+    const auto cap_port = classify_downstream_port(cap.addr, cap.total_size);
+    if (!downstream_request_supported(cap_port, cap.total_size)) {
+      continue;
+    }
 
     r_current_master = i;
     ar_master_c = i;
@@ -1440,8 +1477,7 @@ void AXI_Interconnect::comb_read_arbiter() {
       continue;
     }
     const auto issue = make_downstream_read_issue(
-        classify_downstream_port(cap.addr, cap.total_size), cap.addr,
-        cap.total_size, llc_config.line_bytes, false);
+        cap_port, cap.addr, cap.total_size, llc_config.line_bytes, false);
     ar_llc_resp_extract_from_aligned_beat_c = issue.extract_from_aligned_beat;
     ar_llc_upstream_addr_c = cap.addr;
     ar_llc_upstream_total_size_c = cap.total_size;
@@ -1473,6 +1509,13 @@ void AXI_Interconnect::comb_read_arbiter() {
       if (!can_issue_external_read(static_cast<uint32_t>(read_ports[idx].req.addr))) {
         continue;
       }
+      const uint32_t req_addr = static_cast<uint32_t>(read_ports[idx].req.addr);
+      const uint8_t req_total_size =
+          static_cast<uint8_t>(read_ports[idx].req.total_size);
+      const auto req_port = classify_downstream_port(req_addr, req_total_size);
+      if (!downstream_request_supported(req_port, req_total_size)) {
+        continue;
+      }
 
       r_current_master = idx;
       uint8_t axi_id = alloc_read_axi_id();
@@ -1498,12 +1541,8 @@ void AXI_Interconnect::comb_read_arbiter() {
       // from being artificially halved. ICache still relies on ready-first
       // semantics internally, so preserve the existing two-cycle contract
       // there until the front-end request state machine is updated.
-      const uint32_t req_addr = static_cast<uint32_t>(read_ports[idx].req.addr);
-      const uint8_t req_total_size =
-          static_cast<uint8_t>(read_ports[idx].req.total_size);
       const auto issue = make_downstream_read_issue(
-          classify_downstream_port(req_addr, req_total_size), req_addr,
-          req_total_size, llc_config.line_bytes, false);
+          req_port, req_addr, req_total_size, llc_config.line_bytes, false);
       ar_llc_resp_extract_from_aligned_beat_c = issue.extract_from_aligned_beat;
       ar_llc_upstream_addr_c = req_addr;
       ar_llc_upstream_total_size_c = req_total_size;
@@ -1591,23 +1630,27 @@ void AXI_Interconnect::comb_write_request() {
       if (!w_active && !llc_mem_write_resp_valid_ &&
           llc.io.ext_out.mem.write_req_valid &&
           can_issue_external_write(llc.io.ext_out.mem.write_req_addr)) {
-        const auto issue = make_downstream_write_issue(
-            classify_downstream_port(llc.io.ext_out.mem.write_req_addr,
-                                     llc.io.ext_out.mem.write_req_size),
-            llc.io.ext_out.mem.write_req_addr,
-            static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size),
-            llc.io.ext_out.mem.write_req_data,
-            llc.io.ext_out.mem.write_req_strobe, llc_config.line_bytes,
-            llc.io.ext_out.mem.write_req_mode2_ddr_aligned);
-        aw_port_c = issue.port;
-        auto &aw_io = downstream_io(issue.port);
-        aw_io.aw.awvalid = true;
-        aw_io.aw.awaddr = issue.addr;
-        aw_io.aw.awlen = calc_burst_len(issue.total_size);
-        aw_io.aw.awsize =
-            issue.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
-        aw_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
-        aw_io.aw.awid = llc.io.ext_out.mem.write_req_id & 0x7;
+        const uint8_t issue_size =
+            static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size);
+        const auto issue_port = classify_downstream_port(
+            llc.io.ext_out.mem.write_req_addr, issue_size);
+        if (downstream_request_supported(issue_port, issue_size)) {
+          const auto issue = make_downstream_write_issue(
+              issue_port, llc.io.ext_out.mem.write_req_addr, issue_size,
+              llc.io.ext_out.mem.write_req_data,
+              llc.io.ext_out.mem.write_req_strobe, llc_config.line_bytes,
+              llc.io.ext_out.mem.write_req_mode2_ddr_aligned);
+          aw_port_c = issue.port;
+          auto &aw_io = downstream_io(issue.port);
+          aw_io.aw.awvalid = true;
+          aw_io.aw.awaddr = issue.addr;
+          aw_io.aw.awlen = calc_burst_len(issue.total_size);
+          aw_io.aw.awsize = issue.port == DownstreamPort::MMIO
+                                ? kMmioAxiSize
+                                : kDownstreamAxiSize;
+          aw_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
+          aw_io.aw.awid = llc.io.ext_out.mem.write_req_id & 0x7;
+        }
       }
     }
 
@@ -1627,11 +1670,17 @@ void AXI_Interconnect::comb_write_request() {
         if (blocked_by_line_invalidate) {
           continue;
         }
+        const uint32_t req_addr =
+            static_cast<uint32_t>(write_ports[idx].req.addr);
+        const uint8_t req_total_size =
+            static_cast<uint8_t>(write_ports[idx].req.total_size);
+        const DownstreamPort req_port =
+            classify_downstream_port(req_addr, req_total_size);
+        if (!request_uses_direct_mapped_llc(req_addr, req_total_size) &&
+            !downstream_request_supported(req_port, req_total_size)) {
+          continue;
+        }
         if (w_req_ready_curr[idx]) {
-          const uint32_t req_addr =
-              static_cast<uint32_t>(write_ports[idx].req.addr);
-          const uint8_t req_total_size =
-              static_cast<uint8_t>(write_ports[idx].req.total_size);
           write_ports[idx].req.ready = true;
           llc_upstream_write_accept_c[idx] = true;
           llc_upstream_write_capture_c[idx].valid = true;
@@ -1711,6 +1760,15 @@ void AXI_Interconnect::comb_write_request() {
           if (!write_size_supported(write_ports[idx].req.total_size)) {
             printf("[axi] write size too large total_size=%u master=%d\n",
                    static_cast<unsigned>(write_ports[idx].req.total_size), idx);
+            continue;
+          }
+          const uint32_t req_addr =
+              static_cast<uint32_t>(write_ports[idx].req.addr);
+          const uint8_t req_total_size =
+              static_cast<uint8_t>(write_ports[idx].req.total_size);
+          const DownstreamPort req_port =
+              classify_downstream_port(req_addr, req_total_size);
+          if (!downstream_request_supported(req_port, req_total_size)) {
             continue;
           }
           if (w_req_ready_curr[idx]) {
@@ -2344,37 +2402,41 @@ read_handshake_done:
     if (!w_active && llc.io.ext_out.mem.write_req_valid &&
         llc.io.ext_in.mem.write_req_ready &&
         can_issue_external_write(llc.io.ext_out.mem.write_req_addr)) {
-      const auto issue = make_downstream_write_issue(
-          classify_downstream_port(llc.io.ext_out.mem.write_req_addr,
-                                   llc.io.ext_out.mem.write_req_size),
-          llc.io.ext_out.mem.write_req_addr,
-          static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size),
-          llc.io.ext_out.mem.write_req_data,
-          llc.io.ext_out.mem.write_req_strobe, llc_config.line_bytes,
-          llc.io.ext_out.mem.write_req_mode2_ddr_aligned);
-      w_active = true;
-      w_current = {};
-      w_current.port = issue.port;
-      w_current.addr = issue.addr;
-      w_current.wdata = issue.wdata;
-      w_current.wstrb = issue.wstrb;
-      w_current.orig_id = llc.io.ext_out.mem.write_req_id;
-      w_current.total_beats = calc_burst_len(issue.total_size) + 1;
-      w_current.beats_sent = 0;
-      w_current.aw_done = false;
-      w_current.w_done = false;
-      w_current.llc_victim_write =
-          llc.io.regs.victim_wb_valid_r || llc.io.reg_write.victim_wb_valid_r;
-      w_current_master = -1;
+      const uint8_t issue_size =
+          static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size);
+      const DownstreamPort issue_port = classify_downstream_port(
+          llc.io.ext_out.mem.write_req_addr, issue_size);
+      if (downstream_request_supported(issue_port, issue_size)) {
+        const auto issue = make_downstream_write_issue(
+            issue_port, llc.io.ext_out.mem.write_req_addr, issue_size,
+            llc.io.ext_out.mem.write_req_data,
+            llc.io.ext_out.mem.write_req_strobe, llc_config.line_bytes,
+            llc.io.ext_out.mem.write_req_mode2_ddr_aligned);
+        w_active = true;
+        w_current = {};
+        w_current.port = issue.port;
+        w_current.addr = issue.addr;
+        w_current.wdata = issue.wdata;
+        w_current.wstrb = issue.wstrb;
+        w_current.orig_id = llc.io.ext_out.mem.write_req_id;
+        w_current.total_beats = calc_burst_len(issue.total_size) + 1;
+        w_current.beats_sent = 0;
+        w_current.aw_done = false;
+        w_current.w_done = false;
+        w_current.llc_victim_write =
+            llc.io.regs.victim_wb_valid_r || llc.io.reg_write.victim_wb_valid_r;
+        w_current_master = -1;
 
-      aw_latched.valid = true;
-      aw_latched.port = w_current.port;
-      aw_latched.addr = w_current.addr;
-      aw_latched.len = w_current.total_beats - 1;
-      aw_latched.size =
-          w_current.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
-      aw_latched.burst = sim_ddr::AXI_BURST_INCR;
-      aw_latched.id = w_current.orig_id & 0x7;
+        aw_latched.valid = true;
+        aw_latched.port = w_current.port;
+        aw_latched.addr = w_current.addr;
+        aw_latched.len = w_current.total_beats - 1;
+        aw_latched.size = w_current.port == DownstreamPort::MMIO
+                              ? kMmioAxiSize
+                              : kDownstreamAxiSize;
+        aw_latched.burst = sim_ddr::AXI_BURST_INCR;
+        aw_latched.id = w_current.orig_id & 0x7;
+      }
     }
 
     auto &llc_w_io = downstream_io(w_current.port);
@@ -2461,9 +2523,14 @@ read_handshake_done:
     const uint32_t req_addr = static_cast<uint32_t>(write_ports[idx].req.addr);
     const uint8_t req_total_size =
         static_cast<uint8_t>(write_ports[idx].req.total_size);
+    const DownstreamPort req_port =
+        classify_downstream_port(req_addr, req_total_size);
+    if (!downstream_request_supported(req_port, req_total_size)) {
+      continue;
+    }
     const auto issue = make_downstream_write_issue(
-        classify_downstream_port(req_addr, req_total_size), req_addr,
-        req_total_size, write_ports[idx].req.wdata, write_ports[idx].req.wstrb,
+        req_port, req_addr, req_total_size, write_ports[idx].req.wdata,
+        write_ports[idx].req.wstrb,
         llc_config.line_bytes, false);
     txn.port = issue.port;
     txn.addr = issue.addr;

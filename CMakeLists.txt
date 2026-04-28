@@ -30,6 +30,11 @@ set(AXI_KIT_AXI4_SOURCES
     mmio/UART16550_Device.cpp
 )
 
+set(AXI_KIT_INTERCONNECT_ONLY_SOURCES
+    axi_interconnect/AXI_LLC.cpp
+    axi_interconnect/AXI_Interconnect.cpp
+)
+
 set(AXI_KIT_AXI4_COMMON_DEFS
     AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
     AXI_KIT_SIM_DDR_BEAT_BYTES=${AXI_KIT_SIM_DDR_BEAT_BYTES}
@@ -242,7 +247,7 @@ if(AXI_KIT_BUILD_TESTS)
   target_compile_definitions(axi_kit_axi4_test_32b_wstall PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
 
   add_library(axi_kit_axi4_test_dual_port STATIC
-      ${AXI_KIT_AXI4_SOURCES}
+      ${AXI_KIT_INTERCONNECT_ONLY_SOURCES}
   )
   target_include_directories(axi_kit_axi4_test_dual_port PUBLIC ${AXI_KIT_INCLUDE_DIRS})
   target_compile_features(axi_kit_axi4_test_dual_port PUBLIC cxx_std_20)
