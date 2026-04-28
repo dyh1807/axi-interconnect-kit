@@ -53,6 +53,8 @@
 - `tb_axi_llc_axi_bridge_read_outstanding_contract.v`
 - `tb_axi_llc_axi_bridge_write_outstanding_contract.v`
 - `tb_axi_llc_axi_bridge_write_id_reuse_contract.v`
+- `tb_axi_llc_axi_bridge_dual_contract.v`
+- `tb_axi_llc_axi_dual_port_router_contract.v`
 - `tb_axi_llc_subsystem_read_master_timing_contract.v`
 - `tb_llc_smic12_store_contract.v`
 
@@ -316,6 +318,27 @@ core 内部 hazard 遮掉。
 - 合同要求：
   - 已完成 write 的 AXI `id` 可以被下一笔 write 立即重用
   - 第 1 笔 source response 尚未消费时，第 2 笔仍可继续进入 lower AXI
+
+### `tb_axi_llc_axi_dual_port_router_contract.v`
+
+- 直接面向 `axi_llc_axi_dual_port_router.v`
+- 覆盖过渡 shim 的 DDR/MMIO 地址分类和双口 response 回路由
+- DDR 请求保持既有 256-bit beat / multi-beat 形状
+- MMIO 请求改写为 32-bit / 1 beat
+- 覆盖 DDR/MMIO read response 乱序返回，以及 DDR/MMIO write `B` response 回路由
+
+这个 bench 只验证过渡 shim，不代表最终 native dual-port bridge 的性能结构。
+
+### `tb_axi_llc_axi_bridge_dual_contract.v`
+
+- 直接面向 `axi_llc_axi_bridge_dual.v`
+- 覆盖 lower request 层直接分流，不经过单 AXI 中间口
+- 验证 DDR cache read 与 MMIO bypass read 可以同周期都被接受，并分别发到两个 AXI 口
+- 验证 MMIO 口为 32-bit / 1 beat
+- 验证大于 4B 的 MMIO 请求会被 backpressure 挡住
+
+当前该 bench 先覆盖 native dual bridge 的最小合同；顶层双外部 AXI 口和全局
+outstanding 共享计数仍需后续补齐。
 
 ### `tb_axi_llc_subsystem_read_master_timing_contract.v`
 

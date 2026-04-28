@@ -21,6 +21,15 @@
 - `src/axi_llc_axi_bridge.v`
   - AXI 翻译层
   - 把内部 lower request/response 转成单组 AXI4 master 五通道
+- `src/axi_llc_axi_bridge_dual.v`
+  - native dual-port lower bridge wrapper
+  - 在 lower request 层直接按地址选择 DDR/MMIO，不经过单 AXI 中间口
+  - DDR 口保持 256-bit beat；MMIO 口为 32-bit beat
+- `src/axi_llc_axi_dual_port_router.v`
+  - 过渡验证 shim
+  - 把既有单组 AXI4 master 分流到 DDR/MMIO 两组 AXI4 master
+  - 仅用于 bring-up/contract 验证，不作为最终性能路径；最终应迁移到 native
+    dual-port bridge/interconnect
 
 建议阅读顺序：
 
@@ -28,6 +37,8 @@
 2. `src/axi_llc_subsystem_compat.v`
 3. `src/axi_llc_subsystem_core.v`
 4. `src/axi_llc_axi_bridge.v`
+5. `src/axi_llc_axi_bridge_dual.v`（双口 native bridge wrapper）
+6. `src/axi_llc_axi_dual_port_router.v`（双口过渡验证）
 
 ## 层次关系
 

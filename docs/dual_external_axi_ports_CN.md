@@ -68,6 +68,48 @@ Interconnect/LLC 层必须附加以下控制逻辑：
 
 这些约束用于规避 AXI 对 AR/AW 同地址未完成事务返回新值还是旧值没有规定的问题。
 
+## RTL 架构决策
+
+最终 RTL 不应把双外部 AXI 口实现成固定的 `single AXI -> router -> DDR/MMIO`
+主路径。该做法可以作为 bring-up shim 使用，但不是长期最佳结构：
+
+- 单发射 AXI 口会限制 DDR/MMIO 混合流量，无法在同一周期分别向两个外部口发出
+  DDR 与 MMIO `AR/AW`。
+- 单口 bridge 若先把请求统一改写成 256-bit beat，router 再反向改成 MMIO 32-bit
+  beat，会丢失原始请求语义，增加 EC 和 corner case 风险。
+- 同地址 `AR/AW` hazard gate、outstanding 资源分配和地址分类应尽量在同一调度层完成，
+  不应依赖下游分流层补救。
+
+因此长期实现目标是 native dual-port bridge/interconnect：在内部接受请求时保留原始
+size/address 语义，按地址直接选择 `axi0_ddr` 或 `axi1_mmio`，并分别驱动两组 AXI
+通道。当前可以保留一个 dual-port router 作为过渡 contract bench，用来验证双口
+ID/response 归属与握手，但不把它作为性能最终路径。
+
+## RTL 当前实现状态
+
+当前 submodule RTL 已新增两层双口 bring-up 逻辑：
+
+- `axi_llc_axi_dual_port_router.v`：过渡 shim，从既有单 AXI 口分流到 DDR/MMIO。
+  该模块只用于快速 contract 验证，不作为最终性能路径。
+- `axi_llc_axi_bridge_dual.v`：native dual-port lower bridge wrapper，在 lower
+  request 层直接按地址选择 DDR/MMIO，不经过单 AXI 中间口。
+
+`axi_llc_axi_bridge_dual.v` 当前语义：
+
+- 地址 `>= 0x4000_0000` 走 DDR 口，保留 256-bit beat 和 cacheline multi-beat。
+- 地址 `< 0x4000_0000` 走 MMIO 口，MMIO AXI data width 为 32-bit。
+- MMIO 只接受 `total_size == 3` 的 4B 请求；其它 MMIO 大请求会 backpressure。
+- DDR 与 MMIO 属于两个独立 bridge 实例，因此可以同周期分别接受/发射 DDR 与 MMIO
+  请求，不存在 single-AXI-router 的发射瓶颈。
+
+当前 RTL 尚未完成：
+
+- 最终 `axi_llc_subsystem` 顶层还没有切到双外部 AXI 口。
+- 全局 read/write outstanding 32-entry 共享计数尚未接入；当前仍受底层 bridge 既有
+  per-port outstanding 限制约束。
+- 同地址 `AR/AW` hazard gate 尚未在 native dual bridge 层统一实现。
+- `hw-cbmc` C++/RTL EC harness 尚未接入。
+
 ## EC 规划
 
 后续形式化 EC 应以本文档为共同规格，比较 C++ reference 和 RTL 在以下方面的一致性：
@@ -78,7 +120,8 @@ Interconnect/LLC 层必须附加以下控制逻辑：
 - 小请求对齐、截取、`wstrb` 移位。
 - 同地址 AR/AW hazard gate。
 
-本阶段先收敛 C++ reference，再迁移 RTL，最后接入 `hw-cbmc` 进行 C++/RTL 等价性检查。
+本阶段先收敛 C++ reference，再迁移 RTL native dual-port bridge，最后接入
+`hw-cbmc` 进行 C++/RTL 等价性检查。
 
 ## C++ Reference 当前实现状态
 
@@ -114,6 +157,11 @@ Interconnect/LLC 层必须附加以下控制逻辑：
 - `axi_interconnect_dual_port_test`：3 passed, 0 failed。
 - `axi_interconnect_llc_axi4_test`：29 passed, 0 failed。
 
+已通过的 RTL VCS targeted tests：
+
+- `tb_axi_llc_axi_dual_port_router_contract`
+- `tb_axi_llc_axi_bridge_dual_contract`
+
 已通过的 simulator smoke tests：
 
 - `make default BUILD_DIR=build_dual_axi_default_20260428 -j8`
@@ -124,3 +172,7 @@ Interconnect/LLC 层必须附加以下控制逻辑：
 - `./build_dual_axi_large_bpu_20260428/simulator -c 1000 baremetal/sha-test.bin`
 
 以上 smoke tests 均达到 `MAX_COMMIT_INST=1000` 后正常退出，日志中未出现 `Difftest: error`。
+
+这些 simulator smoke tests 依赖父仓库的临时适配改动，只用于证明当前 submodule 行为
+没有立即破坏父仓库启动路径；后续接到最新版 simulator 父仓库时，父仓库侧适配需要重新做，
+不把这部分作为 submodule 的长期交付内容。

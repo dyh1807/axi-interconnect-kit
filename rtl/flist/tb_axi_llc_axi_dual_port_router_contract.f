@@ -1,0 +1,3 @@
+-f flist/axi_llc_rtl.f
+-top tb_axi_llc_axi_dual_port_router_contract
+tb/tb_axi_llc_axi_dual_port_router_contract.v

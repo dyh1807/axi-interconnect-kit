@@ -16,4 +16,6 @@ src/llc_cache_ctrl.v
 src/axi_llc_subsystem_core.v
 src/axi_llc_subsystem_compat.v
 src/axi_llc_axi_bridge.v
+src/axi_llc_axi_dual_port_router.v
+src/axi_llc_axi_bridge_dual.v
 src/axi_llc_subsystem.v

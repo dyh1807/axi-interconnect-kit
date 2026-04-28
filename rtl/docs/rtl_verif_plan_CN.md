@@ -270,6 +270,29 @@
 - `MASTER_ICACHE` 仍保持 ready-first
 - 上游 `accepted / accepted_id`、下游 AXI `AR`、以及最终 read response 的闭环一致性
 
+### `tb_axi_llc_axi_dual_port_router_contract.v`
+
+覆盖过渡 dual-port router shim：
+
+- DDR 地址走 DDR AXI 口，保持 256-bit beat 和 multi-beat burst 形状。
+- MMIO 地址走 MMIO AXI 口，并改写成 32-bit、1 beat。
+- DDR/MMIO read response 可以乱序返回，仍按 AXI ID 回到单口 upstream。
+- DDR/MMIO write response 分别按 `BID` 回到单口 upstream。
+
+该 bench 的目标是先钉住双端口握手/ID 归属，不把 single-port router 作为最终性能路径。
+
+### `tb_axi_llc_axi_bridge_dual_contract.v`
+
+覆盖 native dual-port lower bridge wrapper：
+
+- lower request 层直接按地址分流，不经过单 AXI 中间口。
+- DDR cache read 与 MMIO bypass read 可以同周期都被接受，并分别发出 DDR/MMIO `AR`。
+- DDR 口保持 256-bit beat / multi-beat cacheline 形状。
+- MMIO 口为 32-bit / 1 beat。
+- 大于 4B 的 MMIO 请求会被 backpressure 挡住。
+
+当前该 bench 尚未覆盖全局 32-entry shared outstanding 计数和同地址 `AR/AW` hazard gate。
+
 ### `tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 
 覆盖：
