@@ -166,7 +166,9 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 
 - `axi_interconnect_dual_port_test`：5 passed, 0 failed。
   覆盖 DDR/MMIO 路由、MMIO 大读写阻塞、同 line AR/AW hazard gate。
-- `axi_interconnect_llc_axi4_test`：29 passed, 0 failed。
+- `axi_interconnect_llc_axi4_test`：历史版本 29 passed, 0 failed；本轮未在 standalone
+  submodule CMake 下复测，因为该 test env 链接 `SimDDR.cpp`，仍依赖父仓库
+  `PhysMemory.h`。
 
 已通过的 RTL VCS targeted tests：
 
