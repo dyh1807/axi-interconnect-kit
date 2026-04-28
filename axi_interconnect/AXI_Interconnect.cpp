@@ -27,8 +27,18 @@ constexpr uint8_t kDownstreamBeatBytes = sim_ddr::AXI_DATA_BYTES;
 constexpr uint8_t kDownstreamBeatWords =
     kDownstreamBeatBytes / static_cast<uint8_t>(sizeof(uint32_t));
 constexpr uint8_t kDownstreamAxiSize = sim_ddr::AXI_SIZE_CODE;
+constexpr uint8_t kMmioAxiSize = 2u; // 32-bit single-beat MMIO.
 constexpr uint8_t kUpstreamStrbBytes =
     (MAX_WRITE_TRANSACTION_BYTES + 7u) / 8u;
+#ifndef AXI_KIT_DDR_BASE
+#ifdef CONFIG_AXI_KIT_DDR_BASE
+#define AXI_KIT_DDR_BASE CONFIG_AXI_KIT_DDR_BASE
+#else
+#define AXI_KIT_DDR_BASE 0u
+#endif
+#endif
+constexpr uint32_t kDdrAddressBase = AXI_KIT_DDR_BASE;
+constexpr uint32_t kDefaultMappedLlcOffset = 0x30000000u;
 
 #ifndef CONFIG_AXI_LLC_FOCUS_LINE0
 #define CONFIG_AXI_LLC_FOCUS_LINE0 0u
@@ -150,6 +160,28 @@ void unpack_downstream_read_beat(ReadPendingTxn &txn, sim_ddr::axi_data_t beat) 
   }
 }
 
+void clear_downstream_master_outputs(sim_ddr::SimDDR_IO_t &io) {
+  io.ar.arvalid = false;
+  io.ar.arid = 0;
+  io.ar.araddr = 0;
+  io.ar.arlen = 0;
+  io.ar.arsize = kDownstreamAxiSize;
+  io.ar.arburst = sim_ddr::AXI_BURST_INCR;
+  io.r.rready = true;
+
+  io.aw.awvalid = false;
+  io.aw.awid = 0;
+  io.aw.awaddr = 0;
+  io.aw.awlen = 0;
+  io.aw.awsize = kDownstreamAxiSize;
+  io.aw.awburst = sim_ddr::AXI_BURST_INCR;
+  io.w.wvalid = false;
+  io.w.wdata = 0;
+  io.w.wstrb = 0;
+  io.w.wlast = false;
+  io.b.bready = true;
+}
+
 uint8_t get_wide_read_byte(const WideReadData_t &data, uint32_t byte_idx) {
   const uint32_t word_idx = byte_idx / sizeof(uint32_t);
   const uint32_t byte_off = byte_idx % sizeof(uint32_t);
@@ -236,6 +268,105 @@ WideWriteStrb_t align_mode2_downstream_write_strobe(const WideWriteStrb_t &src,
   return out;
 }
 
+struct DownstreamReadIssue {
+  DownstreamPort port = DownstreamPort::DDR;
+  uint32_t addr = 0;
+  uint8_t total_size = 0;
+  bool extract_from_aligned_beat = false;
+};
+
+struct DownstreamWriteIssue {
+  DownstreamPort port = DownstreamPort::DDR;
+  uint32_t addr = 0;
+  uint8_t total_size = 0;
+  WideWriteData_t wdata{};
+  WideWriteStrb_t wstrb{};
+};
+
+DownstreamReadIssue make_downstream_read_issue(DownstreamPort port,
+                                               uint32_t addr,
+                                               uint8_t total_size,
+                                               uint32_t line_bytes,
+                                               bool force_line_aligned) {
+  DownstreamReadIssue out{};
+  out.port = port;
+  out.addr = addr;
+  out.total_size = total_size;
+  out.extract_from_aligned_beat = false;
+  const uint16_t bytes = static_cast<uint16_t>(total_size) + 1u;
+  if (port == DownstreamPort::MMIO) {
+    out.total_size = 3u;
+    return out;
+  }
+  if (force_line_aligned) {
+    const uint32_t beat_addr = align_downstream_addr(addr, kDownstreamBeatBytes);
+    const uint32_t beat_off = addr - beat_addr;
+    if (bytes <= kDownstreamBeatBytes &&
+        beat_off + bytes <= kDownstreamBeatBytes) {
+      out.addr = beat_addr;
+      out.total_size = static_cast<uint8_t>(kDownstreamBeatBytes - 1u);
+      out.extract_from_aligned_beat = true;
+      return out;
+    }
+    out.addr = align_downstream_addr(addr, line_bytes);
+    out.total_size = static_cast<uint8_t>(line_bytes - 1u);
+    out.extract_from_aligned_beat = out.addr != addr;
+    return out;
+  }
+  if (bytes <= kDownstreamBeatBytes) {
+    out.addr = align_downstream_addr(addr, kDownstreamBeatBytes);
+    out.total_size = static_cast<uint8_t>(kDownstreamBeatBytes - 1u);
+    out.extract_from_aligned_beat = true;
+    return out;
+  }
+  return out;
+}
+
+DownstreamWriteIssue make_downstream_write_issue(DownstreamPort port,
+                                                 uint32_t addr,
+                                                 uint8_t total_size,
+                                                 const WideWriteData_t &wdata,
+                                                 const WideWriteStrb_t &wstrb,
+                                                 uint32_t line_bytes,
+                                                 bool force_line_aligned) {
+  DownstreamWriteIssue out{};
+  out.port = port;
+  out.addr = addr;
+  out.total_size = total_size;
+  out.wdata = wdata;
+  out.wstrb = wstrb;
+  const uint16_t bytes = static_cast<uint16_t>(total_size) + 1u;
+  if (port == DownstreamPort::MMIO) {
+    out.total_size = 3u;
+    return out;
+  }
+  if (force_line_aligned) {
+    const uint32_t beat_addr = align_downstream_addr(addr, kDownstreamBeatBytes);
+    const uint32_t beat_off = addr - beat_addr;
+    if (bytes <= kDownstreamBeatBytes &&
+        beat_off + bytes <= kDownstreamBeatBytes) {
+      out.addr = beat_addr;
+      out.total_size = static_cast<uint8_t>(kDownstreamBeatBytes - 1u);
+      out.wdata = align_mode2_downstream_write_data(wdata, addr, out.addr);
+      out.wstrb = align_mode2_downstream_write_strobe(wstrb, addr, out.addr);
+      return out;
+    }
+    out.addr = align_downstream_addr(addr, line_bytes);
+    out.total_size = static_cast<uint8_t>(line_bytes - 1u);
+    out.wdata = align_mode2_downstream_write_data(wdata, addr, out.addr);
+    out.wstrb = align_mode2_downstream_write_strobe(wstrb, addr, out.addr);
+    return out;
+  }
+  if (bytes <= kDownstreamBeatBytes) {
+    out.addr = align_downstream_addr(addr, kDownstreamBeatBytes);
+    out.total_size = static_cast<uint8_t>(kDownstreamBeatBytes - 1u);
+    out.wdata = align_mode2_downstream_write_data(wdata, addr, out.addr);
+    out.wstrb = align_mode2_downstream_write_strobe(wstrb, addr, out.addr);
+    return out;
+  }
+  return out;
+}
+
 void dump_focus_read_txn(const char *tag, long long cyc,
                          const ReadPendingTxn &txn) {
   if (!focus_read_txn(txn) && !trace_icache_read_txn(txn, cyc)) {
@@ -299,6 +430,15 @@ bool AXI_Interconnect::llc_enabled() const {
   return llc_config.enable && llc_config.valid();
 }
 
+sim_ddr::SimDDR_IO_t &AXI_Interconnect::downstream_io(DownstreamPort port) {
+  return port == DownstreamPort::DDR ? axi_ddr_io : axi_mmio_io;
+}
+
+const sim_ddr::SimDDR_IO_t &
+AXI_Interconnect::downstream_io(DownstreamPort port) const {
+  return port == DownstreamPort::DDR ? axi_ddr_io : axi_mmio_io;
+}
+
 void AXI_Interconnect::sample_runtime_controls() {
   uint64_t env_value = 0;
   if (read_env_u64("AXI_SUBMODULE_MODE", env_value)) {
@@ -343,7 +483,8 @@ uint8_t AXI_Interconnect::requested_mode() const {
 }
 
 uint32_t AXI_Interconnect::requested_llc_mapped_offset() const {
-  return static_cast<uint32_t>(llc_mapped_offset);
+  const uint32_t requested = static_cast<uint32_t>(llc_mapped_offset);
+  return requested == 0 ? kDefaultMappedLlcOffset : requested;
 }
 
 bool AXI_Interconnect::requested_config_differs_from_active() const {
@@ -381,6 +522,31 @@ bool AXI_Interconnect::request_in_mapped_window(uint32_t addr,
 bool AXI_Interconnect::request_uses_direct_mapped_llc(uint32_t addr,
                                                       uint8_t total_size) const {
   return runtime_mode_ == 2u && request_in_mapped_window(addr, total_size);
+}
+
+DownstreamPort AXI_Interconnect::classify_downstream_port(
+    uint32_t addr, uint8_t total_size) const {
+  (void)total_size;
+  if (addr >= kDdrAddressBase) {
+    return DownstreamPort::DDR;
+  }
+  return DownstreamPort::MMIO;
+}
+
+bool AXI_Interconnect::request_uses_ddr_port(uint32_t addr,
+                                             uint8_t total_size) const {
+  if (request_uses_direct_mapped_llc(addr, total_size)) {
+    return false;
+  }
+  return classify_downstream_port(addr, total_size) == DownstreamPort::DDR;
+}
+
+bool AXI_Interconnect::request_uses_mmio_port(uint32_t addr,
+                                              uint8_t total_size) const {
+  if (request_uses_direct_mapped_llc(addr, total_size)) {
+    return false;
+  }
+  return classify_downstream_port(addr, total_size) == DownstreamPort::MMIO;
 }
 
 uint32_t AXI_Interconnect::translate_llc_addr(uint32_t addr,
@@ -436,6 +602,7 @@ void AXI_Interconnect::init() {
   ar_latched.accepted_upstream = false;
   ar_latched.to_llc = false;
   ar_latched.resp_extract_from_aligned_beat = false;
+  ar_latched.port = DownstreamPort::DDR;
   ar_latched.addr = 0;
   ar_latched.upstream_addr = 0;
   ar_latched.len = 0;
@@ -454,6 +621,7 @@ void AXI_Interconnect::init() {
 
   // Clear AW latch
   aw_latched.valid = false;
+  aw_latched.port = DownstreamPort::DDR;
   aw_latched.addr = 0;
   aw_latched.len = 0;
   aw_latched.size = kDownstreamAxiSize;
@@ -490,28 +658,14 @@ void AXI_Interconnect::init() {
     write_req_accepted[i] = false;
   }
 
-  axi_io.ar.arvalid = false;
-  axi_io.ar.arid = 0;
-  axi_io.ar.araddr = 0;
-  axi_io.ar.arlen = 0;
-  axi_io.ar.arsize = kDownstreamAxiSize;
-  axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-  axi_io.r.rready = true;
-
-  axi_io.aw.awvalid = false;
-  axi_io.aw.awid = 0;
-  axi_io.aw.awaddr = 0;
-  axi_io.aw.awlen = 0;
-  axi_io.aw.awsize = kDownstreamAxiSize;
-  axi_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
-  axi_io.w.wvalid = false;
-  axi_io.w.wdata = 0;
-  axi_io.w.wstrb = 0;
+  clear_downstream_master_outputs(axi_ddr_io);
+  clear_downstream_master_outputs(axi_mmio_io);
   for (uint8_t byte = 0; byte < kDownstreamBeatBytes; ++byte) {
-    axi_compat::set_bit(axi_io.w.wstrb, byte, true);
+    axi_compat::set_bit(axi_ddr_io.w.wstrb, byte, true);
+    axi_compat::set_bit(axi_mmio_io.w.wstrb, byte, true);
   }
-  axi_io.w.wlast = false;
-  axi_io.b.bready = true;
+  ar_port_c = DownstreamPort::DDR;
+  aw_port_c = DownstreamPort::DDR;
 }
 
 uint8_t AXI_Interconnect::alloc_read_axi_id() const {
@@ -707,6 +861,56 @@ bool AXI_Interconnect::has_same_line_write_hazard(uint32_t line_addr) const {
     return true;
   }
   return false;
+}
+
+uint32_t AXI_Interconnect::external_hazard_line_addr(uint32_t addr) const {
+  constexpr uint32_t kHazardBytes = MAX_WRITE_TRANSACTION_BYTES;
+  static_assert((kHazardBytes & (kHazardBytes - 1u)) == 0,
+                "external hazard granule must be a power of two");
+  return addr & ~(kHazardBytes - 1u);
+}
+
+bool AXI_Interconnect::has_external_pending_read_hazard(uint32_t addr) const {
+  const uint32_t line = external_hazard_line_addr(addr);
+  if ((axi_ddr_io.ar.arvalid || axi_mmio_io.ar.arvalid) &&
+      external_hazard_line_addr(ar_llc_upstream_addr_c) == line) {
+    return true;
+  }
+  if (ar_latched.valid &&
+      external_hazard_line_addr(ar_latched.upstream_addr) == line) {
+    return true;
+  }
+  for (const auto &txn : r_pending) {
+    if (txn.beats_done < txn.total_beats &&
+        external_hazard_line_addr(txn.upstream_addr) == line) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool AXI_Interconnect::has_external_pending_write_hazard(uint32_t addr) const {
+  const uint32_t line = external_hazard_line_addr(addr);
+  if (aw_latched.valid && external_hazard_line_addr(aw_latched.addr) == line) {
+    return true;
+  }
+  if (w_active && external_hazard_line_addr(w_current.addr) == line) {
+    return true;
+  }
+  for (const auto &txn : w_pending) {
+    if (external_hazard_line_addr(txn.addr) == line) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool AXI_Interconnect::can_issue_external_read(uint32_t addr) const {
+  return !has_external_pending_write_hazard(addr);
+}
+
+bool AXI_Interconnect::can_issue_external_write(uint32_t addr) const {
+  return !has_external_pending_read_hazard(addr);
 }
 
 int AXI_Interconnect::find_write_pending_by_axi_id(uint8_t axi_id) const {
@@ -930,9 +1134,14 @@ void AXI_Interconnect::prepare_llc_inputs(bool sample_upstream_ready) {
 
   llc.io.ext_in.mem.prefetch_allow =
       !any_upstream_capture_pending && !any_upstream_req_visible;
-  llc.io.ext_in.mem.read_req_ready = can_issue_llc_read_req();
+  llc.io.ext_in.mem.read_req_ready =
+      can_issue_llc_read_req() &&
+      (!llc.io.ext_out.mem.read_req_valid ||
+       can_issue_external_read(llc.io.ext_out.mem.read_req_addr));
   llc.io.ext_in.mem.write_req_ready =
-      !w_active && !aw_latched.valid && !llc_mem_write_resp_valid_;
+      !w_active && !aw_latched.valid && !llc_mem_write_resp_valid_ &&
+      (!llc.io.ext_out.mem.write_req_valid ||
+       can_issue_external_write(llc.io.ext_out.mem.write_req_addr));
   llc.io.ext_in.mem.write_resp_valid = llc_mem_write_resp_valid_;
   llc.io.ext_in.mem.write_resp = llc_mem_write_resp_;
 
@@ -1047,6 +1256,7 @@ void AXI_Interconnect::comb_read_arbiter() {
   ar_llc_resp_extract_from_aligned_beat_c = false;
   ar_llc_upstream_addr_c = 0;
   ar_llc_upstream_total_size_c = 0;
+  ar_port_c = DownstreamPort::DDR;
   ar_master_c = -1;
   ar_orig_id_c = 0;
   for (int i = 0; i < NUM_READ_MASTERS; ++i) {
@@ -1075,15 +1285,18 @@ void AXI_Interconnect::comb_read_arbiter() {
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     read_ports[i].req.ready = false;
   }
+  axi_ddr_io.ar.arvalid = false;
+  axi_mmio_io.ar.arvalid = false;
 
   // If AR is latched (waiting for arready), output latched values
   if (ar_latched.valid) {
-    axi_io.ar.arvalid = true; // MUST stay valid until handshake!
-    axi_io.ar.araddr = ar_latched.addr;
-    axi_io.ar.arlen = ar_latched.len;
-    axi_io.ar.arsize = ar_latched.size;
-    axi_io.ar.arburst = ar_latched.burst;
-    axi_io.ar.arid = ar_latched.id;
+    auto &ar_io = downstream_io(ar_latched.port);
+    ar_io.ar.arvalid = true; // MUST stay valid until handshake!
+    ar_io.ar.araddr = ar_latched.addr;
+    ar_io.ar.arlen = ar_latched.len;
+    ar_io.ar.arsize = ar_latched.size;
+    ar_io.ar.arburst = ar_latched.burst;
+    ar_io.ar.arid = ar_latched.id;
     // Keep req.ready=true for the master whose request is latched so the
     // upstream handshake remains visible until the downstream AR handshake wins.
     if (!ar_latched.to_llc && !ar_latched.accepted_upstream &&
@@ -1095,54 +1308,39 @@ void AXI_Interconnect::comb_read_arbiter() {
   }
 
   // No latched AR, can accept new request
-  axi_io.ar.arvalid = false;
 
   if (llc_enabled()) {
-    if (llc.io.ext_out.mem.read_req_valid && can_issue_llc_read_req()) {
-      const uint16_t llc_read_bytes =
-          static_cast<uint16_t>(llc.io.ext_out.mem.read_req_size) + 1u;
-      const uint32_t llc_read_beat_addr =
-          align_downstream_addr(llc.io.ext_out.mem.read_req_addr,
-                                kDownstreamBeatBytes);
-      const bool mode2_single_beat_read =
-          llc.io.ext_out.mem.read_req_mode2_ddr_aligned &&
-          llc_read_bytes <= kDownstreamBeatBytes &&
-          (static_cast<uint32_t>(llc.io.ext_out.mem.read_req_addr - llc_read_beat_addr) +
-           llc_read_bytes) <= kDownstreamBeatBytes;
-      const uint32_t llc_read_addr = llc.io.ext_out.mem.read_req_mode2_ddr_aligned
-                                         ? (mode2_single_beat_read
-                                                ? llc_read_beat_addr
-                                                : align_downstream_addr(
-                                                      llc.io.ext_out.mem.read_req_addr,
-                                                      llc_config.line_bytes))
-                                         : llc.io.ext_out.mem.read_req_addr;
-      const uint8_t llc_read_size = llc.io.ext_out.mem.read_req_mode2_ddr_aligned
-                                        ? (mode2_single_beat_read
-                                               ? static_cast<uint8_t>(
-                                                     kDownstreamBeatBytes - 1u)
-                                               : static_cast<uint8_t>(
-                                                     llc_config.line_bytes - 1u))
-                                        : static_cast<uint8_t>(
-                                              llc.io.ext_out.mem.read_req_size);
+    if (llc.io.ext_out.mem.read_req_valid && can_issue_llc_read_req() &&
+        can_issue_external_read(llc.io.ext_out.mem.read_req_addr)) {
+      const auto issue = make_downstream_read_issue(
+          classify_downstream_port(llc.io.ext_out.mem.read_req_addr,
+                                   llc.io.ext_out.mem.read_req_size),
+          llc.io.ext_out.mem.read_req_addr,
+          static_cast<uint8_t>(llc.io.ext_out.mem.read_req_size),
+          llc_config.line_bytes,
+          llc.io.ext_out.mem.read_req_mode2_ddr_aligned);
       if (llc_focus_line(llc.io.ext_out.mem.read_req_addr)) {
         std::printf(
             "[AXI-LLC][AR-ISSUE] cyc=%lld addr=0x%08x slot=%u size=%u\n",
-            sim_time, llc_read_addr,
+            sim_time, issue.addr,
             static_cast<unsigned>(llc.io.ext_out.mem.read_req_id),
-            static_cast<unsigned>(llc_read_size));
+            static_cast<unsigned>(issue.total_size));
       }
       ar_from_llc_c = true;
       ar_llc_mem_id_c = llc.io.ext_out.mem.read_req_id;
       ar_llc_resp_extract_from_aligned_beat_c =
-          llc.io.ext_out.mem.read_req_mode2_ddr_aligned;
+          issue.extract_from_aligned_beat;
       ar_llc_upstream_addr_c = llc.io.ext_out.mem.read_req_addr;
       ar_llc_upstream_total_size_c = llc.io.ext_out.mem.read_req_size;
-      axi_io.ar.arvalid = true;
-      axi_io.ar.araddr = llc_read_addr;
-      axi_io.ar.arlen = calc_burst_len(llc_read_size);
-      axi_io.ar.arsize = kDownstreamAxiSize;
-      axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-      axi_io.ar.arid = alloc_read_axi_id();
+      ar_port_c = issue.port;
+      auto &ar_io = downstream_io(issue.port);
+      ar_io.ar.arvalid = true;
+      ar_io.ar.araddr = issue.addr;
+      ar_io.ar.arlen = calc_burst_len(issue.total_size);
+      ar_io.ar.arsize =
+          issue.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+      ar_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
+      ar_io.ar.arid = alloc_read_axi_id();
     }
     for (int master = 0; master < NUM_READ_MASTERS; ++master) {
       const bool stage_busy_for_master =
@@ -1177,7 +1375,7 @@ void AXI_Interconnect::comb_read_arbiter() {
             request_uses_direct_mapped_llc(req_addr, req_total_size);
         llc_upstream_capture_c[master].mode2_ddr_aligned =
             runtime_mode_ == 2u &&
-            !is_mmio_addr(req_addr) &&
+            request_uses_ddr_port(req_addr, req_total_size) &&
             !request_in_mapped_window(req_addr, req_total_size);
         continue;
       }
@@ -1230,6 +1428,9 @@ void AXI_Interconnect::comb_read_arbiter() {
     if (has_read_id_conflict(static_cast<uint8_t>(i), cap.id)) {
       continue;
     }
+    if (!can_issue_external_read(cap.addr)) {
+      continue;
+    }
 
     r_current_master = i;
     ar_master_c = i;
@@ -1238,12 +1439,21 @@ void AXI_Interconnect::comb_read_arbiter() {
     if (axi_id == kInvalidAxiReadId) {
       continue;
     }
-    axi_io.ar.arvalid = true;
-    axi_io.ar.araddr = cap.addr;
-    axi_io.ar.arlen = calc_burst_len(cap.total_size);
-    axi_io.ar.arsize = kDownstreamAxiSize;
-    axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-    axi_io.ar.arid = axi_id;
+    const auto issue = make_downstream_read_issue(
+        classify_downstream_port(cap.addr, cap.total_size), cap.addr,
+        cap.total_size, llc_config.line_bytes, false);
+    ar_llc_resp_extract_from_aligned_beat_c = issue.extract_from_aligned_beat;
+    ar_llc_upstream_addr_c = cap.addr;
+    ar_llc_upstream_total_size_c = cap.total_size;
+    ar_port_c = issue.port;
+    auto &ar_io = downstream_io(issue.port);
+    ar_io.ar.arvalid = true;
+    ar_io.ar.araddr = issue.addr;
+    ar_io.ar.arlen = calc_burst_len(issue.total_size);
+    ar_io.ar.arsize =
+        issue.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+    ar_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
+    ar_io.ar.arid = axi_id;
     read_ports[i].req.ready = true;
     return;
   }
@@ -1258,6 +1468,9 @@ void AXI_Interconnect::comb_read_arbiter() {
       }
       if (has_read_id_conflict(static_cast<uint8_t>(idx),
                                static_cast<uint8_t>(read_ports[idx].req.id))) {
+        continue;
+      }
+      if (!can_issue_external_read(static_cast<uint32_t>(read_ports[idx].req.addr))) {
         continue;
       }
 
@@ -1285,12 +1498,24 @@ void AXI_Interconnect::comb_read_arbiter() {
       // from being artificially halved. ICache still relies on ready-first
       // semantics internally, so preserve the existing two-cycle contract
       // there until the front-end request state machine is updated.
-      axi_io.ar.arvalid = true;
-      axi_io.ar.araddr = read_ports[idx].req.addr;
-      axi_io.ar.arlen = calc_burst_len(read_ports[idx].req.total_size);
-      axi_io.ar.arsize = kDownstreamAxiSize;
-      axi_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-      axi_io.ar.arid = axi_id;
+      const uint32_t req_addr = static_cast<uint32_t>(read_ports[idx].req.addr);
+      const uint8_t req_total_size =
+          static_cast<uint8_t>(read_ports[idx].req.total_size);
+      const auto issue = make_downstream_read_issue(
+          classify_downstream_port(req_addr, req_total_size), req_addr,
+          req_total_size, llc_config.line_bytes, false);
+      ar_llc_resp_extract_from_aligned_beat_c = issue.extract_from_aligned_beat;
+      ar_llc_upstream_addr_c = req_addr;
+      ar_llc_upstream_total_size_c = req_total_size;
+      ar_port_c = issue.port;
+      auto &ar_io = downstream_io(issue.port);
+      ar_io.ar.arvalid = true;
+      ar_io.ar.araddr = issue.addr;
+      ar_io.ar.arlen = calc_burst_len(issue.total_size);
+      ar_io.ar.arsize =
+          issue.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+      ar_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
+      ar_io.ar.arid = axi_id;
       read_ports[idx].req.ready = true;
       break;
     }
@@ -1301,7 +1526,8 @@ void AXI_Interconnect::comb_read_response() {
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     read_ports[i].resp.valid = false;
   }
-  axi_io.r.rready = true;
+  axi_ddr_io.r.rready = true;
+  axi_mmio_io.r.rready = true;
 
   // Present at most one completed response per master per cycle.
   bool master_has_resp[NUM_READ_MASTERS] = {false};
@@ -1313,7 +1539,9 @@ void AXI_Interconnect::comb_read_response() {
       uint8_t master = txn.master_id;
       if (!master_has_resp[master]) { // Only first complete per master
         read_ports[master].resp.valid = true;
-        read_ports[master].resp.data = txn.data;
+        read_ports[master].resp.data = txn.resp_extract_from_aligned_beat
+                                           ? extract_aligned_downstream_read(txn)
+                                           : txn.data;
         read_ports[master].resp.id = txn.orig_id;
         if (!txn.to_llc &&
             (focus_read_txn(txn) || trace_icache_read_txn(txn, sim_time))) {
@@ -1344,52 +1572,42 @@ void AXI_Interconnect::comb_write_request() {
     }
   }
 
-  axi_io.w.wvalid = false;
+  aw_port_c = DownstreamPort::DDR;
+  axi_ddr_io.aw.awvalid = false;
+  axi_mmio_io.aw.awvalid = false;
+  axi_ddr_io.w.wvalid = false;
+  axi_mmio_io.w.wvalid = false;
 
   if (llc_enabled()) {
     if (aw_latched.valid) {
-      axi_io.aw.awvalid = true;
-      axi_io.aw.awaddr = aw_latched.addr;
-      axi_io.aw.awlen = aw_latched.len;
-      axi_io.aw.awsize = aw_latched.size;
-      axi_io.aw.awburst = aw_latched.burst;
-      axi_io.aw.awid = aw_latched.id;
+      auto &aw_io = downstream_io(aw_latched.port);
+      aw_io.aw.awvalid = true;
+      aw_io.aw.awaddr = aw_latched.addr;
+      aw_io.aw.awlen = aw_latched.len;
+      aw_io.aw.awsize = aw_latched.size;
+      aw_io.aw.awburst = aw_latched.burst;
+      aw_io.aw.awid = aw_latched.id;
     } else {
-      axi_io.aw.awvalid = false;
       if (!w_active && !llc_mem_write_resp_valid_ &&
-          llc.io.ext_out.mem.write_req_valid) {
-        const uint16_t llc_write_bytes =
-            static_cast<uint16_t>(llc.io.ext_out.mem.write_req_size) + 1u;
-        const uint32_t llc_write_beat_addr =
-            align_downstream_addr(llc.io.ext_out.mem.write_req_addr,
-                                  kDownstreamBeatBytes);
-        const bool mode2_single_beat_write =
-            llc.io.ext_out.mem.write_req_mode2_ddr_aligned &&
-            llc_write_bytes <= kDownstreamBeatBytes &&
-            (static_cast<uint32_t>(llc.io.ext_out.mem.write_req_addr -
-                                   llc_write_beat_addr) +
-             llc_write_bytes) <= kDownstreamBeatBytes;
-        const uint32_t llc_write_addr = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
-                                            ? (mode2_single_beat_write
-                                                   ? llc_write_beat_addr
-                                                   : align_downstream_addr(
-                                                         llc.io.ext_out.mem.write_req_addr,
-                                                         llc_config.line_bytes))
-                                            : llc.io.ext_out.mem.write_req_addr;
-        const uint8_t llc_write_size = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
-                                           ? (mode2_single_beat_write
-                                                  ? static_cast<uint8_t>(
-                                                        kDownstreamBeatBytes - 1u)
-                                                  : static_cast<uint8_t>(
-                                                        llc_config.line_bytes - 1u))
-                                           : static_cast<uint8_t>(
-                                                 llc.io.ext_out.mem.write_req_size);
-        axi_io.aw.awvalid = true;
-        axi_io.aw.awaddr = llc_write_addr;
-        axi_io.aw.awlen = calc_burst_len(llc_write_size);
-        axi_io.aw.awsize = kDownstreamAxiSize;
-        axi_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
-        axi_io.aw.awid = llc.io.ext_out.mem.write_req_id & 0x7;
+          llc.io.ext_out.mem.write_req_valid &&
+          can_issue_external_write(llc.io.ext_out.mem.write_req_addr)) {
+        const auto issue = make_downstream_write_issue(
+            classify_downstream_port(llc.io.ext_out.mem.write_req_addr,
+                                     llc.io.ext_out.mem.write_req_size),
+            llc.io.ext_out.mem.write_req_addr,
+            static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size),
+            llc.io.ext_out.mem.write_req_data,
+            llc.io.ext_out.mem.write_req_strobe, llc_config.line_bytes,
+            llc.io.ext_out.mem.write_req_mode2_ddr_aligned);
+        aw_port_c = issue.port;
+        auto &aw_io = downstream_io(issue.port);
+        aw_io.aw.awvalid = true;
+        aw_io.aw.awaddr = issue.addr;
+        aw_io.aw.awlen = calc_burst_len(issue.total_size);
+        aw_io.aw.awsize =
+            issue.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+        aw_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
+        aw_io.aw.awid = llc.io.ext_out.mem.write_req_id & 0x7;
       }
     }
 
@@ -1430,7 +1648,7 @@ void AXI_Interconnect::comb_write_request() {
               request_uses_direct_mapped_llc(req_addr, req_total_size);
           llc_upstream_write_capture_c[idx].mode2_ddr_aligned =
               runtime_mode_ == 2u &&
-              !is_mmio_addr(req_addr) &&
+              request_uses_ddr_port(req_addr, req_total_size) &&
               !request_in_mapped_window(req_addr, req_total_size);
           break;
         }
@@ -1441,39 +1659,44 @@ void AXI_Interconnect::comb_write_request() {
     }
 
     if (w_active && w_current.aw_done && !w_current.w_done) {
-      axi_io.w.wvalid = true;
-      axi_io.w.wdata =
+      auto &w_io = downstream_io(w_current.port);
+      w_io.w.wvalid = true;
+      w_io.w.wdata =
           pack_downstream_write_beat(w_current.wdata, w_current.beats_sent);
-      axi_io.w.wstrb =
+      w_io.w.wstrb =
           pack_downstream_write_strobe(w_current.wstrb, w_current.beats_sent);
-      axi_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
+      w_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
     }
     return;
   }
 
   // If AW is latched (waiting for awready), output latched values
   if (aw_latched.valid) {
-    axi_io.aw.awvalid = true; // MUST stay valid until handshake!
-    axi_io.aw.awaddr = aw_latched.addr;
-    axi_io.aw.awlen = aw_latched.len;
-    axi_io.aw.awsize = aw_latched.size;
-    axi_io.aw.awburst = aw_latched.burst;
-    axi_io.aw.awid = aw_latched.id;
+    auto &aw_io = downstream_io(aw_latched.port);
+    aw_io.aw.awvalid = true; // MUST stay valid until handshake!
+    aw_io.aw.awaddr = aw_latched.addr;
+    aw_io.aw.awlen = aw_latched.len;
+    aw_io.aw.awsize = aw_latched.size;
+    aw_io.aw.awburst = aw_latched.burst;
+    aw_io.aw.awid = aw_latched.id;
   } else {
-    axi_io.aw.awvalid = false;
-
     // Let already-accepted write transactions drain even while a mode-2
     // transition flush is pending. Only block acceptance of new upstream work.
     if (!any_w_resp_valid) {
       const int aw_idx = find_next_aw_pending();
       if (aw_idx >= 0) {
         const auto &txn = w_pending[static_cast<size_t>(aw_idx)];
-        axi_io.aw.awvalid = true;
-        axi_io.aw.awaddr = txn.addr;
-        axi_io.aw.awlen = txn.total_beats - 1;
-        axi_io.aw.awsize = kDownstreamAxiSize;
-        axi_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
-        axi_io.aw.awid = txn.axi_id;
+        if (can_issue_external_write(txn.addr)) {
+          aw_port_c = txn.port;
+          auto &aw_io = downstream_io(txn.port);
+          aw_io.aw.awvalid = true;
+          aw_io.aw.awaddr = txn.addr;
+          aw_io.aw.awlen = txn.total_beats - 1;
+          aw_io.aw.awsize =
+              txn.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+          aw_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
+          aw_io.aw.awid = txn.axi_id;
+        }
       }
     }
 
@@ -1506,19 +1729,22 @@ void AXI_Interconnect::comb_write_request() {
 
   // W channel: send data after AW done
   if (w_active && w_current.aw_done && !w_current.w_done) {
-    axi_io.w.wvalid = true;
-    axi_io.w.wdata =
+    auto &w_io = downstream_io(w_current.port);
+    w_io.w.wvalid = true;
+    w_io.w.wdata =
         pack_downstream_write_beat(w_current.wdata, w_current.beats_sent);
-    axi_io.w.wstrb =
+    w_io.w.wstrb =
         pack_downstream_write_strobe(w_current.wstrb, w_current.beats_sent);
-    axi_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
+    w_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
   }
 }
 
 void AXI_Interconnect::comb_write_response() {
   if (llc_enabled()) {
-    axi_io.b.bready =
+    const bool ready =
         (llc_mem_ignored_b_count_ > 0) || !llc_mem_write_resp_valid_;
+    axi_ddr_io.b.bready = ready;
+    axi_mmio_io.b.bready = ready;
     return;
   }
 
@@ -1532,7 +1758,8 @@ void AXI_Interconnect::comb_write_response() {
   }
 
   // Backpressure DDR if upstream hasn't consumed the response yet.
-  axi_io.b.bready = !any_w_resp_valid;
+  axi_ddr_io.b.bready = !any_w_resp_valid;
+  axi_mmio_io.b.bready = !any_w_resp_valid;
 }
 
 // ============================================================================
@@ -1647,9 +1874,12 @@ void AXI_Interconnect::seq() {
   };
 
   // ========== AR Channel with Latch ==========
+  const DownstreamPort seq_ar_port =
+      ar_latched.valid ? ar_latched.port : ar_port_c;
+  auto &seq_ar_io = downstream_io(seq_ar_port);
 
   // If new AR request and NOT immediately ready, latch it
-  if (axi_io.ar.arvalid && !ar_latched.valid && !axi_io.ar.arready) {
+  if (seq_ar_io.ar.arvalid && !ar_latched.valid && !seq_ar_io.ar.arready) {
     uint8_t orig_id = 0;
     int master_idx = -1;
     if (ar_from_llc_c) {
@@ -1672,20 +1902,19 @@ void AXI_Interconnect::seq() {
       // Latch the request
       ar_latched.valid = true;
       ar_latched.accepted_upstream = false;
-      ar_latched.addr = axi_io.ar.araddr;
-      ar_latched.len = axi_io.ar.arlen;
-      ar_latched.size = axi_io.ar.arsize;
-      ar_latched.burst = axi_io.ar.arburst;
-      ar_latched.id = axi_io.ar.arid;
+      ar_latched.port = seq_ar_port;
+      ar_latched.addr = seq_ar_io.ar.araddr;
+      ar_latched.len = seq_ar_io.ar.arlen;
+      ar_latched.size = seq_ar_io.ar.arsize;
+      ar_latched.burst = seq_ar_io.ar.arburst;
+      ar_latched.id = seq_ar_io.ar.arid;
       ar_latched.master_id = static_cast<uint8_t>(master_idx);
       ar_latched.orig_id = orig_id;
       ar_latched.to_llc = ar_from_llc_c;
       ar_latched.resp_extract_from_aligned_beat =
           ar_llc_resp_extract_from_aligned_beat_c;
-      ar_latched.upstream_addr =
-          ar_from_llc_c ? ar_llc_upstream_addr_c : axi_io.ar.araddr;
-      ar_latched.upstream_total_size =
-          ar_from_llc_c ? ar_llc_upstream_total_size_c : 0;
+      ar_latched.upstream_addr = ar_llc_upstream_addr_c;
+      ar_latched.upstream_total_size = ar_llc_upstream_total_size_c;
       if (!ar_from_llc_c) {
         // A latched AR only means the interconnect has locally buffered the
         // request under downstream backpressure. Upstream acceptance must wait
@@ -1698,7 +1927,7 @@ void AXI_Interconnect::seq() {
   }
 
   // AR handshake complete
-  if (axi_io.ar.arvalid && axi_io.ar.arready) {
+  if (seq_ar_io.ar.arvalid && seq_ar_io.ar.arready) {
     ReadPendingTxn txn;
     if (ar_latched.valid) {
       // Use latched values
@@ -1706,6 +1935,7 @@ void AXI_Interconnect::seq() {
       txn.master_id = ar_latched.master_id;
       txn.orig_id = ar_latched.orig_id;
       txn.total_beats = ar_latched.len + 1;
+      txn.port = ar_latched.port;
       txn.addr = ar_latched.addr;
       txn.upstream_addr = ar_latched.upstream_addr;
       txn.upstream_total_size = ar_latched.upstream_total_size;
@@ -1717,6 +1947,7 @@ void AXI_Interconnect::seq() {
       ar_latched.accepted_upstream = false;
       ar_latched.to_llc = false;
       ar_latched.resp_extract_from_aligned_beat = false;
+      ar_latched.port = DownstreamPort::DDR;
       ar_latched.upstream_addr = 0;
       ar_latched.upstream_total_size = 0;
       if (!txn.to_llc && !upstream_accepted &&
@@ -1748,15 +1979,16 @@ void AXI_Interconnect::seq() {
       if (master_idx < 0) {
         goto read_handshake_done;
       }
-      txn.axi_id = axi_io.ar.arid;
+      txn.axi_id = seq_ar_io.ar.arid;
       txn.master_id = static_cast<uint8_t>(master_idx);
       txn.orig_id = orig_id;
-      txn.total_beats = axi_io.ar.arlen + 1;
-      txn.addr = axi_io.ar.araddr;
-      txn.upstream_addr = ar_from_llc_c ? ar_llc_upstream_addr_c : axi_io.ar.araddr;
-      txn.upstream_total_size = ar_from_llc_c ? ar_llc_upstream_total_size_c : 0;
+      txn.total_beats = seq_ar_io.ar.arlen + 1;
+      txn.port = seq_ar_port;
+      txn.addr = seq_ar_io.ar.araddr;
+      txn.upstream_addr = ar_llc_upstream_addr_c;
+      txn.upstream_total_size = ar_llc_upstream_total_size_c;
       txn.resp_extract_from_aligned_beat =
-          ar_from_llc_c && ar_llc_resp_extract_from_aligned_beat_c;
+          ar_llc_resp_extract_from_aligned_beat_c;
       txn.to_llc = ar_from_llc_c;
       if (!ar_from_llc_c) {
         read_req_hold[master_idx] = {};
@@ -1974,24 +2206,28 @@ read_handshake_done:
   }
 
   // R handshake
-  if (axi_io.r.rvalid && axi_io.r.rready) {
+  auto handle_r_handshake = [&](DownstreamPort port, sim_ddr::SimDDR_IO_t &io) {
+    if (!io.r.rvalid || !io.r.rready) {
+      return;
+    }
     for (auto &txn : r_pending) {
-      if (txn.axi_id == static_cast<uint8_t>(axi_io.r.rid & kAxiIdMask) &&
+      if (txn.port == port &&
+          txn.axi_id == static_cast<uint8_t>(io.r.rid & kAxiIdMask) &&
           txn.beats_done < txn.total_beats) {
-        unpack_downstream_read_beat(txn, axi_io.r.rdata);
+        unpack_downstream_read_beat(txn, io.r.rdata);
         txn.beats_done++;
         if (focus_read_txn(txn) || trace_icache_read_txn(txn, sim_time)) {
           const std::string beat_hex =
-              axi_compat::hex_string(axi_io.r.rdata, kDownstreamBeatBytes);
+              axi_compat::hex_string(io.r.rdata, kDownstreamBeatBytes);
           std::printf(
               "[AXI-R][R-BEAT] cyc=%lld addr=0x%08x master=%u orig_id=%u axi_id=%u "
               "rid=%u beat=%u/%u data=%s rlast=%u\n",
               sim_time, txn.addr, static_cast<unsigned>(txn.master_id),
               static_cast<unsigned>(txn.orig_id), static_cast<unsigned>(txn.axi_id),
-              static_cast<unsigned>(axi_io.r.rid & kAxiIdMask),
+              static_cast<unsigned>(io.r.rid & kAxiIdMask),
               static_cast<unsigned>(txn.beats_done),
               static_cast<unsigned>(txn.total_beats), beat_hex.c_str(),
-              static_cast<unsigned>(axi_io.r.rlast));
+              static_cast<unsigned>(io.r.rlast));
           if (txn.beats_done == txn.total_beats) {
             dump_focus_read_txn("R-COMPLETE", sim_time, txn);
           }
@@ -2002,7 +2238,9 @@ read_handshake_done:
         break;
       }
     }
-  }
+  };
+  handle_r_handshake(DownstreamPort::DDR, axi_ddr_io);
+  handle_r_handshake(DownstreamPort::MMIO, axi_mmio_io);
 
   // Response handshake
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
@@ -2104,50 +2342,24 @@ read_handshake_done:
     }
 
     if (!w_active && llc.io.ext_out.mem.write_req_valid &&
-        llc.io.ext_in.mem.write_req_ready) {
-      const uint16_t llc_write_bytes =
-          static_cast<uint16_t>(llc.io.ext_out.mem.write_req_size) + 1u;
-      const uint32_t llc_write_beat_addr =
-          align_downstream_addr(llc.io.ext_out.mem.write_req_addr,
-                                kDownstreamBeatBytes);
-      const bool mode2_single_beat_write =
-          llc.io.ext_out.mem.write_req_mode2_ddr_aligned &&
-          llc_write_bytes <= kDownstreamBeatBytes &&
-          (static_cast<uint32_t>(llc.io.ext_out.mem.write_req_addr -
-                                 llc_write_beat_addr) +
-           llc_write_bytes) <= kDownstreamBeatBytes;
-      const uint32_t issued_write_addr = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
-                                             ? (mode2_single_beat_write
-                                                    ? llc_write_beat_addr
-                                                    : align_downstream_addr(
-                                                          llc.io.ext_out.mem.write_req_addr,
-                                                          llc_config.line_bytes))
-                                             : llc.io.ext_out.mem.write_req_addr;
-      const uint8_t issued_write_size = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
-                                            ? (mode2_single_beat_write
-                                                   ? static_cast<uint8_t>(
-                                                         kDownstreamBeatBytes - 1u)
-                                                   : static_cast<uint8_t>(
-                                                         llc_config.line_bytes - 1u))
-                                            : static_cast<uint8_t>(
-                                                  llc.io.ext_out.mem.write_req_size);
+        llc.io.ext_in.mem.write_req_ready &&
+        can_issue_external_write(llc.io.ext_out.mem.write_req_addr)) {
+      const auto issue = make_downstream_write_issue(
+          classify_downstream_port(llc.io.ext_out.mem.write_req_addr,
+                                   llc.io.ext_out.mem.write_req_size),
+          llc.io.ext_out.mem.write_req_addr,
+          static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size),
+          llc.io.ext_out.mem.write_req_data,
+          llc.io.ext_out.mem.write_req_strobe, llc_config.line_bytes,
+          llc.io.ext_out.mem.write_req_mode2_ddr_aligned);
       w_active = true;
       w_current = {};
-      w_current.addr = issued_write_addr;
-      w_current.wdata = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
-                            ? align_mode2_downstream_write_data(
-                                  llc.io.ext_out.mem.write_req_data,
-                                  llc.io.ext_out.mem.write_req_addr,
-                                  issued_write_addr)
-                            : llc.io.ext_out.mem.write_req_data;
-      w_current.wstrb = llc.io.ext_out.mem.write_req_mode2_ddr_aligned
-                            ? align_mode2_downstream_write_strobe(
-                                  llc.io.ext_out.mem.write_req_strobe,
-                                  llc.io.ext_out.mem.write_req_addr,
-                                  issued_write_addr)
-                            : llc.io.ext_out.mem.write_req_strobe;
+      w_current.port = issue.port;
+      w_current.addr = issue.addr;
+      w_current.wdata = issue.wdata;
+      w_current.wstrb = issue.wstrb;
       w_current.orig_id = llc.io.ext_out.mem.write_req_id;
-      w_current.total_beats = calc_burst_len(issued_write_size) + 1;
+      w_current.total_beats = calc_burst_len(issue.total_size) + 1;
       w_current.beats_sent = 0;
       w_current.aw_done = false;
       w_current.w_done = false;
@@ -2156,21 +2368,25 @@ read_handshake_done:
       w_current_master = -1;
 
       aw_latched.valid = true;
+      aw_latched.port = w_current.port;
       aw_latched.addr = w_current.addr;
       aw_latched.len = w_current.total_beats - 1;
-      aw_latched.size = kDownstreamAxiSize;
+      aw_latched.size =
+          w_current.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
       aw_latched.burst = sim_ddr::AXI_BURST_INCR;
       aw_latched.id = w_current.orig_id & 0x7;
     }
 
-    if (axi_io.aw.awvalid && axi_io.aw.awready) {
+    auto &llc_w_io = downstream_io(w_current.port);
+    if (llc_w_io.aw.awvalid && llc_w_io.aw.awready) {
       aw_latched.valid = false;
+      aw_latched.port = DownstreamPort::DDR;
       w_current.aw_done = true;
     }
 
-    if (axi_io.w.wvalid && axi_io.w.wready) {
+    if (llc_w_io.w.wvalid && llc_w_io.w.wready) {
       w_current.beats_sent++;
-      if (axi_io.w.wlast) {
+      if (llc_w_io.w.wlast) {
         w_current.w_done = true;
         if (w_current.llc_victim_write) {
           llc_mem_write_resp_valid_ = true;
@@ -2183,14 +2399,19 @@ read_handshake_done:
       }
     }
 
-    if (axi_io.b.bvalid && axi_io.b.bready) {
+    auto handle_llc_b = [&](sim_ddr::SimDDR_IO_t &io) {
+      if (!io.b.bvalid || !io.b.bready) {
+        return;
+      }
       if (llc_mem_ignored_b_count_ > 0) {
         llc_mem_ignored_b_count_--;
       } else {
         llc_mem_write_resp_valid_ = true;
-        llc_mem_write_resp_ = axi_io.b.bresp;
+        llc_mem_write_resp_ = io.b.bresp;
       }
-    }
+    };
+    handle_llc_b(axi_ddr_io);
+    handle_llc_b(axi_mmio_io);
 
     if (llc_mem_write_resp_valid_prev && llc.io.ext_out.mem.write_resp_ready) {
       llc_mem_write_resp_valid_ = false;
@@ -2237,10 +2458,18 @@ read_handshake_done:
     }
     txn.master_id = idx;
     txn.orig_id = write_ports[idx].req.id;
-    txn.addr = write_ports[idx].req.addr;
-    txn.wdata = write_ports[idx].req.wdata;
-    txn.wstrb = write_ports[idx].req.wstrb;
-    txn.total_beats = calc_burst_len(write_ports[idx].req.total_size) + 1;
+    const uint32_t req_addr = static_cast<uint32_t>(write_ports[idx].req.addr);
+    const uint8_t req_total_size =
+        static_cast<uint8_t>(write_ports[idx].req.total_size);
+    const auto issue = make_downstream_write_issue(
+        classify_downstream_port(req_addr, req_total_size), req_addr,
+        req_total_size, write_ports[idx].req.wdata, write_ports[idx].req.wstrb,
+        llc_config.line_bytes, false);
+    txn.port = issue.port;
+    txn.addr = issue.addr;
+    txn.wdata = issue.wdata;
+    txn.wstrb = issue.wstrb;
+    txn.total_beats = calc_burst_len(issue.total_size) + 1;
     txn.beats_sent = 0;
     txn.aw_done = false;
     txn.w_done = false;
@@ -2271,8 +2500,11 @@ read_handshake_done:
   }
 
   // AW handshake
-  if (axi_io.aw.awvalid && axi_io.aw.awready) {
-    const uint8_t axi_id = aw_latched.valid ? aw_latched.id : axi_io.aw.awid;
+  const DownstreamPort seq_aw_port =
+      aw_latched.valid ? aw_latched.port : aw_port_c;
+  auto &seq_aw_io = downstream_io(seq_aw_port);
+  if (seq_aw_io.aw.awvalid && seq_aw_io.aw.awready) {
+    const uint8_t axi_id = aw_latched.valid ? aw_latched.id : seq_aw_io.aw.awid;
     const int pending_idx = find_write_pending_by_axi_id(axi_id);
     if (pending_idx >= 0) {
       w_pending[static_cast<size_t>(pending_idx)].aw_done = true;
@@ -2281,15 +2513,17 @@ read_handshake_done:
         std::printf(
             "[AXI-W][AW-HS] cyc=%lld axi_id=%u addr=0x%08x len=%u beats=%u\n",
             sim_time, static_cast<unsigned>(axi_id), txn.addr,
-            static_cast<unsigned>(axi_io.aw.awlen),
+            static_cast<unsigned>(seq_aw_io.aw.awlen),
             static_cast<unsigned>(txn.total_beats));
       }
     }
     aw_latched.valid = false; // Clear latch
+    aw_latched.port = DownstreamPort::DDR;
   }
 
   // W handshake
-  if (axi_io.w.wvalid && axi_io.w.wready) {
+  auto &seq_w_io = downstream_io(w_current.port);
+  if (seq_w_io.w.wvalid && seq_w_io.w.wready) {
     const int pending_idx = find_write_pending_by_axi_id(w_current.axi_id);
     if (pending_idx >= 0) {
       auto &txn = w_pending[static_cast<size_t>(pending_idx)];
@@ -2297,9 +2531,10 @@ read_handshake_done:
         const uint32_t beat_addr =
             txn.addr + static_cast<uint32_t>(txn.beats_sent) * kDownstreamBeatBytes;
         const std::string beat_hex =
-            axi_compat::hex_string(axi_io.w.wdata, kDownstreamBeatBytes);
+            axi_compat::hex_string(seq_w_io.w.wdata, kDownstreamBeatBytes);
         const std::string strobe_hex =
-            axi_compat::hex_string(axi_io.w.wstrb, sim_ddr::AXI_STRB_STORAGE_BYTES);
+            axi_compat::hex_string(seq_w_io.w.wstrb,
+                                   sim_ddr::AXI_STRB_STORAGE_BYTES);
         std::printf(
             "[AXI-W][W-HS] cyc=%lld axi_id=%u beat=%u/%u beat_addr=0x%08x "
             "data=%s wstrb=%s wlast=%d\n",
@@ -2307,12 +2542,12 @@ read_handshake_done:
             static_cast<unsigned>(txn.beats_sent),
             static_cast<unsigned>(txn.total_beats), beat_addr, beat_hex.c_str(),
             strobe_hex.c_str(),
-            static_cast<int>(axi_io.w.wlast));
+            static_cast<int>(seq_w_io.w.wlast));
       }
       txn.beats_sent++;
       w_current.beats_sent = txn.beats_sent;
     }
-    if (axi_io.w.wlast) {
+    if (seq_w_io.w.wlast) {
       if (const int idx = find_write_pending_by_axi_id(w_current.axi_id); idx >= 0) {
         w_pending[static_cast<size_t>(idx)].w_done = true;
         const auto &txn = w_pending[static_cast<size_t>(idx)];
@@ -2331,8 +2566,11 @@ read_handshake_done:
   }
 
   // B handshake
-  if (axi_io.b.bvalid && axi_io.b.bready) {
-    const int pending_idx = find_write_pending_by_axi_id(axi_io.b.bid);
+  auto handle_b_handshake = [&](sim_ddr::SimDDR_IO_t &io) {
+    if (!io.b.bvalid || !io.b.bready) {
+      return;
+    }
+    const int pending_idx = find_write_pending_by_axi_id(io.b.bid);
     if (pending_idx >= 0) {
       const auto txn = w_pending[static_cast<size_t>(pending_idx)];
       if (focus_write_line(txn.addr)) {
@@ -2346,11 +2584,13 @@ read_handshake_done:
       if (txn.master_id < NUM_WRITE_MASTERS) {
         w_resp_valid[txn.master_id] = true;
         w_resp_id[txn.master_id] = txn.orig_id;
-        w_resp_resp[txn.master_id] = axi_io.b.bresp;
+        w_resp_resp[txn.master_id] = io.b.bresp;
       }
       w_pending.erase(w_pending.begin() + pending_idx);
     }
-  }
+  };
+  handle_b_handshake(axi_ddr_io);
+  handle_b_handshake(axi_mmio_io);
 
   // Upstream response handshake.
   for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
@@ -2365,12 +2605,16 @@ read_handshake_done:
     const int next_aw_idx = find_next_aw_pending();
     if (next_aw_idx >= 0) {
       const auto &txn = w_pending[static_cast<size_t>(next_aw_idx)];
-      aw_latched.valid = true;
-      aw_latched.addr = txn.addr;
-      aw_latched.len = txn.total_beats - 1;
-      aw_latched.size = kDownstreamAxiSize;
-      aw_latched.burst = sim_ddr::AXI_BURST_INCR;
-      aw_latched.id = txn.axi_id;
+      if (can_issue_external_write(txn.addr)) {
+        aw_latched.valid = true;
+        aw_latched.port = txn.port;
+        aw_latched.addr = txn.addr;
+        aw_latched.len = txn.total_beats - 1;
+        aw_latched.size =
+            txn.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+        aw_latched.burst = sim_ddr::AXI_BURST_INCR;
+        aw_latched.id = txn.axi_id;
+      }
     }
   }
 

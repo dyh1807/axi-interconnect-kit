@@ -21,6 +21,11 @@
 
 namespace axi_interconnect {
 
+enum class DownstreamPort : uint8_t {
+  DDR = 0,
+  MMIO = 1,
+};
+
 // ============================================================================
 // Latched AR/AW Requests (for AXI compliance)
 // ============================================================================
@@ -31,6 +36,7 @@ struct ARLatch_t {
   bool accepted_upstream;
   bool to_llc;
   bool resp_extract_from_aligned_beat;
+  DownstreamPort port;
   uint32_t addr;
   uint32_t upstream_addr;
   uint8_t len;
@@ -45,6 +51,7 @@ struct ARLatch_t {
 // Latched AW request - holds values until awready
 struct AWLatch_t {
   bool valid;
+  DownstreamPort port;
   uint32_t addr;
   uint8_t len;
   uint8_t size;
@@ -62,6 +69,7 @@ struct ReadPendingTxn {
   uint8_t orig_id;
   uint8_t total_beats;
   uint8_t beats_done;
+  DownstreamPort port;
   uint32_t addr;
   uint32_t upstream_addr;
   uint8_t upstream_total_size;
@@ -115,6 +123,7 @@ struct WritePendingTxn {
   uint8_t axi_id;
   uint8_t master_id;
   uint8_t orig_id;
+  DownstreamPort port;
   uint32_t addr;
   WideWriteData_t wdata;
   WideWriteStrb_t wstrb{};
@@ -131,7 +140,8 @@ struct WritePendingTxn {
 
 class AXI_Interconnect {
 public:
-  AXI_Interconnect() : write_port(write_ports[MASTER_DCACHE_W]) {}
+  AXI_Interconnect()
+      : write_port(write_ports[MASTER_DCACHE_W]), axi_io(axi_ddr_io) {}
 
   // Runtime control inputs for the shared AXI submodule.
   // For simulator-only bring-up, init() may seed these inputs from env vars,
@@ -187,8 +197,10 @@ public:
   // Backward-compatible alias to the primary write master.
   WriteMasterPort_t &write_port;
 
-  // Downstream IO (to SimDDR)
-  sim_ddr::SimDDR_IO_t axi_io;
+  // Downstream IO. axi_io is a legacy alias to axi_ddr_io.
+  sim_ddr::SimDDR_IO_t axi_ddr_io;
+  sim_ddr::SimDDR_IO_t axi_mmio_io;
+  sim_ddr::SimDDR_IO_t &axi_io;
   bool read_req_accepted[NUM_READ_MASTERS] = {};
   uint8_t read_req_accepted_id[NUM_READ_MASTERS] = {};
   bool write_req_accepted[NUM_WRITE_MASTERS] = {};
@@ -200,6 +212,8 @@ private:
   bool has_read_id_conflict(uint8_t master_id, uint8_t orig_id) const;
   uint8_t alloc_write_axi_id() const;
   bool can_accept_write_now() const;
+  bool can_issue_external_read(uint32_t addr) const;
+  bool can_issue_external_write(uint32_t addr) const;
   uint32_t count_llc_write_pending() const;
   int find_write_pending_by_axi_id(uint8_t axi_id) const;
   int find_next_aw_pending() const;
@@ -240,8 +254,17 @@ private:
   void comb_write_request();
   void comb_write_response();
   void prepare_llc_inputs(bool sample_upstream_ready);
+  sim_ddr::SimDDR_IO_t &downstream_io(DownstreamPort port);
+  const sim_ddr::SimDDR_IO_t &downstream_io(DownstreamPort port) const;
   bool can_issue_llc_read_req() const;
   bool has_same_line_write_hazard(uint32_t line_addr) const;
+  bool has_external_pending_read_hazard(uint32_t addr) const;
+  bool has_external_pending_write_hazard(uint32_t addr) const;
+  uint32_t external_hazard_line_addr(uint32_t addr) const;
+  DownstreamPort classify_downstream_port(uint32_t addr,
+                                          uint8_t total_size) const;
+  bool request_uses_ddr_port(uint32_t addr, uint8_t total_size) const;
+  bool request_uses_mmio_port(uint32_t addr, uint8_t total_size) const;
 
   uint8_t calc_burst_len(uint8_t total_size);
   uint8_t alloc_read_axi_id() const;
@@ -281,11 +304,13 @@ private:
   uint32_t llc_mem_ignored_b_count_ = 0;
   bool ar_from_llc_c = false;
   uint8_t ar_llc_mem_id_c = 0;
+  DownstreamPort ar_port_c = DownstreamPort::DDR;
   bool ar_llc_resp_extract_from_aligned_beat_c = false;
   uint32_t ar_llc_upstream_addr_c = 0;
   uint8_t ar_llc_upstream_total_size_c = 0;
   int ar_master_c = -1;
   uint8_t ar_orig_id_c = 0;
+  DownstreamPort aw_port_c = DownstreamPort::DDR;
   uint8_t runtime_mode_ = 1;
   uint32_t llc_mapped_offset_ = 0;
   bool reconfig_pending_ = false;
