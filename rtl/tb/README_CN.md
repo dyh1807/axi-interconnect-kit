@@ -337,8 +337,14 @@ core 内部 hazard 遮掉。
 - 验证 MMIO 口为 32-bit / 1 beat
 - 验证大于 4B 的 MMIO 请求会被 backpressure 挡住
 
-当前该 bench 先覆盖 native dual bridge 的最小合同；顶层双外部 AXI 口和全局
-outstanding 共享计数仍需后续补齐。
+当前该 bench 先覆盖 native dual bridge 的最小合同；全局 outstanding 共享计数仍需后续补齐。
+
+### `tb_axi_llc_subsystem_dual_mmio_contract.v`
+
+- 直接面向 `axi_llc_subsystem_dual.v`
+- 覆盖 mode1 普通 MMIO 读写请求不依赖上游 `*_bypass` 标志，也会直接走 MMIO AXI 口
+- 验证 MMIO 读写不会驱动 DDR AXI 口
+- 验证 MMIO 口为 32-bit / 1 beat，读写 response 回到原 upstream ID
 
 ### `tb_axi_llc_subsystem_read_master_timing_contract.v`
 

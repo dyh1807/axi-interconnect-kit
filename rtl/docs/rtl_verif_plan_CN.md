@@ -293,6 +293,15 @@
 
 当前该 bench 尚未覆盖全局 32-entry shared outstanding 计数和同地址 `AR/AW` hazard gate。
 
+### `tb_axi_llc_subsystem_dual_mmio_contract.v`
+
+覆盖 native dual-port subsystem top：
+
+- mode1 普通 MMIO 读写请求即使上游 `*_bypass=0`，也直接走 lower bypass 到 MMIO AXI 口。
+- MMIO 读写不得驱动 DDR AXI 口。
+- MMIO AXI 口保持 32-bit / 1 beat 形状。
+- MMIO read/write response 必须回到原 upstream ID。
+
 ### `tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 
 覆盖：

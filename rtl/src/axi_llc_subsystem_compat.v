@@ -7,16 +7,16 @@
 // Responsibilities:
 //   - Hold per-master queued upstream requests
 //   - Return accepted / accepted_id / independent write responses
-//   - Feed cacheable requests, mode1 bypass requests, and mapped-window
-//     requests into axi_llc_subsystem_core
-//   - Feed only mode0/3 and mode2-window-outside direct-bypass requests to
-//     the lower bypass port without occupying a core slot
+//   - Feed cacheable requests, non-MMIO mode1 bypass requests, and
+//     mapped-window requests into axi_llc_subsystem_core
+//   - Feed mode1 MMIO, mode0/3, and mode2-window-outside direct-bypass
+//     requests to the lower bypass port without occupying a core slot
 //   - Drain local queues before reconfiguration / invalidate-all reaches core
 //
 // This layer does not translate to AXI and does not own resident storage.
 // It is also the first place where the single-flow core is relaxed:
-// direct-bypass traffic from mode0/3 and mode2-window-outside can progress
-// independently of the core path.
+// direct-bypass traffic from mode1 MMIO, mode0/3, and mode2-window-outside can
+// progress independently of the core path.
 module axi_llc_subsystem_compat #(
     parameter ADDR_BITS         = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS           = `AXI_LLC_ID_BITS,
@@ -301,11 +301,11 @@ module axi_llc_subsystem_compat #(
     wire                         direct_bypass_req_handshake_w;
     wire                         core_bypass_handoff_w;
 
-    // The core owns mode1 bypass semantics so resident lookup / write-hit
-    // shadow update stay aligned with the C++ model. Compat keeps a separate
-    // direct-bypass side path only for mode0/3 and mode2 window-outside
-    // traffic, and owns the post-lookup lower lifecycle once a mode1 bypass
-    // miss / write-through is handed off.
+    // The core owns non-MMIO mode1 bypass semantics so resident lookup /
+    // write-hit shadow update stay aligned with the C++ model. Compat keeps a
+    // separate direct-bypass side path for mode1 MMIO, mode0/3, and mode2
+    // window-outside traffic, and owns the post-lookup lower lifecycle once a
+    // non-MMIO mode1 bypass miss / write-through is handed off.
     wire                         core_bypass_req_valid_w;
     wire                         core_bypass_req_write_w;
     wire [ADDR_BITS-1:0]        core_bypass_req_addr_w;
@@ -420,10 +420,11 @@ module axi_llc_subsystem_compat #(
         begin
             request_uses_direct_bypass = 1'b1;
             if (mode_value == MODE_CACHE) begin
-                // Mode1 bypass still enters the core so the core can perform
-                // resident lookup and write-hit shadow update, matching the
-                // current C++ AXI_LLC contract.
-                request_uses_direct_bypass = 1'b0;
+                // Mode1 MMIO must not touch resident LLC state. Non-MMIO
+                // bypass traffic still enters the core so resident lookup and
+                // write-hit shadow update stay aligned with the C++ model.
+                request_uses_direct_bypass =
+                    request_is_mmio(addr_value, total_size_value);
             end else if (mode_value == MODE_MAPPED) begin
                 request_uses_direct_bypass =
                     !request_in_mapped_window(offset_value,

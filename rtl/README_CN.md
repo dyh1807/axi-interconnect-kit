@@ -5,12 +5,16 @@
 
 ## 快速定位
 
-如果你只想先找到顶层、IO 和层次，先看下面 4 个文件：
+如果你只想先找到顶层、IO 和层次，先看下面这些文件：
 
 - `src/axi_llc_subsystem.v`
-  - 当前对外 RTL 顶层
+  - 旧单 AXI 对外 RTL 顶层，保留给既有 testbench / bring-up 使用
   - 上游是 C++ 风格多 `read_masters[] / write_masters[]`
   - 下游是一组 AXI4 `AW/W/B/AR/R`
+- `src/axi_llc_subsystem_dual.v`
+  - 当前双外部 AXI 顶层候选
+  - 上游接口保持不变
+  - 下游直接拆成 DDR 256-bit AXI 口和 MMIO 32-bit AXI 口
 - `src/axi_llc_subsystem_compat.v`
   - 兼容层
   - 把 cacheable/direct-mapped 请求收敛到单流核心
@@ -33,12 +37,13 @@
 
 建议阅读顺序：
 
-1. `src/axi_llc_subsystem.v`
-2. `src/axi_llc_subsystem_compat.v`
-3. `src/axi_llc_subsystem_core.v`
-4. `src/axi_llc_axi_bridge.v`
+1. `src/axi_llc_subsystem_dual.v`（双外部 AXI 顶层候选）
+2. `src/axi_llc_subsystem.v`（旧单 AXI 顶层）
+3. `src/axi_llc_subsystem_compat.v`
+4. `src/axi_llc_subsystem_core.v`
 5. `src/axi_llc_axi_bridge_dual.v`（双口 native bridge wrapper）
-6. `src/axi_llc_axi_dual_port_router.v`（双口过渡验证）
+6. `src/axi_llc_axi_bridge.v`
+7. `src/axi_llc_axi_dual_port_router.v`（双口过渡验证）
 
 ## 层次关系
 
@@ -61,6 +66,11 @@ axi_llc_subsystem
 |       |-- llc_cache_ctrl
 |       `-- llc_mapped_window_ctrl
 `-- axi_llc_axi_bridge
+
+axi_llc_subsystem_dual
+|-- axi_llc_subsystem_compat
+|   `-- axi_llc_subsystem_core
+`-- axi_llc_axi_bridge_dual
 ```
 
 更详细的层次、文件职责和 IO 分层见：
@@ -81,7 +91,8 @@ axi_llc_subsystem
   - 入口在 `src/axi_llc_subsystem.v`
 - 对外下游 AXI：
   - `axi_aw* / axi_w* / axi_b* / axi_ar* / axi_r*`
-  - 入口在 `src/axi_llc_subsystem.v`
+  - 旧单口入口在 `src/axi_llc_subsystem.v`
+  - 双口入口在 `src/axi_llc_subsystem_dual.v`，分别为 `ddr_axi_*` 和 `mmio_axi_*`
 - 单流核心接口：
   - `up_req_* / up_resp_*`
   - `cache_req_* / cache_resp_*`

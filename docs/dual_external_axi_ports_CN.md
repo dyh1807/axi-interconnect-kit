@@ -169,6 +169,17 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 - read/write outstanding 仍维持全局共享上限；后续工作应把同等 native dual-port
   语义迁移到最终 RTL 顶层，并接入 EC harness。
 
+当前 RTL 已开始承接同等语义：
+
+- `axi_llc_subsystem_dual.v` 新增为 native 双外部 AXI 顶层候选；旧
+  `axi_llc_subsystem.v` 仍保留为单 AXI 兼容顶层，避免打断既有 testbench。
+- `axi_llc_subsystem_compat.v` 的 mode1 MMIO 分类已改为 direct lower bypass：
+  32-bit MMIO read/write 不再进入 LLC core resident lookup，也不会更新 LLC
+  data/meta。
+- `tb_axi_llc_subsystem_dual_mmio_contract.v` 固化了 mode1 普通 MMIO 读写
+  `*_bypass=0` 时也必须走 `mmio_axi_*`、不得驱动 `ddr_axi_*`、response 回到原
+  upstream ID。
+
 ## Simulator Reset PC 约束
 
 原 simulator 复位 PC 为 `0x0000_0000`，并通过低地址 boot stub 跳到 `0x8000_0000`。在新地址图下，`0x0000_0000` 属于 MMIO 口，而 MMIO 口只支持 32-bit、1 beat，不适合继续承载 64B ICache line fill。
