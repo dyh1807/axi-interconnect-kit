@@ -159,6 +159,9 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 - targeted test 已覆盖 DDR 与 MMIO 同周期发出 `AR`、同周期发出 `AW`、同周期发出
   `W`。这些同周期发射测试当前覆盖的是非 LLC 直连外部路径；LLC-on 路径的上游仍先
   进入 LLC core request stage，MMIO bypass 经过 LLC 后再下发到 MMIO 口。
+- targeted test 也覆盖同 line hazard 的两个方向：AR 发出后同 line AW 必须等待 R
+  返回，AW/写事务发出后同 line AR 必须等待 B/写事务完成；不同 port/不同 line 的
+  DDR 与 MMIO 流量不应被这些 hazard gate 串行化。
 - read/write outstanding 仍维持全局共享上限；后续工作应把同等 native dual-port
   语义迁移到最终 RTL 顶层，并接入 EC harness。
 
@@ -185,10 +188,14 @@ difftest reference 和 oracle 灌入上述参数；否则 Linux 可能在缺少 
 
 已通过的 targeted tests：
 
-- `axi_interconnect_dual_port_test`：15 passed, 0 failed。
+- `axi_interconnect_dual_port_test`：24 passed, 0 failed。
   覆盖 DDR/MMIO 路由、MMIO 大读写阻塞、同 line AR/AW hazard gate、legacy LLC
   MMIO backing 读写、LLC-MMIO bypass，以及非 LLC-on 模式下的写路径地址分类、
   DDR 256-bit 对齐/`wstrb` 移位、mode2 mapped-window 写捕获和 mode3 bypass 写捕获。
+  最新补充覆盖：同 line AR 等待 B、不同 port/不同 line DDR/MMIO 不串行、LLC mem
+  侧 read/write request ready 受同 line R/B 约束。
+  standalone dual-port test target 显式使用 32-entry read outstanding 和 32-entry
+  write outstanding，并覆盖 read/write outstanding 共享口内预算、读写预算相互独立。
 - `axi_interconnect_llc_axi4_test`：历史版本 29 passed, 0 failed；本轮未在 standalone
   submodule CMake 下复测，因为该 test env 链接 `SimDDR.cpp`，仍依赖父仓库
   `PhysMemory.h`。

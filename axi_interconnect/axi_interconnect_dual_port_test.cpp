@@ -10,6 +10,11 @@
 #include "AXI_Interconnect.h"
 #undef private
 
+static_assert(axi_interconnect::MAX_OUTSTANDING == 32,
+              "dual-port contract requires 32 shared read outstanding slots");
+static_assert(axi_interconnect::MAX_WRITE_OUTSTANDING == 32,
+              "dual-port contract requires 32 shared write outstanding slots");
+
 uint32_t *p_memory = nullptr;
 long long sim_time = 0;
 
@@ -191,6 +196,52 @@ bool capture_llc_write(axi_interconnect::AXI_Interconnect &dut,
     }
   }
   return false;
+}
+
+void fill_read_outstanding(axi_interconnect::AXI_Interconnect &dut) {
+  dut.r_pending.clear();
+  for (uint32_t i = 0; i < axi_interconnect::MAX_OUTSTANDING; ++i) {
+    const bool use_ddr = (i % 2u) == 0;
+    const uint32_t addr =
+        use_ddr ? (0x50000000u + i * 0x100u)
+                : (0x10010000u + i * 0x100u);
+    axi_interconnect::ReadPendingTxn txn{};
+    txn.axi_id = static_cast<uint8_t>(i);
+    txn.master_id =
+        static_cast<uint8_t>(i % axi_interconnect::NUM_READ_MASTERS);
+    txn.orig_id = static_cast<uint8_t>(i);
+    txn.total_beats = 1;
+    txn.beats_done = 0;
+    txn.port = use_ddr ? axi_interconnect::DownstreamPort::DDR
+                       : axi_interconnect::DownstreamPort::MMIO;
+    txn.addr = addr;
+    txn.upstream_addr = addr;
+    txn.upstream_total_size = 3;
+    txn.data.clear();
+    dut.r_pending.push_back(txn);
+  }
+}
+
+void fill_write_outstanding(axi_interconnect::AXI_Interconnect &dut) {
+  dut.w_pending.clear();
+  for (uint32_t i = 0; i < axi_interconnect::MAX_WRITE_OUTSTANDING; ++i) {
+    const bool use_ddr = (i % 2u) == 0;
+    const uint32_t addr =
+        use_ddr ? (0x50000000u + i * 0x100u)
+                : (0x10010000u + i * 0x100u);
+    axi_interconnect::WritePendingTxn txn{};
+    txn.axi_id = static_cast<uint8_t>(i);
+    txn.master_id =
+        static_cast<uint8_t>(i % axi_interconnect::NUM_WRITE_MASTERS);
+    txn.orig_id = static_cast<uint8_t>(i);
+    txn.port = use_ddr ? axi_interconnect::DownstreamPort::DDR
+                       : axi_interconnect::DownstreamPort::MMIO;
+    txn.addr = addr;
+    txn.wdata.clear();
+    txn.wstrb.clear();
+    txn.total_beats = 1;
+    dut.w_pending.push_back(txn);
+  }
 }
 
 bool test_ddr_read_routes_to_port0() {
@@ -550,6 +601,286 @@ bool test_same_line_write_waits_for_read_return() {
   return true;
 }
 
+bool test_same_line_read_waits_for_write_b() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  axi_interconnect::WritePendingTxn pending{};
+  pending.axi_id = 3;
+  pending.master_id = axi_interconnect::MASTER_DCACHE_W;
+  pending.orig_id = 3;
+  pending.port = axi_interconnect::DownstreamPort::DDR;
+  pending.addr = 0x40000200u;
+  pending.total_beats = 1;
+  pending.beats_sent = 1;
+  pending.aw_done = true;
+  pending.w_done = true;
+  dut.w_pending.push_back(pending);
+
+  auto &read_req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  read_req.valid = true;
+  read_req.addr = 0x40000210u;
+  read_req.total_size = 3;
+  read_req.id = 5;
+  dut.comb_inputs();
+
+  if (dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid) {
+    std::printf("FAIL: same-line AR issued before write B returned\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_different_port_read_not_blocked_by_ddr_write() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  axi_interconnect::WritePendingTxn pending{};
+  pending.axi_id = 4;
+  pending.master_id = axi_interconnect::MASTER_DCACHE_W;
+  pending.orig_id = 4;
+  pending.port = axi_interconnect::DownstreamPort::DDR;
+  pending.addr = 0x40000300u;
+  pending.total_beats = 1;
+  pending.aw_done = false;
+  pending.w_done = false;
+  dut.w_pending.push_back(pending);
+
+  auto &read_req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  read_req.valid = true;
+  read_req.addr = 0x10000000u;
+  read_req.total_size = 3;
+  read_req.id = 6;
+  dut.comb_inputs();
+
+  if (!dut.axi_mmio_io.ar.arvalid || dut.axi_ddr_io.ar.arvalid) {
+    std::printf("FAIL: MMIO AR was incorrectly blocked by DDR write\n");
+    return false;
+  }
+  if (!dut.axi_ddr_io.aw.awvalid) {
+    std::printf("FAIL: DDR AW setup was not driven alongside MMIO AR\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_different_port_write_not_blocked_by_ddr_read() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  axi_interconnect::ReadPendingTxn pending{};
+  pending.axi_id = 5;
+  pending.master_id = axi_interconnect::MASTER_DCACHE_R;
+  pending.orig_id = 5;
+  pending.total_beats = 2;
+  pending.beats_done = 0;
+  pending.port = axi_interconnect::DownstreamPort::DDR;
+  pending.addr = 0x40000400u;
+  pending.upstream_addr = 0x40000400u;
+  pending.upstream_total_size = 63;
+  pending.to_llc = false;
+  dut.r_pending.push_back(pending);
+
+  axi_interconnect::WritePendingTxn write{};
+  write.axi_id = 6;
+  write.master_id = axi_interconnect::MASTER_UNCORE_LSU_W;
+  write.orig_id = 6;
+  write.port = axi_interconnect::DownstreamPort::MMIO;
+  write.addr = 0x10000004u;
+  write.total_beats = 1;
+  write.aw_done = false;
+  write.w_done = false;
+  dut.w_pending.push_back(write);
+
+  dut.comb_inputs();
+
+  if (!dut.axi_mmio_io.aw.awvalid || dut.axi_ddr_io.aw.awvalid) {
+    std::printf("FAIL: MMIO AW was incorrectly blocked by DDR read\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_llc_mem_write_waits_for_read_return() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  axi_interconnect::ReadPendingTxn pending{};
+  pending.axi_id = 1;
+  pending.master_id = 0;
+  pending.orig_id = 1;
+  pending.total_beats = 2;
+  pending.beats_done = 1;
+  pending.port = axi_interconnect::DownstreamPort::DDR;
+  pending.addr = 0x40000800u;
+  pending.upstream_addr = 0x40000800u;
+  pending.upstream_total_size = 63;
+  pending.to_llc = true;
+  dut.r_pending.push_back(pending);
+
+  dut.llc.io.ext_out.mem.write_req_valid = true;
+  dut.llc.io.ext_out.mem.write_req_addr = 0x40000820u;
+  dut.llc.io.ext_out.mem.write_req_size = 63;
+  dut.prepare_llc_inputs(true);
+  if (dut.llc.io.ext_in.mem.write_req_ready) {
+    std::printf("FAIL: LLC mem write was ready before same-line R returned\n");
+    return false;
+  }
+
+  dut.r_pending[0].beats_done = dut.r_pending[0].total_beats;
+  dut.prepare_llc_inputs(true);
+  if (!dut.llc.io.ext_in.mem.write_req_ready) {
+    std::printf("FAIL: LLC mem write stayed blocked after R returned\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_llc_mem_read_waits_for_write_b() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  dut.w_active = true;
+  dut.w_current = {};
+  dut.w_current.port = axi_interconnect::DownstreamPort::DDR;
+  dut.w_current.addr = 0x40000900u;
+  dut.w_current.total_beats = 1;
+  dut.w_current.aw_done = true;
+  dut.w_current.w_done = true;
+
+  dut.llc.io.ext_out.mem.read_req_valid = true;
+  dut.llc.io.ext_out.mem.read_req_addr = 0x40000920u;
+  dut.llc.io.ext_out.mem.read_req_size = 63;
+  dut.llc.io.ext_out.mem.read_req_id = 2;
+  dut.prepare_llc_inputs(true);
+  if (dut.llc.io.ext_in.mem.read_req_ready) {
+    std::printf("FAIL: LLC mem read was ready before same-line B returned\n");
+    return false;
+  }
+
+  dut.w_active = false;
+  dut.w_current = {};
+  dut.prepare_llc_inputs(true);
+  if (!dut.llc.io.ext_in.mem.read_req_ready) {
+    std::printf("FAIL: LLC mem read stayed blocked after write completion\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_shared_read_outstanding_budget_blocks_both_ports() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+  fill_read_outstanding(dut);
+
+  auto &ddr_req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  ddr_req.valid = true;
+  ddr_req.addr = 0x40000004u;
+  ddr_req.total_size = 3;
+  ddr_req.id = 0x31;
+  dut.comb_inputs();
+  if (dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid ||
+      ddr_req.ready) {
+    std::printf("FAIL: full shared read budget still accepted DDR read\n");
+    return false;
+  }
+
+  clear_inputs(dut);
+  auto &mmio_req = dut.read_ports[axi_interconnect::MASTER_UNCORE_LSU_R].req;
+  mmio_req.valid = true;
+  mmio_req.addr = 0x10000000u;
+  mmio_req.total_size = 3;
+  mmio_req.id = 0x32;
+  dut.comb_inputs();
+  if (dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid ||
+      mmio_req.ready) {
+    std::printf("FAIL: full shared read budget still accepted MMIO read\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_read_outstanding_does_not_block_write_budget() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+  fill_read_outstanding(dut);
+
+  if (!enqueue_non_llc_write(dut, axi_interconnect::MASTER_DCACHE_W,
+                             0x40000004u, 3, 0x11223344u, 0xfu, 0x33)) {
+    std::printf("FAIL: full read budget incorrectly blocked write request\n");
+    return false;
+  }
+  if (dut.w_pending.empty()) {
+    std::printf("FAIL: write was accepted but no write pending entry exists\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_shared_write_outstanding_budget_blocks_both_ports() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+  fill_write_outstanding(dut);
+
+  auto &ddr_req = dut.write_ports[axi_interconnect::MASTER_DCACHE_W].req;
+  ddr_req.valid = true;
+  ddr_req.addr = 0x40000004u;
+  ddr_req.total_size = 3;
+  ddr_req.id = 0x34;
+  ddr_req.wdata = single_word_data(0xaabbccddu);
+  ddr_req.wstrb = byte_strobe(0xfu);
+  dut.comb_inputs();
+  if (ddr_req.ready ||
+      dut.w_pending.size() != axi_interconnect::MAX_WRITE_OUTSTANDING) {
+    std::printf("FAIL: full shared write budget still accepted DDR write\n");
+    return false;
+  }
+
+  clear_inputs(dut);
+  auto &mmio_req = dut.write_ports[axi_interconnect::MASTER_UNCORE_LSU_W].req;
+  mmio_req.valid = true;
+  mmio_req.addr = 0x10000000u;
+  mmio_req.total_size = 3;
+  mmio_req.id = 0x35;
+  mmio_req.wdata = single_word_data(0xddccbbaau);
+  mmio_req.wstrb = byte_strobe(0xfu);
+  dut.comb_inputs();
+  if (mmio_req.ready ||
+      dut.w_pending.size() != axi_interconnect::MAX_WRITE_OUTSTANDING) {
+    std::printf("FAIL: full shared write budget still accepted MMIO write\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_write_outstanding_does_not_block_read_budget() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+  fill_write_outstanding(dut);
+
+  auto &req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  req.valid = true;
+  req.addr = 0x40000004u;
+  req.total_size = 3;
+  req.id = 0x36;
+  dut.comb_inputs();
+  if (!dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid ||
+      !req.ready) {
+    std::printf("FAIL: full write budget incorrectly blocked DDR read\n");
+    return false;
+  }
+  return true;
+}
+
 bool test_mode0_ddr_partial_write_aligns_to_256b() {
   axi_interconnect::AXI_Interconnect dut;
   init_dut(dut);
@@ -689,6 +1020,23 @@ int main() {
       test_ddr_and_mmio_aw_issue_same_cycle);
   run("DDR and MMIO W issue same-cycle", test_ddr_and_mmio_w_issue_same_cycle);
   run("same-line AW waits for R", test_same_line_write_waits_for_read_return);
+  run("same-line AR waits for B", test_same_line_read_waits_for_write_b);
+  run("MMIO AR not blocked by DDR write",
+      test_different_port_read_not_blocked_by_ddr_write);
+  run("MMIO AW not blocked by DDR read",
+      test_different_port_write_not_blocked_by_ddr_read);
+  run("LLC mem write waits for same-line R",
+      test_llc_mem_write_waits_for_read_return);
+  run("LLC mem read waits for same-line B",
+      test_llc_mem_read_waits_for_write_b);
+  run("shared read budget blocks both ports",
+      test_shared_read_outstanding_budget_blocks_both_ports);
+  run("read outstanding does not block write budget",
+      test_read_outstanding_does_not_block_write_budget);
+  run("shared write budget blocks both ports",
+      test_shared_write_outstanding_budget_blocks_both_ports);
+  run("write outstanding does not block read budget",
+      test_write_outstanding_does_not_block_read_budget);
   run("mode0 DDR partial write aligns to 256b",
       test_mode0_ddr_partial_write_aligns_to_256b);
   run("mode0 MMIO word write uses MMIO port",
