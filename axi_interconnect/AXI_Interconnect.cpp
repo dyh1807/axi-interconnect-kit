@@ -1104,6 +1104,16 @@ bool AXI_Interconnect::has_external_pending_write_hazard(uint32_t addr) const {
   return false;
 }
 
+bool AXI_Interconnect::has_direct_read_response(uint8_t master_id) const {
+  for (const auto &txn : r_pending) {
+    if (!txn.to_llc && txn.master_id == master_id &&
+        txn.beats_done == txn.total_beats) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool AXI_Interconnect::can_issue_external_read(uint32_t addr) const {
   return !has_external_pending_write_hazard(addr);
 }
@@ -1321,7 +1331,8 @@ void AXI_Interconnect::prepare_llc_inputs(bool sample_upstream_ready) {
           llc_core_req_stage_.read.mode2_ddr_aligned;
     }
     llc.io.ext_in.upstream.read_resp[master].ready =
-        sample_upstream_ready && read_ports[master].resp.ready;
+        sample_upstream_ready && read_ports[master].resp.ready &&
+        !has_direct_read_response(static_cast<uint8_t>(master));
     if (llc_resp_trace_active() && master == MASTER_DCACHE_R &&
         (read_ports[master].resp.ready ||
          llc.io.ext_in.upstream.read_resp[master].ready)) {
@@ -1474,9 +1485,11 @@ void AXI_Interconnect::comb_outputs() {
   }
   if (llc_enabled()) {
     for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-      read_ports[i].resp.valid = llc.io.ext_out.upstream.read_resp[i].valid;
-      read_ports[i].resp.data = llc.io.ext_out.upstream.read_resp[i].data;
-      read_ports[i].resp.id = llc.io.ext_out.upstream.read_resp[i].id;
+      if (!read_ports[i].resp.valid) {
+        read_ports[i].resp.valid = llc.io.ext_out.upstream.read_resp[i].valid;
+        read_ports[i].resp.data = llc.io.ext_out.upstream.read_resp[i].data;
+        read_ports[i].resp.id = llc.io.ext_out.upstream.read_resp[i].id;
+      }
       if (llc_resp_trace_active() && i == MASTER_DCACHE_R &&
           (read_ports[i].resp.valid || read_ports[i].resp.ready)) {
         std::printf(
@@ -1685,6 +1698,58 @@ void AXI_Interconnect::comb_read_arbiter() {
       if (!request_uses_direct_mapped_llc(req_addr, req_total_size) &&
           !req_supported &&
           !unsupported_mmio_request(req_port, req_total_size)) {
+        continue;
+      }
+      if (request_uses_mmio_port(req_addr, req_total_size) && req_supported &&
+          can_issue_external_read(req_addr) &&
+          !port_busy[port_index(DownstreamPort::MMIO)] &&
+          can_accept_read_master_comb(static_cast<uint8_t>(master))) {
+        const bool allow_same_cycle_accept = (master == MASTER_DCACHE_R);
+        if (!req_ready_curr[master] && !allow_same_cycle_accept) {
+          req_ready_r[master] = true;
+          read_ports[master].req.ready = true;
+          read_req_hold[master].valid = true;
+          read_req_hold[master].addr = req_addr;
+          read_req_hold[master].total_size = req_total_size;
+          read_req_hold[master].id =
+              static_cast<uint8_t>(read_ports[master].req.id);
+          read_req_hold[master].bypass = read_ports[master].req.bypass;
+          continue;
+        }
+
+        const ReadReqHoldLatch cap =
+            read_req_hold[master].valid
+                ? read_req_hold[master]
+                : ReadReqHoldLatch{true,
+                                   req_addr,
+                                   req_total_size,
+                                   static_cast<uint8_t>(
+                                       read_ports[master].req.id),
+                                   static_cast<bool>(
+                                       read_ports[master].req.bypass)};
+        if (has_read_id_conflict(static_cast<uint8_t>(master), cap.id)) {
+          continue;
+        }
+        const uint8_t axi_id = alloc_comb_read_axi_id();
+        if (axi_id == kInvalidAxiReadId) {
+          continue;
+        }
+        const auto issue = make_downstream_read_issue(
+            DownstreamPort::MMIO, cap.addr, cap.total_size,
+            llc_config.line_bytes, false);
+        ARIssueMeta_t meta{};
+        meta.resp_extract_from_aligned_beat = issue.extract_from_aligned_beat;
+        meta.upstream_addr = cap.addr;
+        meta.upstream_total_size = cap.total_size;
+        meta.master_id = master;
+        meta.orig_id = cap.id;
+        drive_ar(issue, axi_id, meta);
+        read_ports[master].req.ready = true;
+        read_req_hold[master] = {};
+        comb_master_read_count[master]++;
+        if (port_busy[0] && port_busy[1]) {
+          break;
+        }
         continue;
       }
       const bool allow_same_cycle_accept = (master == MASTER_DCACHE_R);

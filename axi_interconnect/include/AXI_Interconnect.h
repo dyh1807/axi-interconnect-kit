@@ -291,6 +291,7 @@ private:
   bool has_same_line_write_hazard(uint32_t line_addr) const;
   bool has_external_pending_read_hazard(uint32_t addr) const;
   bool has_external_pending_write_hazard(uint32_t addr) const;
+  bool has_direct_read_response(uint8_t master_id) const;
   uint32_t external_hazard_line_addr(uint32_t addr) const;
   DownstreamPort classify_downstream_port(uint32_t addr,
                                           uint8_t total_size) const;

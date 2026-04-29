@@ -441,6 +441,77 @@ bool test_llc_mmio_upstream_forces_bypass() {
   return true;
 }
 
+bool test_llc_mmio_word_read_bypasses_llc_core() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  auto &req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  req.valid = true;
+  req.addr = 0x10000000u;
+  req.total_size = 3;
+  req.id = 10;
+  req.bypass = false;
+  dut.comb_read_arbiter();
+
+  if (dut.axi_ddr_io.ar.arvalid || !dut.axi_mmio_io.ar.arvalid) {
+    std::printf("FAIL: LLC-on MMIO word read did not route to MMIO AXI\n");
+    return false;
+  }
+  if (dut.llc_upstream_capture_c[axi_interconnect::MASTER_DCACHE_R].valid ||
+      dut.ar_issue_c[1].from_llc) {
+    std::printf("FAIL: LLC-on MMIO word read still entered LLC core path\n");
+    return false;
+  }
+
+  dut.seq();
+  if (dut.r_pending.empty() || dut.r_pending.back().to_llc ||
+      dut.r_pending.back().port != axi_interconnect::DownstreamPort::MMIO ||
+      dut.r_pending.back().upstream_addr != 0x10000000u) {
+    std::printf("FAIL: direct MMIO read pending entry shape mismatch\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_llc_direct_mmio_read_resp_blocks_llc_resp_ready() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  axi_interconnect::ReadPendingTxn pending{};
+  pending.axi_id = 11;
+  pending.master_id = axi_interconnect::MASTER_DCACHE_R;
+  pending.orig_id = 11;
+  pending.total_beats = 1;
+  pending.beats_done = 1;
+  pending.port = axi_interconnect::DownstreamPort::MMIO;
+  pending.addr = 0x10000000u;
+  pending.upstream_addr = 0x10000000u;
+  pending.upstream_total_size = 3;
+  pending.to_llc = false;
+  pending.data.clear();
+  pending.data[0] = 0xa5a55a5au;
+  dut.r_pending.push_back(pending);
+  dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp.ready = true;
+
+  dut.prepare_llc_inputs(true);
+  if (dut.llc.io.ext_in.upstream
+          .read_resp[axi_interconnect::MASTER_DCACHE_R]
+          .ready) {
+    std::printf("FAIL: LLC read response ready overlapped direct MMIO resp\n");
+    return false;
+  }
+
+  dut.comb_outputs();
+  const auto &resp = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp;
+  if (!resp.valid || resp.id != 11 || resp.data[0] != 0xa5a55a5au) {
+    std::printf("FAIL: direct MMIO read response was not driven upstream\n");
+    return false;
+  }
+  return true;
+}
+
 bool test_ddr_and_mmio_read_issue_same_cycle() {
   axi_interconnect::AXI_Interconnect dut;
   init_dut(dut);
@@ -1014,6 +1085,10 @@ int main() {
   run("LLC unsupported MMIO write synthesizes response",
       test_llc_unsupported_mmio_write_synthesizes_response);
   run("LLC MMIO upstream forces bypass", test_llc_mmio_upstream_forces_bypass);
+  run("LLC MMIO word read bypasses LLC core",
+      test_llc_mmio_word_read_bypasses_llc_core);
+  run("LLC direct MMIO read resp blocks LLC resp ready",
+      test_llc_direct_mmio_read_resp_blocks_llc_resp_ready);
   run("DDR and MMIO AR issue same-cycle",
       test_ddr_and_mmio_read_issue_same_cycle);
   run("DDR and MMIO AW issue same-cycle",
