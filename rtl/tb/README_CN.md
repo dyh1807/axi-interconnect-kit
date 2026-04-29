@@ -345,6 +345,8 @@ core 内部 hazard 遮掉。
 - 覆盖 mode1 普通 MMIO 读写请求不依赖上游 `*_bypass` 标志，也会直接走 MMIO AXI 口
 - 验证 MMIO 读写不会驱动 DDR AXI 口
 - 验证 MMIO 口为 32-bit / 1 beat，读写 response 回到原 upstream ID
+- 覆盖 DDR cache refill `AR` 被 backpressure 保持时，MMIO read/write 仍可在独立
+  MMIO AXI 口发射和返回，不被 DDR 口串行化
 
 ### `tb_axi_llc_subsystem_read_master_timing_contract.v`
 

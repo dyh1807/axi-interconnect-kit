@@ -149,14 +149,14 @@ axi_llc_subsystem_dual
 - `src/axi_llc_subsystem_core.v`
   - 单流核心：
     - 集成 reconfig + shared data/meta/valid/repl store
-    - `mode=1`、`mode=0/3`、以及 `mode=2` 窗口外都进入内建 `llc_cache_ctrl`
+    - cacheable `mode=1` 与 `mode=2` 本地窗口请求进入内建 `llc_cache_ctrl` / mapped
+      window 路径；mode1 MMIO、`mode=0/3`、以及 `mode=2` 窗口外请求由 compat
+      direct-bypass side path 处理
     - `cache_*` 口现在承载 line-memory miss/refill/writeback
-    - `bypass_*` 口只承载 `llc_cache_ctrl` 发出的 lower bypass read/write
+    - `bypass_*` 口承载 core 发出的 lower bypass read/write
     - 当前已接入 `up_req_total_size`、`cache_req_size`、`bypass_req_size`
-    - 当前已接入单平面 `id`：
-      - `up_req_id / up_resp_id`
-      - `cache_req_id / cache_resp_id`
-      - `bypass_req_id / bypass_resp_id`
+    - upstream 原始 ID 和内部 slot ID 已解耦：`ID_BITS` 保持 upstream response ID，
+      `SLOT_ID_BITS` 用于 core slot / lower request ID
     - 当前已接入 `invalidate_line` / `invalidate_line_accepted`
     - 当前已接入 `invalidate_all_valid` / `invalidate_all_accepted`
     - `invalidate_all_accepted` 当前表示一次维护 sweep 已完成，并与配置提交同拍对外可见
@@ -168,11 +168,13 @@ axi_llc_subsystem_dual
     支持多个 read miss 同时在 core / lower AXI 中挂起
   - 同一 read master 也支持多笔在途 read response，通过前台 response slot +
     per-master response queue 依次回传
-  - `mode=1` bypass 请求会进入 core，保留 resident-hit / write-hit shadow-update 语义
-  - 只有 `mode=0/3`、以及 `mode=2` 窗口外请求会走 compat 的 direct bypass side path
-  - `mode=1 bypass miss / write-through` 在 core 判定出需要 lower bypass 后，就会先 handoff 到
-    compat 的 direct slot；后续由 compat 自己等待 lower ready、发出 lower request、再等待
-    lower completion
+  - 非 MMIO 的 `mode=1` bypass 请求会进入 core，保留 resident-hit /
+    write-hit shadow-update 语义
+  - mode1 MMIO、`mode=0/3`、以及 `mode=2` 窗口外请求会走 compat 的 direct
+    bypass side path
+  - 非 MMIO 的 `mode=1 bypass miss / write-through` 在 core 判定出需要 lower
+    bypass 后，就会先 handoff 到 compat 的 direct slot；后续由 compat 自己等待
+    lower ready、发出 lower request、再等待 lower completion
   - 因此 core 不再被 `ST_BYPASS_WAIT` 或 lower-ready backpressure 长时间串住
   - `mode=2` 窗口外且起始地址不在 MMIO 区间内的 direct-bypass 请求，会额外带
     `bypass_req_mode2_ddr_aligned`

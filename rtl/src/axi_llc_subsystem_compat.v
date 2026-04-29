@@ -20,6 +20,7 @@
 module axi_llc_subsystem_compat #(
     parameter ADDR_BITS         = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS           = `AXI_LLC_ID_BITS,
+    parameter SLOT_ID_BITS      = `AXI_LLC_SLOT_ID_BITS,
     parameter MODE_BITS         = `AXI_LLC_MODE_BITS,
     parameter LINE_BYTES        = `AXI_LLC_LINE_BYTES,
     parameter LINE_BITS         = `AXI_LLC_LINE_BITS,
@@ -80,20 +81,20 @@ module axi_llc_subsystem_compat #(
     input                                   cache_req_ready,
     output                                  cache_req_write,
     output     [ADDR_BITS-1:0]              cache_req_addr,
-    output     [ID_BITS-1:0]                cache_req_id,
+    output     [SLOT_ID_BITS-1:0]           cache_req_id,
     output     [7:0]                        cache_req_size,
     output     [LINE_BITS-1:0]              cache_req_wdata,
     output     [LINE_BYTES-1:0]             cache_req_wstrb,
     input                                   cache_resp_valid,
     output                                  cache_resp_ready,
     input      [READ_RESP_BITS-1:0]         cache_resp_rdata,
-    input      [ID_BITS-1:0]                cache_resp_id,
+    input      [SLOT_ID_BITS-1:0]           cache_resp_id,
     input      [1:0]                        cache_resp_code,
     output                                  bypass_req_valid,
     input                                   bypass_req_ready,
     output                                  bypass_req_write,
     output     [ADDR_BITS-1:0]              bypass_req_addr,
-    output     [ID_BITS-1:0]                bypass_req_id,
+    output     [SLOT_ID_BITS-1:0]           bypass_req_id,
     output     [7:0]                        bypass_req_size,
     output                                  bypass_req_mode2_ddr_aligned,
     output     [LINE_BITS-1:0]              bypass_req_wdata,
@@ -101,7 +102,7 @@ module axi_llc_subsystem_compat #(
     input                                   bypass_resp_valid,
     output                                  bypass_resp_ready,
     input      [READ_RESP_BITS-1:0]         bypass_resp_rdata,
-    input      [ID_BITS-1:0]                bypass_resp_id,
+    input      [SLOT_ID_BITS-1:0]           bypass_resp_id,
     input      [1:0]                        bypass_resp_code,
     input                                   invalidate_line_valid,
     input      [ADDR_BITS-1:0]              invalidate_line_addr,
@@ -219,7 +220,7 @@ module axi_llc_subsystem_compat #(
     wire                         core_up_req_ready_w;
     wire                         core_up_req_write_w;
     wire [ADDR_BITS-1:0]         core_up_req_addr_w;
-    wire [ID_BITS-1:0]           core_up_req_id_w;
+    wire [SLOT_ID_BITS-1:0]      core_up_req_id_w;
     wire [7:0]                   core_up_req_total_size_w;
     wire [LINE_BITS-1:0]         core_up_req_wdata_w;
     wire [LINE_BYTES-1:0]        core_up_req_wstrb_w;
@@ -227,7 +228,7 @@ module axi_llc_subsystem_compat #(
     wire                         core_up_resp_valid_w;
     wire                         core_up_resp_ready_w;
     wire [READ_RESP_BITS-1:0]    core_up_resp_rdata_w;
-    wire [ID_BITS-1:0]           core_up_resp_id_w;
+    wire [SLOT_ID_BITS-1:0]      core_up_resp_id_w;
     wire [1:0]                   core_up_resp_code_w;
     wire [`AXI_LLC_MAX_OUTSTANDING-1:0] core_victim_line_valid_w;
     wire [(`AXI_LLC_MAX_OUTSTANDING*ADDR_BITS)-1:0] core_victim_line_addr_w;
@@ -309,7 +310,7 @@ module axi_llc_subsystem_compat #(
     wire                         core_bypass_req_valid_w;
     wire                         core_bypass_req_write_w;
     wire [ADDR_BITS-1:0]        core_bypass_req_addr_w;
-    wire [ID_BITS-1:0]          core_bypass_req_id_w;
+    wire [SLOT_ID_BITS-1:0]     core_bypass_req_id_w;
     wire [7:0]                  core_bypass_req_size_w;
     wire [LINE_BITS-1:0]        core_bypass_req_wdata_w;
     wire [LINE_BYTES-1:0]       core_bypass_req_wstrb_w;
@@ -750,7 +751,7 @@ module axi_llc_subsystem_compat #(
     assign core_up_req_valid_w = core_req_stage_valid_r;
     assign core_up_req_write_w = core_req_stage_is_write_r;
     assign core_up_req_addr_w = core_req_stage_addr_r;
-    assign core_up_req_id_w = core_req_stage_slot_r[ID_BITS-1:0];
+    assign core_up_req_id_w = core_req_stage_slot_r[SLOT_ID_BITS-1:0];
     assign core_up_req_total_size_w = core_req_stage_size_r;
     assign core_up_req_wdata_w = core_req_stage_wdata_r;
     assign core_up_req_wstrb_w = core_req_stage_wstrb_r;
@@ -1232,8 +1233,8 @@ module axi_llc_subsystem_compat #(
                              direct_slot_addr_r[direct_issue_slot_w] :
                              direct_dispatch_addr_w;
     assign bypass_req_id = direct_issue_found_w ?
-                           direct_issue_slot_w[ID_BITS-1:0] :
-                           direct_slot_free_w[ID_BITS-1:0];
+                           direct_issue_slot_w[SLOT_ID_BITS-1:0] :
+                           direct_slot_free_w[SLOT_ID_BITS-1:0];
     assign bypass_req_size = direct_issue_found_w ?
                              direct_slot_size_r[direct_issue_slot_w] :
                              direct_dispatch_size_w;
@@ -1254,7 +1255,7 @@ module axi_llc_subsystem_compat #(
     // Single-flow core instance.
     axi_llc_subsystem_core #(
         .ADDR_BITS        (ADDR_BITS),
-        .ID_BITS          (ID_BITS),
+        .ID_BITS          (SLOT_ID_BITS),
         .MODE_BITS        (MODE_BITS),
         .LINE_BYTES       (LINE_BYTES),
         .LINE_BITS        (LINE_BITS),
@@ -1576,14 +1577,14 @@ module axi_llc_subsystem_compat #(
                     rd_q_count[core_req_stage_master_r] <=
                         rd_q_count[core_req_stage_master_r] - 8'd1;
                 end
-                core_slot_valid_r[core_req_stage_slot_r[ID_BITS-1:0]] <= 1'b1;
-                core_slot_is_write_r[core_req_stage_slot_r[ID_BITS-1:0]] <=
+                core_slot_valid_r[core_req_stage_slot_r[SLOT_ID_BITS-1:0]] <= 1'b1;
+                core_slot_is_write_r[core_req_stage_slot_r[SLOT_ID_BITS-1:0]] <=
                     core_req_stage_is_write_r;
-                core_slot_master_r[core_req_stage_slot_r[ID_BITS-1:0]] <=
+                core_slot_master_r[core_req_stage_slot_r[SLOT_ID_BITS-1:0]] <=
                     core_req_stage_master_r;
-                core_slot_orig_id_r[core_req_stage_slot_r[ID_BITS-1:0]] <=
+                core_slot_orig_id_r[core_req_stage_slot_r[SLOT_ID_BITS-1:0]] <=
                     core_req_stage_orig_id_r;
-                core_slot_addr_r[core_req_stage_slot_r[ID_BITS-1:0]] <=
+                core_slot_addr_r[core_req_stage_slot_r[SLOT_ID_BITS-1:0]] <=
                     core_req_stage_addr_r;
             end
 

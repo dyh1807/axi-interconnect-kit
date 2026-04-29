@@ -3,6 +3,7 @@
 
 `define AXI_LLC_ADDR_BITS         32
 `define AXI_LLC_ID_BITS           4
+`define AXI_LLC_SLOT_ID_BITS      4
 `define AXI_LLC_MODE_BITS         2
 `define AXI_LLC_LINE_BYTES        64
 `define AXI_LLC_LINE_BITS         512

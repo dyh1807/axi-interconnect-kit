@@ -298,10 +298,16 @@ DDR/MMIO 地址分流属于外部系统功能，不在本 RTL 顶层重复展开
 当前 RTL 已有一套可运行的最小 `id` 平面，目的是先冻结接口边界并支撑后续独立
 contract bench：
 
+- upstream 原始事务 ID 仍由顶层 `ID_BITS` 表示，并通过 compat 记录到
+  `*_orig_id` 后在 response 返回。
+- core slot / lower request ID 已单独由 `SLOT_ID_BITS` 表示；当前
+  `SLOT_ID_BITS=4`、`AXI_LLC_MAX_OUTSTANDING=8`，行为不变。
+- 后续若要满足 32-entry outstanding，应先把 `SLOT_ID_BITS` 扩到 5，再把
+  core/compat/bridge 的共享 outstanding 预算扩到 32。
 - `axi_llc_subsystem_core`
-  - `up_req_id / up_resp_id`
-  - `cache_req_id / cache_resp_id`
-  - `bypass_req_id / bypass_resp_id`
+  - `up_req_id / up_resp_id` 现在表示 compat 分配的内部 slot ID
+  - `cache_req_id / cache_resp_id` 表示 lower cache slot ID
+  - `bypass_req_id / bypass_resp_id` 表示 lower bypass/direct slot ID
 - `mode=2`
   - direct 路径不向外发请求
   - 直接把捕获的 `up_req_id` 原样带回 `up_resp_id`
@@ -310,9 +316,8 @@ contract bench：
   - 只有 bypass miss / write-through 才会发 `bypass_req_*`
 - `mode=1`
   - hit 响应把当前请求 `req_id` 原样带回上游
-  - miss/refill 对下游 line-memory 使用内部读事务 id `1`
-  - cache miss 的 victim writeback 使用维护写 id `0`
-  - flush 写回同样使用维护 id `0`
+  - miss/refill 对下游 line-memory 使用内部 slot ID
+  - cache miss 的 victim writeback 使用内部 slot ID
   - 上游 `up_resp_id` 仍保持原始请求 `req_id`
 
 这套合同在 `axi_llc_subsystem_core` 内的 resident lookup 仍是单发射实现；但

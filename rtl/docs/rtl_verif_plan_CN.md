@@ -301,6 +301,8 @@
 - MMIO 读写不得驱动 DDR AXI 口。
 - MMIO AXI 口保持 32-bit / 1 beat 形状。
 - MMIO read/write response 必须回到原 upstream ID。
+- DDR cache refill `AR` 被下游 backpressure 保持时，MMIO read/write 仍能在独立
+  MMIO AXI 口发射和返回。
 
 ### `tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 

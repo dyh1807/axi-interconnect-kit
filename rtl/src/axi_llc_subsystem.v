@@ -16,6 +16,7 @@
 module axi_llc_subsystem #(
     parameter ADDR_BITS         = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS           = `AXI_LLC_ID_BITS,
+    parameter SLOT_ID_BITS      = `AXI_LLC_SLOT_ID_BITS,
     parameter MODE_BITS         = `AXI_LLC_MODE_BITS,
     parameter LINE_BYTES        = `AXI_LLC_LINE_BYTES,
     parameter LINE_BITS         = `AXI_LLC_LINE_BITS,
@@ -124,21 +125,21 @@ module axi_llc_subsystem #(
     wire                     cache_req_ready_w;
     wire                     cache_req_write_w;
     wire [ADDR_BITS-1:0]     cache_req_addr_w;
-    wire [ID_BITS-1:0]       cache_req_id_w;
+    wire [SLOT_ID_BITS-1:0]  cache_req_id_w;
     wire [7:0]               cache_req_size_w;
     wire [LINE_BITS-1:0]     cache_req_wdata_w;
     wire [LINE_BYTES-1:0]    cache_req_wstrb_w;
     wire                     cache_resp_valid_w;
     wire                     cache_resp_ready_w;
     wire [READ_RESP_BITS-1:0] cache_resp_rdata_w;
-    wire [ID_BITS-1:0]       cache_resp_id_w;
+    wire [SLOT_ID_BITS-1:0]  cache_resp_id_w;
     wire [1:0]               cache_resp_code_w;
 
     wire                     bypass_req_valid_w;
     wire                     bypass_req_ready_w;
     wire                     bypass_req_write_w;
     wire [ADDR_BITS-1:0]     bypass_req_addr_w;
-    wire [ID_BITS-1:0]       bypass_req_id_w;
+    wire [SLOT_ID_BITS-1:0]  bypass_req_id_w;
     wire [7:0]               bypass_req_size_w;
     wire                     bypass_req_mode2_ddr_aligned_w;
     wire [LINE_BITS-1:0]     bypass_req_wdata_w;
@@ -146,7 +147,7 @@ module axi_llc_subsystem #(
     wire                     bypass_resp_valid_w;
     wire                     bypass_resp_ready_w;
     wire [READ_RESP_BITS-1:0] bypass_resp_rdata_w;
-    wire [ID_BITS-1:0]       bypass_resp_id_w;
+    wire [SLOT_ID_BITS-1:0]  bypass_resp_id_w;
     wire [1:0]               bypass_resp_code_w;
 
 // Multi-master compatibility layer around the core. Mode1 bypass still enters
@@ -156,6 +157,7 @@ module axi_llc_subsystem #(
     axi_llc_subsystem_compat #(
         .ADDR_BITS         (ADDR_BITS),
         .ID_BITS           (ID_BITS),
+        .SLOT_ID_BITS      (SLOT_ID_BITS),
         .MODE_BITS         (MODE_BITS),
         .LINE_BYTES        (LINE_BYTES),
         .LINE_BITS         (LINE_BITS),
@@ -250,7 +252,7 @@ module axi_llc_subsystem #(
     // AXI packing / response recovery for cache and bypass lower requests.
     axi_llc_axi_bridge #(
         .ADDR_BITS      (ADDR_BITS),
-        .ID_BITS        (ID_BITS),
+        .ID_BITS        (SLOT_ID_BITS),
         .LINE_BYTES     (LINE_BYTES),
         .LINE_BITS      (LINE_BITS),
         .AXI_ID_BITS    (AXI_ID_BITS),

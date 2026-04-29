@@ -17,7 +17,7 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
     localparam LLC_SIZE_BYTES    = LINE_BYTES * SET_COUNT * WAY_COUNT;
     localparam WINDOW_BYTES      = LINE_BYTES * SET_COUNT;
     localparam WINDOW_WAYS       = 1;
-    localparam NUM_READ_MASTERS  = 1;
+    localparam NUM_READ_MASTERS  = 2;
     localparam NUM_WRITE_MASTERS = 1;
     localparam AXI_ID_BITS       = `AXI_LLC_AXI_ID_BITS;
     localparam DDR_DATA_BITS     = `AXI_LLC_AXI_DATA_BITS;
@@ -29,12 +29,15 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
     localparam [MODE_BITS-1:0] MODE_CACHE = 2'b01;
     localparam [ADDR_BITS-1:0] MMIO_READ_ADDR = `AXI_LLC_MMIO_BASE + 32'h0000_000C;
     localparam [ADDR_BITS-1:0] MMIO_WRITE_ADDR = `AXI_LLC_MMIO_BASE + 32'h0000_0008;
+    localparam [ADDR_BITS-1:0] DDR_READ_ADDR = 32'h4000_0100;
     localparam [ID_BITS-1:0] READ_ID = 4'h9;
     localparam [ID_BITS-1:0] WRITE_ID = 4'hA;
+    localparam [ID_BITS-1:0] DDR_READ_ID = 4'h6;
     localparam [1:0] AXI_RESP_OKAY = 2'b00;
     localparam [1:0] AXI_RESP_SLVERR = 2'b10;
     localparam [1:0] AXI_BURST_INCR = 2'b01;
     localparam [2:0] AXI_SIZE_32 = 3'd2;
+    localparam [2:0] AXI_SIZE_256 = 3'd5;
 
     reg                              clk;
     reg                              rst_n;
@@ -218,6 +221,59 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
         end
     endtask
 
+    task issue_ddr_cache_read;
+        integer timeout;
+        begin
+            read_req_addr[(1 * ADDR_BITS) +: ADDR_BITS] = DDR_READ_ADDR;
+            read_req_total_size[(1 * 8) +: 8] = LINE_BYTES - 1;
+            read_req_id[(1 * ID_BITS) +: ID_BITS] = DDR_READ_ID;
+            read_req_bypass[1] = 1'b0;
+            read_req_valid[1] = 1'b1;
+            timeout = 100;
+            while (timeout > 0) begin
+                @(posedge clk);
+                if (read_req_valid[1] && read_req_ready[1]) begin
+                    timeout = 0;
+                end else begin
+                    timeout = timeout - 1;
+                end
+            end
+            if (!(read_req_valid[1] && read_req_ready[1])) begin
+                fail_now("DDR cache read request handshake timeout");
+            end
+            #1;
+            if (!read_req_accepted[1] ||
+                read_req_accepted_id[(1 * ID_BITS) +: ID_BITS] != DDR_READ_ID) begin
+                fail_now("DDR cache read accepted metadata mismatch");
+            end
+            @(negedge clk);
+            read_req_valid[1] = 1'b0;
+        end
+    endtask
+
+    task wait_ddr_ar_held;
+        integer timeout;
+        begin
+            timeout = 160;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("DDR cache refill AR timeout");
+            end
+            if (ddr_axi_araddr != DDR_READ_ADDR ||
+                ddr_axi_arlen != 8'd1 ||
+                ddr_axi_arsize != AXI_SIZE_256 ||
+                ddr_axi_arburst != AXI_BURST_INCR) begin
+                fail_now("DDR cache refill AR shape mismatch");
+            end
+            if (mmio_axi_arvalid || mmio_axi_awvalid || mmio_axi_wvalid) begin
+                fail_now("MMIO port active before MMIO overlap request");
+            end
+        end
+    endtask
+
     task wait_mmio_ar;
         integer timeout;
         begin
@@ -242,6 +298,37 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
             @(posedge clk);
             mmio_axi_arready = 1'b0;
             @(negedge clk);
+        end
+    endtask
+
+    task wait_mmio_ar_with_ddr_held;
+        integer timeout;
+        begin
+            timeout = 100;
+            while (!(ddr_axi_arvalid && mmio_axi_arvalid) && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("MMIO AR did not overlap held DDR AR");
+            end
+            if (ddr_axi_araddr != DDR_READ_ADDR) begin
+                fail_now("held DDR AR address changed during MMIO read");
+            end
+            if (mmio_axi_araddr != MMIO_READ_ADDR ||
+                mmio_axi_arlen != 8'd0 ||
+                mmio_axi_arsize != AXI_SIZE_32 ||
+                mmio_axi_arburst != AXI_BURST_INCR) begin
+                fail_now("overlap MMIO AR shape mismatch");
+            end
+            seen_mmio_arid = mmio_axi_arid;
+            mmio_axi_arready = 1'b1;
+            @(posedge clk);
+            mmio_axi_arready = 1'b0;
+            @(negedge clk);
+            if (!ddr_axi_arvalid) begin
+                fail_now("DDR AR was consumed while ddr_axi_arready was low");
+            end
         end
     endtask
 
@@ -362,6 +449,54 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
             @(posedge clk);
             mmio_axi_wready = 1'b0;
             @(negedge clk);
+        end
+    endtask
+
+    task wait_mmio_aw_w_with_ddr_held;
+        integer timeout;
+        begin
+            timeout = 100;
+            while (!(ddr_axi_arvalid && mmio_axi_awvalid) && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("MMIO AW did not overlap held DDR AR");
+            end
+            if (ddr_axi_araddr != DDR_READ_ADDR) begin
+                fail_now("held DDR AR address changed during MMIO write");
+            end
+            if (mmio_axi_awaddr != MMIO_WRITE_ADDR ||
+                mmio_axi_awlen != 8'd0 ||
+                mmio_axi_awsize != AXI_SIZE_32 ||
+                mmio_axi_awburst != AXI_BURST_INCR) begin
+                fail_now("overlap MMIO AW shape mismatch");
+            end
+            seen_mmio_awid = mmio_axi_awid;
+            mmio_axi_awready = 1'b1;
+            @(posedge clk);
+            mmio_axi_awready = 1'b0;
+
+            timeout = 100;
+            while (!(ddr_axi_arvalid && mmio_axi_wvalid) && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("MMIO W did not overlap held DDR AR");
+            end
+            if (mmio_axi_wdata != 32'hDEAD_BEEF ||
+                mmio_axi_wstrb != 4'hF ||
+                !mmio_axi_wlast) begin
+                fail_now("overlap MMIO W shape mismatch");
+            end
+            mmio_axi_wready = 1'b1;
+            @(posedge clk);
+            mmio_axi_wready = 1'b0;
+            @(negedge clk);
+            if (!ddr_axi_arvalid) begin
+                fail_now("DDR AR was consumed while testing MMIO write overlap");
+            end
         end
     endtask
 
@@ -581,6 +716,20 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
 
         issue_mmio_write();
         wait_mmio_aw_w();
+        drive_mmio_b();
+        wait_mmio_write_resp();
+
+        ddr_axi_arready = 1'b0;
+        issue_ddr_cache_read();
+        wait_ddr_ar_held();
+
+        issue_mmio_read();
+        wait_mmio_ar_with_ddr_held();
+        drive_mmio_r();
+        wait_mmio_read_resp();
+
+        issue_mmio_write();
+        wait_mmio_aw_w_with_ddr_held();
         drive_mmio_b();
         wait_mmio_write_resp();
 
