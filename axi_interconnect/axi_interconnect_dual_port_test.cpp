@@ -512,6 +512,148 @@ bool test_llc_direct_mmio_read_resp_blocks_llc_resp_ready() {
   return true;
 }
 
+bool test_llc_mmio_word_write_bypasses_llc_core() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  constexpr uint8_t master = axi_interconnect::MASTER_UNCORE_LSU_W;
+  dut.w_req_ready_r[master] = true;
+  auto &req = dut.write_ports[master].req;
+  req.valid = true;
+  req.addr = 0x10000000u;
+  req.total_size = 3;
+  req.id = 12;
+  req.wdata = single_word_data(0xc001d00du);
+  req.wstrb = byte_strobe(0xfu);
+  req.bypass = false;
+
+  dut.comb_write_request();
+  if (!req.ready || !dut.write_req_fire_c[master]) {
+    std::printf("FAIL: LLC-on MMIO word write was not accepted as direct\n");
+    return false;
+  }
+  if (dut.llc_upstream_write_capture_c[master].valid) {
+    std::printf("FAIL: LLC-on MMIO word write still captured into LLC core\n");
+    return false;
+  }
+
+  dut.seq();
+  if (!dut.w_active_mmio || !dut.aw_latched_mmio.valid ||
+      dut.w_current_mmio.to_llc_mem ||
+      dut.w_current_mmio.master_id != master ||
+      dut.w_current_mmio.orig_id != 12 ||
+      dut.w_current_mmio.addr != 0x10000000u) {
+    std::printf("FAIL: direct MMIO write state mismatch active=%d latch=%d "
+                "to_llc=%d master=%u id=%u addr=0x%08x\n",
+                static_cast<int>(dut.w_active_mmio),
+                static_cast<int>(dut.aw_latched_mmio.valid),
+                static_cast<int>(dut.w_current_mmio.to_llc_mem),
+                static_cast<unsigned>(dut.w_current_mmio.master_id),
+                static_cast<unsigned>(dut.w_current_mmio.orig_id),
+                dut.w_current_mmio.addr);
+    return false;
+  }
+  return true;
+}
+
+bool test_llc_direct_mmio_write_b_returns_upstream() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  constexpr uint8_t master = axi_interconnect::MASTER_UNCORE_LSU_W;
+  dut.w_active_mmio = true;
+  dut.w_current_mmio = {};
+  dut.w_current_mmio.axi_id = 13;
+  dut.w_current_mmio.master_id = master;
+  dut.w_current_mmio.orig_id = 14;
+  dut.w_current_mmio.port = axi_interconnect::DownstreamPort::MMIO;
+  dut.w_current_mmio.addr = 0x10000000u;
+  dut.w_current_mmio.total_beats = 1;
+  dut.w_current_mmio.beats_sent = 1;
+  dut.w_current_mmio.aw_done = true;
+  dut.w_current_mmio.w_done = true;
+  dut.w_current_mmio.to_llc_mem = false;
+  dut.axi_mmio_io.b.bvalid = true;
+  dut.axi_mmio_io.b.bid = 13;
+  dut.axi_mmio_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+
+  dut.comb_write_response();
+  dut.seq();
+  if (!dut.w_resp_valid[master] || dut.w_resp_id[master] != 14 ||
+      dut.llc_mem_write_resp_valid_ || dut.w_active_mmio) {
+    std::printf("FAIL: direct MMIO B did not return upstream resp_valid=%d "
+                "id=%u llc_resp=%d active=%d\n",
+                static_cast<int>(dut.w_resp_valid[master]),
+                static_cast<unsigned>(dut.w_resp_id[master]),
+                static_cast<int>(dut.llc_mem_write_resp_valid_),
+                static_cast<int>(dut.w_active_mmio));
+    return false;
+  }
+  return true;
+}
+
+bool test_llc_mem_write_b_stays_llc_owned() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  dut.w_active = true;
+  dut.w_current = {};
+  dut.w_current.axi_id = 15;
+  dut.w_current.port = axi_interconnect::DownstreamPort::DDR;
+  dut.w_current.addr = 0x40000000u;
+  dut.w_current.total_beats = 1;
+  dut.w_current.beats_sent = 1;
+  dut.w_current.aw_done = true;
+  dut.w_current.w_done = true;
+  dut.w_current.to_llc_mem = true;
+  dut.axi_ddr_io.b.bvalid = true;
+  dut.axi_ddr_io.b.bid = 15;
+  dut.axi_ddr_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+
+  dut.comb_write_response();
+  dut.seq();
+  if (!dut.llc_mem_write_resp_valid_ || dut.w_resp_valid[0] ||
+      dut.w_resp_valid[1] || dut.w_active) {
+    std::printf("FAIL: LLC mem B ownership mismatch llc_resp=%d "
+                "wresp0=%d wresp1=%d active=%d\n",
+                static_cast<int>(dut.llc_mem_write_resp_valid_),
+                static_cast<int>(dut.w_resp_valid[0]),
+                static_cast<int>(dut.w_resp_valid[1]),
+                static_cast<int>(dut.w_active));
+    return false;
+  }
+  return true;
+}
+
+bool test_llc_direct_write_resp_blocks_llc_resp_ready() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  constexpr uint8_t master = axi_interconnect::MASTER_UNCORE_LSU_W;
+  dut.w_resp_valid[master] = true;
+  dut.w_resp_id[master] = 16;
+  dut.w_resp_resp[master] = sim_ddr::AXI_RESP_OKAY;
+  dut.write_ports[master].resp.ready = true;
+
+  dut.prepare_llc_inputs(true);
+  if (dut.llc.io.ext_in.upstream.write_resp[master].ready) {
+    std::printf("FAIL: LLC write response ready overlapped direct write resp\n");
+    return false;
+  }
+
+  dut.comb_outputs();
+  const auto &resp = dut.write_ports[master].resp;
+  if (!resp.valid || resp.id != 16 || resp.resp != sim_ddr::AXI_RESP_OKAY) {
+    std::printf("FAIL: direct write response was not driven upstream\n");
+    return false;
+  }
+  return true;
+}
+
 bool test_ddr_and_mmio_read_issue_same_cycle() {
   axi_interconnect::AXI_Interconnect dut;
   init_dut(dut);
@@ -1089,6 +1231,14 @@ int main() {
       test_llc_mmio_word_read_bypasses_llc_core);
   run("LLC direct MMIO read resp blocks LLC resp ready",
       test_llc_direct_mmio_read_resp_blocks_llc_resp_ready);
+  run("LLC MMIO word write bypasses LLC core",
+      test_llc_mmio_word_write_bypasses_llc_core);
+  run("LLC direct MMIO write B returns upstream",
+      test_llc_direct_mmio_write_b_returns_upstream);
+  run("LLC mem write B stays LLC-owned",
+      test_llc_mem_write_b_stays_llc_owned);
+  run("LLC direct write resp blocks LLC resp ready",
+      test_llc_direct_write_resp_blocks_llc_resp_ready);
   run("DDR and MMIO AR issue same-cycle",
       test_ddr_and_mmio_read_issue_same_cycle);
   run("DDR and MMIO AW issue same-cycle",

@@ -142,6 +142,7 @@ struct WritePendingTxn {
   uint8_t beats_sent;
   bool aw_done;
   bool w_done;
+  bool to_llc_mem;
   bool llc_victim_write;
 };
 
