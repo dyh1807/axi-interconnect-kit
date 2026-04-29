@@ -4,7 +4,7 @@
 module tb_axi_llc_axi_bridge_write_id_reuse_contract;
 
     localparam ADDR_BITS       = `AXI_LLC_ADDR_BITS;
-    localparam ID_BITS         = `AXI_LLC_ID_BITS;
+    localparam ID_BITS         = `AXI_LLC_SLOT_ID_BITS;
     localparam LINE_BYTES      = `AXI_LLC_LINE_BYTES;
     localparam LINE_BITS       = `AXI_LLC_LINE_BITS;
     localparam AXI_ID_BITS     = `AXI_LLC_AXI_ID_BITS;

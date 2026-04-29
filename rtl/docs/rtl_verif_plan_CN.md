@@ -414,6 +414,7 @@
   - `tb_axi_reconfig_ctrl`
   - `tb_axi_llc_axi_bridge_read_outstanding_contract`
   - `tb_axi_llc_axi_bridge_write_outstanding_contract`
+  - `tb_axi_llc_axi_bridge_32_outstanding_contract`
   - `tb_axi_llc_axi_bridge_write_id_reuse_contract`
   - `tb_axi_llc_subsystem_directed`
   - `tb_axi_llc_subsystem_handshake_contract`

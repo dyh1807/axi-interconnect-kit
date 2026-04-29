@@ -1,9 +1,10 @@
 `timescale 1ns / 1ps
+`include "axi_llc_params.vh"
 
 module tb_axi_llc_subsystem_read_slice_contract;
 
     localparam ADDR_BITS        = 32;
-    localparam ID_BITS          = 4;
+    localparam ID_BITS          = `AXI_LLC_SLOT_ID_BITS;
     localparam MODE_BITS        = 2;
     localparam LINE_BYTES       = 8;
     localparam LINE_BITS        = 64;

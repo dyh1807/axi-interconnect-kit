@@ -3,7 +3,7 @@
 
 module tb_axi_llc_subsystem_mode_contract;
 
-    localparam ID_BITS = 4;
+    localparam ID_BITS = `AXI_LLC_SLOT_ID_BITS;
     localparam READ_RESP_BITS = `AXI_LLC_READ_RESP_BITS;
 
     reg         clk;

@@ -17,7 +17,7 @@
 //     underlying bridges currently retain their existing per-port limits.
 module axi_llc_axi_bridge_dual #(
     parameter ADDR_BITS           = `AXI_LLC_ADDR_BITS,
-    parameter ID_BITS             = `AXI_LLC_ID_BITS,
+    parameter ID_BITS             = `AXI_LLC_SLOT_ID_BITS,
     parameter LINE_BYTES          = `AXI_LLC_LINE_BYTES,
     parameter LINE_BITS           = `AXI_LLC_LINE_BITS,
     parameter DDR_AXI_ID_BITS     = `AXI_LLC_AXI_ID_BITS,

@@ -52,6 +52,7 @@
 - `tb_axi_llc_subsystem_compat_read_accept_contract.v`
 - `tb_axi_llc_axi_bridge_read_outstanding_contract.v`
 - `tb_axi_llc_axi_bridge_write_outstanding_contract.v`
+- `tb_axi_llc_axi_bridge_32_outstanding_contract.v`
 - `tb_axi_llc_axi_bridge_write_id_reuse_contract.v`
 - `tb_axi_llc_axi_bridge_dual_contract.v`
 - `tb_axi_llc_axi_dual_port_router_contract.v`
@@ -310,6 +311,13 @@ core 内部 hazard 遮掉。
 - 要求两个 write 使用不同 AXI `AWID`
 - `BID` 可以先回 bypass、后回 cache
 - 两类 source 必须仍回到各自的 `req_id`
+
+### `tb_axi_llc_axi_bridge_32_outstanding_contract.v`
+
+- 直接面向 `axi_llc_axi_bridge.v`
+- 先保持 32 个 read outstanding 不返回，确认第 33 个 read 被 backpressure
+- 在 read outstanding 已满时继续接受 32 个 write outstanding，确认读写预算相互独立
+- 再确认第 33 个 write 被 backpressure
 
 ### `tb_axi_llc_axi_bridge_write_id_reuse_contract.v`
 

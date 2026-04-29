@@ -4,7 +4,7 @@
 module tb_axi_llc_subsystem_id_contract;
 
     localparam ADDR_BITS        = `AXI_LLC_ADDR_BITS;
-    localparam ID_BITS          = `AXI_LLC_ID_BITS;
+    localparam ID_BITS          = `AXI_LLC_SLOT_ID_BITS;
     localparam MODE_BITS        = `AXI_LLC_MODE_BITS;
     localparam LINE_BYTES       = `AXI_LLC_LINE_BYTES;
     localparam LINE_BITS        = `AXI_LLC_LINE_BITS;

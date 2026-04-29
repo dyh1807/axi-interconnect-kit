@@ -5,6 +5,7 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
 
     localparam ADDR_BITS         = `AXI_LLC_ADDR_BITS;
     localparam ID_BITS           = `AXI_LLC_ID_BITS;
+    localparam SLOT_ID_BITS      = `AXI_LLC_SLOT_ID_BITS;
     localparam MODE_BITS         = `AXI_LLC_MODE_BITS;
     localparam LINE_BYTES        = 8;
     localparam LINE_BITS         = 64;
@@ -71,20 +72,20 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
     reg                                   cache_req_ready;
     wire                                  cache_req_write;
     wire [ADDR_BITS-1:0]                  cache_req_addr;
-    wire [ID_BITS-1:0]                    cache_req_id;
+    wire [SLOT_ID_BITS-1:0]               cache_req_id;
     wire [7:0]                            cache_req_size;
     wire [LINE_BITS-1:0]                  cache_req_wdata;
     wire [LINE_BYTES-1:0]                 cache_req_wstrb;
     reg                                   cache_resp_valid;
     wire                                  cache_resp_ready;
     reg  [READ_RESP_BITS-1:0]             cache_resp_rdata;
-    reg  [ID_BITS-1:0]                    cache_resp_id;
+    reg  [SLOT_ID_BITS-1:0]               cache_resp_id;
     reg  [1:0]                            cache_resp_code;
     wire                                  bypass_req_valid;
     reg                                   bypass_req_ready;
     wire                                  bypass_req_write;
     wire [ADDR_BITS-1:0]                  bypass_req_addr;
-    wire [ID_BITS-1:0]                    bypass_req_id;
+    wire [SLOT_ID_BITS-1:0]               bypass_req_id;
     wire [7:0]                            bypass_req_size;
     wire                                  bypass_req_mode2_ddr_aligned;
     wire [LINE_BITS-1:0]                  bypass_req_wdata;
@@ -92,7 +93,7 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
     reg                                   bypass_resp_valid;
     wire                                  bypass_resp_ready;
     reg  [READ_RESP_BITS-1:0]             bypass_resp_rdata;
-    reg  [ID_BITS-1:0]                    bypass_resp_id;
+    reg  [SLOT_ID_BITS-1:0]               bypass_resp_id;
     reg  [1:0]                            bypass_resp_code;
     reg                                   invalidate_line_valid;
     reg  [ADDR_BITS-1:0]                  invalidate_line_addr;
@@ -106,8 +107,8 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
     wire                                  config_error;
 
     integer                               timeout;
-    reg  [ID_BITS-1:0]                    observed_cache_req_id;
-    reg  [ID_BITS-1:0]                    observed_bypass_req_id;
+    reg  [SLOT_ID_BITS-1:0]               observed_cache_req_id;
+    reg  [SLOT_ID_BITS-1:0]               observed_bypass_req_id;
 
     function [READ_RESP_BITS-1:0] pack_line;
         input [LINE_BITS-1:0] line_value;
@@ -175,7 +176,7 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
     task issue_read_expect_accept;
         input integer master;
         input [ADDR_BITS-1:0] addr_value;
-        input [ID_BITS-1:0] id_value;
+        input [SLOT_ID_BITS-1:0] id_value;
         input bypass_value;
         input [7:0] size_value;
         begin
@@ -201,7 +202,7 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
     task issue_write_expect_accept;
         input integer master;
         input [ADDR_BITS-1:0] addr_value;
-        input [ID_BITS-1:0] id_value;
+        input [SLOT_ID_BITS-1:0] id_value;
         input bypass_value;
         input [7:0] size_value;
         input [LINE_BITS-1:0] wdata_value;
@@ -276,7 +277,7 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
     endtask
 
     task respond_cache_read;
-        input [ID_BITS-1:0] id_value;
+        input [SLOT_ID_BITS-1:0] id_value;
         input [LINE_BITS-1:0] line_value;
         begin
             @(negedge clk);
@@ -298,7 +299,7 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
     endtask
 
     task respond_bypass_read;
-        input [ID_BITS-1:0] id_value;
+        input [SLOT_ID_BITS-1:0] id_value;
         input [LINE_BITS-1:0] line_value;
         begin
             @(negedge clk);
@@ -320,7 +321,7 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
     endtask
 
     task respond_bypass_write;
-        input [ID_BITS-1:0] id_value;
+        input [SLOT_ID_BITS-1:0] id_value;
         begin
             @(negedge clk);
             bypass_resp_valid = 1'b1;
@@ -384,6 +385,7 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
     axi_llc_subsystem_compat #(
         .ADDR_BITS(ADDR_BITS),
         .ID_BITS(ID_BITS),
+        .SLOT_ID_BITS(SLOT_ID_BITS),
         .MODE_BITS(MODE_BITS),
         .LINE_BYTES(LINE_BYTES),
         .LINE_BITS(LINE_BITS),
@@ -483,18 +485,18 @@ module tb_axi_llc_subsystem_compat_bypass_pending_issue_contract;
         cache_req_ready = 1'b0;
         cache_resp_valid = 1'b0;
         cache_resp_rdata = {READ_RESP_BITS{1'b0}};
-        cache_resp_id = {ID_BITS{1'b0}};
+        cache_resp_id = {SLOT_ID_BITS{1'b0}};
         cache_resp_code = RESP_OKAY;
         bypass_req_ready = 1'b0;
         bypass_resp_valid = 1'b0;
         bypass_resp_rdata = {READ_RESP_BITS{1'b0}};
-        bypass_resp_id = {ID_BITS{1'b0}};
+        bypass_resp_id = {SLOT_ID_BITS{1'b0}};
         bypass_resp_code = RESP_OKAY;
         invalidate_line_valid = 1'b0;
         invalidate_line_addr = {ADDR_BITS{1'b0}};
         invalidate_all_valid = 1'b0;
-        observed_cache_req_id = {ID_BITS{1'b0}};
-        observed_bypass_req_id = {ID_BITS{1'b0}};
+        observed_cache_req_id = {SLOT_ID_BITS{1'b0}};
+        observed_bypass_req_id = {SLOT_ID_BITS{1'b0}};
 
         wait_cycles(4);
         rst_n = 1'b1;

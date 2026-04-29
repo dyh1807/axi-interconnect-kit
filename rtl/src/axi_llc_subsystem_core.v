@@ -15,7 +15,7 @@
 // start from this file.
 module axi_llc_subsystem_core #(
     parameter ADDR_BITS        = `AXI_LLC_ADDR_BITS,
-    parameter ID_BITS          = `AXI_LLC_ID_BITS,
+    parameter ID_BITS          = `AXI_LLC_SLOT_ID_BITS,
     parameter MODE_BITS        = `AXI_LLC_MODE_BITS,
     parameter LINE_BYTES       = `AXI_LLC_LINE_BYTES,
     parameter LINE_BITS        = `AXI_LLC_LINE_BITS,

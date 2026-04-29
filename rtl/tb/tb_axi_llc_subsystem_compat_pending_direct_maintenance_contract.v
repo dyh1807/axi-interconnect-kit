@@ -5,6 +5,7 @@ module tb_axi_llc_subsystem_compat_pending_direct_maintenance_contract;
 
     localparam ADDR_BITS         = `AXI_LLC_ADDR_BITS;
     localparam ID_BITS           = `AXI_LLC_ID_BITS;
+    localparam SLOT_ID_BITS      = `AXI_LLC_SLOT_ID_BITS;
     localparam MODE_BITS         = `AXI_LLC_MODE_BITS;
     localparam LINE_BYTES        = 8;
     localparam LINE_BITS         = 64;
@@ -63,27 +64,27 @@ module tb_axi_llc_subsystem_compat_pending_direct_maintenance_contract;
     reg                                   cache_req_ready;
     wire                                  cache_req_write;
     wire [ADDR_BITS-1:0]                  cache_req_addr;
-    wire [ID_BITS-1:0]                    cache_req_id;
+    wire [SLOT_ID_BITS-1:0]               cache_req_id;
     wire [7:0]                            cache_req_size;
     wire [LINE_BITS-1:0]                  cache_req_wdata;
     wire [LINE_BYTES-1:0]                 cache_req_wstrb;
     reg                                   cache_resp_valid;
     wire                                  cache_resp_ready;
     reg  [READ_RESP_BITS-1:0]             cache_resp_rdata;
-    reg  [ID_BITS-1:0]                    cache_resp_id;
+    reg  [SLOT_ID_BITS-1:0]               cache_resp_id;
     reg  [1:0]                            cache_resp_code;
     wire                                  bypass_req_valid;
     reg                                   bypass_req_ready;
     wire                                  bypass_req_write;
     wire [ADDR_BITS-1:0]                  bypass_req_addr;
-    wire [ID_BITS-1:0]                    bypass_req_id;
+    wire [SLOT_ID_BITS-1:0]               bypass_req_id;
     wire [7:0]                            bypass_req_size;
     wire [LINE_BITS-1:0]                  bypass_req_wdata;
     wire [LINE_BYTES-1:0]                 bypass_req_wstrb;
     reg                                   bypass_resp_valid;
     wire                                  bypass_resp_ready;
     reg  [READ_RESP_BITS-1:0]             bypass_resp_rdata;
-    reg  [ID_BITS-1:0]                    bypass_resp_id;
+    reg  [SLOT_ID_BITS-1:0]               bypass_resp_id;
     reg  [1:0]                            bypass_resp_code;
     reg                                   invalidate_line_valid;
     reg  [ADDR_BITS-1:0]                  invalidate_line_addr;
@@ -97,8 +98,8 @@ module tb_axi_llc_subsystem_compat_pending_direct_maintenance_contract;
     wire                                  config_error;
 
     integer timeout;
-    reg [ID_BITS-1:0] first_lower_id;
-    reg [ID_BITS-1:0] second_lower_id;
+    reg [SLOT_ID_BITS-1:0] first_lower_id;
+    reg [SLOT_ID_BITS-1:0] second_lower_id;
 
     function [READ_RESP_BITS-1:0] pack_line;
         input [LINE_BITS-1:0] line_value;
@@ -179,7 +180,7 @@ module tb_axi_llc_subsystem_compat_pending_direct_maintenance_contract;
     endtask
 
     task wait_pending_direct_slot;
-        output [ID_BITS-1:0] lower_id_value;
+        output [SLOT_ID_BITS-1:0] lower_id_value;
         begin
             timeout = 200;
             while ((bypass_req_valid !== 1'b1) && (timeout > 0)) begin
@@ -203,7 +204,7 @@ module tb_axi_llc_subsystem_compat_pending_direct_maintenance_contract;
     endtask
 
     task retire_bypass_read;
-        input [ID_BITS-1:0] lower_id_value;
+        input [SLOT_ID_BITS-1:0] lower_id_value;
         begin
             bypass_req_ready = 1'b1;
             @(posedge clk);
@@ -247,6 +248,7 @@ module tb_axi_llc_subsystem_compat_pending_direct_maintenance_contract;
     axi_llc_subsystem_compat #(
         .ADDR_BITS(ADDR_BITS),
         .ID_BITS(ID_BITS),
+        .SLOT_ID_BITS(SLOT_ID_BITS),
         .MODE_BITS(MODE_BITS),
         .LINE_BYTES(LINE_BYTES),
         .LINE_BITS(LINE_BITS),
@@ -346,18 +348,18 @@ module tb_axi_llc_subsystem_compat_pending_direct_maintenance_contract;
         cache_req_ready = 1'b0;
         cache_resp_valid = 1'b0;
         cache_resp_rdata = {READ_RESP_BITS{1'b0}};
-        cache_resp_id = {ID_BITS{1'b0}};
+        cache_resp_id = {SLOT_ID_BITS{1'b0}};
         cache_resp_code = RESP_OKAY;
         bypass_req_ready = 1'b0;
         bypass_resp_valid = 1'b0;
         bypass_resp_rdata = {READ_RESP_BITS{1'b0}};
-        bypass_resp_id = {ID_BITS{1'b0}};
+        bypass_resp_id = {SLOT_ID_BITS{1'b0}};
         bypass_resp_code = RESP_OKAY;
         invalidate_line_valid = 1'b0;
         invalidate_line_addr = INVALID_ADDR;
         invalidate_all_valid = 1'b0;
-        first_lower_id = {ID_BITS{1'b0}};
-        second_lower_id = {ID_BITS{1'b0}};
+        first_lower_id = {SLOT_ID_BITS{1'b0}};
+        second_lower_id = {SLOT_ID_BITS{1'b0}};
 
         wait_cycles(4);
         rst_n = 1'b1;
@@ -412,4 +414,3 @@ module tb_axi_llc_subsystem_compat_pending_direct_maintenance_contract;
     end
 
 endmodule
-

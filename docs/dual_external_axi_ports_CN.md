@@ -116,8 +116,11 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 - `axi_llc_subsystem_dual.v` 已作为 native 双外部 AXI 顶层候选接入；
   `axi_llc_subsystem.v` 仍保留为旧单 AXI 兼容顶层。
 - 上游原始事务 ID 和内部 slot/MSHR/lower response ID 已通过 `SLOT_ID_BITS`
-  解耦；当前宽度仍为 4、RTL outstanding 仍为 8，后续要满足 32-entry 需要把
-  slot ID 扩到 5-bit 并把 core/compat/bridge 的共享预算同步扩到 32。
+  解耦；当前 upstream ID 仍为 4-bit，内部 lower/source slot ID 为 6-bit。
+  6-bit slot ID 支持 32 个 MSHR slot，并保留最高两个编码给 legacy demand/refill
+  与 writeback/flush 响应 ID，避免 slot 30/31 与保留 ID 冲突。
+- RTL 默认 read outstanding、write outstanding 和 bridge/core 预算已经扩到 32；
+  读写预算彼此独立，最多允许 32 个读事务与 32 个写事务同时未完成。
 - 同地址 `AR/AW` hazard gate 尚未在 native dual bridge 层统一实现。
 - `hw-cbmc` C++/RTL EC harness 尚未接入。
 
@@ -179,8 +182,8 @@ ID/response 归属与握手，但不把它作为性能最终路径。
   32-bit MMIO read/write 不再进入 LLC core resident lookup，也不会更新 LLC
   data/meta。
 - `SLOT_ID_BITS` 已加入 RTL 顶层/compat 连接，用于把 upstream request ID 与内部
-  core slot / lower request ID 解耦；当前保持 4-bit 行为不变，作为后续扩到
-  32 outstanding 的准备步骤。
+  core slot / lower request ID 解耦；当前内部 slot 为 6-bit，outstanding 预算已扩到
+  32。
 - `tb_axi_llc_subsystem_dual_mmio_contract.v` 固化了 mode1 普通 MMIO 读写
   `*_bypass=0` 时也必须走 `mmio_axi_*`、不得驱动 `ddr_axi_*`、response 回到原
   upstream ID；同时覆盖 DDR cache refill `AR` 被 backpressure 保持时，MMIO

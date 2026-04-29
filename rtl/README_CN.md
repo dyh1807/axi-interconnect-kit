@@ -273,6 +273,7 @@ axi_llc_subsystem_dual
 - `tb/tb_axi_llc_subsystem_compat_victim_line_hazard_contract.v`
 - `tb/tb_axi_llc_axi_bridge_read_outstanding_contract.v`
 - `tb/tb_axi_llc_axi_bridge_write_outstanding_contract.v`
+- `tb/tb_axi_llc_axi_bridge_32_outstanding_contract.v`
 - `tb/tb_axi_llc_axi_bridge_write_id_reuse_contract.v`
 - `tb/tb_llc_smic12_store_contract.v`
 - `flist/*.f`
@@ -322,13 +323,14 @@ axi_llc_subsystem_dual
     避免旧 resident line 在 `invalidate_line` accepted 之后被回装
 - pending dirty victim 当前还会在 compat 接受面挡住 victim-line read，因此这类读不会先被
   外层 FIFO 吃进去再在 core 内部滞留
-- 当前 `id` 采用单个 `4-bit` 平面：
-  - 直接路径返回捕获的 `up_req_id`
-  - bypass lower 路径当前仍向下传 `bypass_req_id`，响应需带回匹配 id
-  - cache 路径对上游仍返回原始 `up_req_id`
+- 当前 `id` 已拆成两个平面：
+  - upstream 原始事务 ID 仍为顶层 `ID_BITS`，默认 4-bit，并由 compat 保存后在 response 返回
+  - core slot / lower source ID 使用 `SLOT_ID_BITS`，当前为 6-bit
+  - 32 个 MSHR/direct slot 使用 0..31，`llc_cache_ctrl` 的 legacy demand/refill 与
+    writeback/flush 使用 62/63 两个保留 lower response ID
 - bypass write 的 `write_resp_code` 当前已经透传 lower / AXI `bresp`
-  - `mode=1` demand refill 对下游 line-memory 使用内部读事务 id `1`
-  - cache miss 的 victim writeback 与 reconfig/flush 维护写回固定使用维护 id `0`
+  - `mode=1` demand refill 对下游 line-memory 使用保留 lower response ID
+  - cache miss 的 victim writeback 与 reconfig/flush 维护写回使用另一个保留 lower response ID
 - `axi_llc_subsystem_compat` 已补回：
   - 多 read/write master 的 `ready/accepted`
   - read `accepted_id`

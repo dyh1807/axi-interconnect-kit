@@ -176,13 +176,11 @@
 - resident lookup 当前与 C++ 外部表 bundle 更一致：
   - `data/meta/valid/repl` 各自有独立返回 valid
   - `llc_cache_ctrl` 在四表都返回后才消费 lookup 结果
-- 当前已接入单平面 `id`：
-  - 上游 `req_id`
-  - 上游 `resp_id`
-  - 下游 `mem_req_id / mem_resp_id`
-  - bypass lower 请求当前仍复用上游 `req_id`
-  - demand miss 触发的 line-memory read 使用内部读事务 id `1`
-  - reconfig/flush 产生的维护写回固定使用维护 id `0`
+- 当前已拆分 `id` 平面：
+  - upstream 原始 `req_id / resp_id` 由 compat 保存和还原
+  - core 内部 `up_req_id / up_resp_id` 表示 compat 分配的 slot ID
+  - 下游 `mem_req_id / mem_resp_id` 和 bypass lower ID 使用同一套内部 slot/source ID
+  - demand/refill 和 writeback/flush 的 legacy state-machine 路径使用两个高位保留 ID
 
 ### `axi_llc_subsystem_compat`
 
@@ -301,9 +299,11 @@ contract bench：
 - upstream 原始事务 ID 仍由顶层 `ID_BITS` 表示，并通过 compat 记录到
   `*_orig_id` 后在 response 返回。
 - core slot / lower request ID 已单独由 `SLOT_ID_BITS` 表示；当前
-  `SLOT_ID_BITS=4`、`AXI_LLC_MAX_OUTSTANDING=8`，行为不变。
-- 后续若要满足 32-entry outstanding，应先把 `SLOT_ID_BITS` 扩到 5，再把
-  core/compat/bridge 的共享 outstanding 预算扩到 32。
+  `SLOT_ID_BITS=6`、`AXI_LLC_MAX_OUTSTANDING=32`、
+  `AXI_LLC_MAX_READ_OUTSTANDING_PER_MASTER=32`、`AXI_LLC_MAX_WRITE_OUTSTANDING=32`。
+- `SLOT_ID_BITS` 选择 6 而不是 5，是因为 `llc_cache_ctrl` 仍保留两个 state-machine
+  lower response ID：最高编码给 writeback/flush，次高编码给 legacy demand/refill。
+  32 个 MSHR slot 使用 0..31，保留 ID 使用 63/62，避免发生编码重叠。
 - `axi_llc_subsystem_core`
   - `up_req_id / up_resp_id` 现在表示 compat 分配的内部 slot ID
   - `cache_req_id / cache_resp_id` 表示 lower cache slot ID
