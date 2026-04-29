@@ -20,6 +20,14 @@ namespace {
 #define CONFIG_AXI_LLC_DEBUG_LOG 0
 #endif
 
+#ifndef CONFIG_AXI_LLC_FOCUS_RANGE_BEGIN
+#define CONFIG_AXI_LLC_FOCUS_RANGE_BEGIN 0u
+#endif
+
+#ifndef CONFIG_AXI_LLC_FOCUS_RANGE_END
+#define CONFIG_AXI_LLC_FOCUS_RANGE_END 0u
+#endif
+
 #ifndef CONFIG_AXI_LLC_RESP_TRACE_BEGIN
 #define CONFIG_AXI_LLC_RESP_TRACE_BEGIN 0LL
 #endif
@@ -52,10 +60,16 @@ bool llc_focus_line(uint32_t line_addr) {
   if (CONFIG_AXI_LLC_DEBUG_LOG == 0) {
     return false;
   }
+  constexpr uint32_t kRangeBegin =
+      static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_RANGE_BEGIN);
+  constexpr uint32_t kRangeEnd =
+      static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_RANGE_END);
   return (CONFIG_AXI_LLC_FOCUS_LINE0 != 0u &&
           line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE0)) ||
          (CONFIG_AXI_LLC_FOCUS_LINE1 != 0u &&
-          line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1));
+          line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1)) ||
+         (kRangeEnd > kRangeBegin && line_addr >= kRangeBegin &&
+          line_addr < kRangeEnd);
 }
 
 bool llc_focus_set(const AXI_LLCConfig &config, uint32_t set) {
@@ -72,6 +86,34 @@ bool llc_resp_trace_active() {
          CONFIG_AXI_LLC_RESP_TRACE_END >= CONFIG_AXI_LLC_RESP_TRACE_BEGIN &&
          sim_time >= static_cast<long long>(CONFIG_AXI_LLC_RESP_TRACE_BEGIN) &&
          sim_time <= static_cast<long long>(CONFIG_AXI_LLC_RESP_TRACE_END);
+}
+
+uint32_t write_word_or_zero(const WideWriteData_t &data, uint32_t index) {
+  return index < MAX_WRITE_TRANSACTION_WORDS ? data.words[index] : 0u;
+}
+
+void llc_dump_write_payload(const char *tag, uint32_t line_addr, uint8_t master,
+                            uint8_t id, uint32_t addr, uint32_t total_size,
+                            const WideWriteData_t &data,
+                            const WideWriteStrb_t &strobe) {
+  if (!llc_focus_line(line_addr)) {
+    return;
+  }
+  std::printf(
+      "[AXI-LLC][%s] cyc=%lld line=0x%08x master=%u id=%u addr=0x%08x "
+      "total_size=%u strb_lo=0x%08x strb_hi=0x%08x "
+      "data=[%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x]\n",
+      tag, sim_time, line_addr, static_cast<unsigned>(master),
+      static_cast<unsigned>(id), addr, static_cast<unsigned>(total_size),
+      strobe.slice_u32(0), strobe.slice_u32(32), write_word_or_zero(data, 0),
+      write_word_or_zero(data, 1), write_word_or_zero(data, 2),
+      write_word_or_zero(data, 3), write_word_or_zero(data, 4),
+      write_word_or_zero(data, 5), write_word_or_zero(data, 6),
+      write_word_or_zero(data, 7), write_word_or_zero(data, 8),
+      write_word_or_zero(data, 9), write_word_or_zero(data, 10),
+      write_word_or_zero(data, 11), write_word_or_zero(data, 12),
+      write_word_or_zero(data, 13), write_word_or_zero(data, 14),
+      write_word_or_zero(data, 15));
 }
 
 void llc_dump_words(const char *tag, uint32_t line_addr, uint8_t slot,
@@ -164,6 +206,28 @@ WideWriteData_t line_bytes_to_write_words(const AXI_LLC_Bytes_t &line) {
     out[i] = read_u32_le(line.data() + static_cast<size_t>(i) * sizeof(uint32_t));
   }
   return out;
+}
+
+void llc_dump_line_bytes(const char *tag, uint32_t line_addr, uint8_t master,
+                         uint8_t id, uint32_t addr,
+                         const AXI_LLC_Bytes_t &line) {
+  if (!llc_focus_line(line_addr)) {
+    return;
+  }
+  const auto words = line_bytes_to_write_words(line);
+  std::printf(
+      "[AXI-LLC][%s] cyc=%lld line=0x%08x master=%u id=%u addr=0x%08x "
+      "data=[%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x]\n",
+      tag, sim_time, line_addr, static_cast<unsigned>(master),
+      static_cast<unsigned>(id), addr, write_word_or_zero(words, 0),
+      write_word_or_zero(words, 1), write_word_or_zero(words, 2),
+      write_word_or_zero(words, 3), write_word_or_zero(words, 4),
+      write_word_or_zero(words, 5), write_word_or_zero(words, 6),
+      write_word_or_zero(words, 7), write_word_or_zero(words, 8),
+      write_word_or_zero(words, 9), write_word_or_zero(words, 10),
+      write_word_or_zero(words, 11), write_word_or_zero(words, 12),
+      write_word_or_zero(words, 13), write_word_or_zero(words, 14),
+      write_word_or_zero(words, 15));
 }
 
 WideWriteStrb_t full_line_strobe(const AXI_LLCConfig &config) {
@@ -1688,6 +1752,9 @@ void AXI_LLC::drive_write_path() {
           static_cast<unsigned>(ctx.id), static_cast<int>(ctx.bypass),
           static_cast<unsigned>(ctx.total_size),
           static_cast<unsigned>(io.reg_write.write_q_count_r[master] - 1));
+      llc_dump_write_payload("WRITE-CTX-PAYLOAD", ctx.line_addr,
+                             static_cast<uint8_t>(master), ctx.id, ctx.addr,
+                             ctx.total_size, ctx.data, ctx.strobe);
     }
     io.reg_write.write_q[master][io.reg_write.write_q_head_r[master] %
                                  MAX_WRITE_OUTSTANDING] = {};
@@ -1915,6 +1982,9 @@ bool AXI_LLC::try_complete_lookup() {
       }
       merge_write_into_line(config_, io.regs.lookup_addr_r, line, ctx.data,
                             ctx.strobe, ctx.total_size);
+      llc_dump_line_bytes("DIRECT-WRITE-MERGED", ctx.line_addr,
+                          io.regs.lookup_master_r, io.regs.lookup_id_r,
+                          io.regs.lookup_addr_r, line);
       if (mapped_slot_valid) {
         io.table_out.data.enable = true;
         io.table_out.data.write = true;
@@ -1996,6 +2066,9 @@ bool AXI_LLC::try_complete_lookup() {
           extract_way_line_bytes(config_, io.lookup_in.data, hit_way);
       merge_write_into_line(config_, io.regs.lookup_addr_r, line,
                             ctx.data, ctx.strobe, ctx.total_size);
+      llc_dump_line_bytes("WRITE-HIT-MERGED", req_line_addr,
+                          io.regs.lookup_master_r, io.regs.lookup_id_r,
+                          io.regs.lookup_addr_r, line);
       if (!is_bypass_lookup) {
         const uint32_t limit =
             std::min<uint32_t>(config_.mshr_num, MAX_OUTSTANDING);
@@ -2338,6 +2411,9 @@ bool AXI_LLC::try_complete_lookup() {
     line.resize(config_.line_bytes);
     merge_write_into_line(config_, io.regs.lookup_addr_r, line,
                           ctx.data, ctx.strobe, ctx.total_size);
+    llc_dump_line_bytes("WRITE-MISS-FULL-MERGED", req_line_addr,
+                        io.regs.lookup_master_r, io.regs.lookup_id_r,
+                        io.regs.lookup_addr_r, line);
     AXI_LLCMetaEntry_t meta{};
     meta.tag = tag;
     meta.flags = static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY);
@@ -2858,6 +2934,8 @@ void AXI_LLC::drive_mem_read_path() {
       auto &ctx = io.reg_write.write_ctx[entry.master];
       merge_write_into_line(config_, entry.addr, line_bytes, ctx.data, ctx.strobe,
                             ctx.total_size);
+      llc_dump_line_bytes("WRITE-REFILL-MERGED", entry.line_addr,
+                          entry.master, entry.id, entry.addr, line_bytes);
       meta.flags = static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY);
     }
 
@@ -3138,13 +3216,18 @@ void AXI_LLC::comb() {
     const auto words = line_bytes_to_write_words(io.table_out.data.payload);
     std::printf(
         "[AXI-LLC][TABLE-DATA-WR] cyc=%lld state=%u index=%u way=%u "
-        "lookup_valid=%d lookup_write=%d lookup_addr=0x%08x data=[%08x %08x %08x %08x %08x %08x %08x %08x]\n",
+        "lookup_valid=%d lookup_write=%d lookup_addr=0x%08x "
+        "data=[%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x]\n",
         sim_time, static_cast<unsigned>(io.reg_write.state),
         io.table_out.data.index, io.table_out.data.way,
         static_cast<int>(io.reg_write.lookup_valid_r),
         static_cast<int>(io.reg_write.lookup_is_write_r),
         io.reg_write.lookup_addr_r, words[0], words[1], words[2], words[3],
-        words[4], words[5], words[6], words[7]);
+        words[4], words[5], words[6], words[7],
+        write_word_or_zero(words, 8), write_word_or_zero(words, 9),
+        write_word_or_zero(words, 10), write_word_or_zero(words, 11),
+        write_word_or_zero(words, 12), write_word_or_zero(words, 13),
+        write_word_or_zero(words, 14), write_word_or_zero(words, 15));
   }
   if (io.table_out.meta.enable && io.table_out.meta.write &&
       focus_write_match()) {

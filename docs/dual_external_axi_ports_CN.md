@@ -28,6 +28,15 @@ LLC mapped-window 的处理取决于 LLC 模式：
 
 默认 mapped-window offset 为 `0x3000_0000`。
 
+当前阶段的验证范围补充：
+
+- 当前 Linux bring-up 的唯一必须通过路径是 LLC on 模式，也就是 `AXI_SUBMODULE_MODE=1`；
+  C++ reference 的性能/正确性回归优先服务这条路径。
+- Offset 地址映射模式主要服务未来硬件启动初期，不作为当前 Linux bring-up 或性能回归
+  的主验证路径。
+- 其它 LLC runtime mode 暂不要求读路径完整跑通 Linux；但写路径仍必须保持地址分类、
+  `wstrb` 移位和 backing-memory 更新语义正确，避免后续模式切换时遗留歧义。
+
 ## DDR/SDRAM AXI 口
 
 DDR 口负责 `0x4000_0000` 及以上地址。对 AXI 接口本身，不区分 SDRAM 和 DDR：
@@ -141,14 +150,17 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 - DDR 口 64B cacheline 维持 2 beat、同一 AXI transaction。
 - 同 line AR/AW hazard gate 已加入，覆盖已发 AR、latched AR、pending R、latched AW、active W、pending B。
 
-当前 C++ 仍不是最终的“集成双外部 AXI 口”调度结构：
+当前 C++ 已具备集成双外部 AXI 口的基本调度结构：
 
 - `axi_ddr_io` 和 `axi_mmio_io` 已经拆开，地址分类和事务形状已经按双口语义运行。
-- 但 AR/AW/W 调度仍保留单口时代的全局 latch/state，例如单个 `ar_latched`、单个
-  `aw_latched`、单个 `w_active/w_current`。
-- 因此当前 C++ 每周期仍最多发出一组 AR 或 AW/W，尚不能表达 DDR 与 MMIO 同周期并行
-  发射。下一步应先把 C++ scheduler 拆成 per-port issue/latch，同时保持共享
-  read/write outstanding 上限，再迁移 RTL 顶层和 EC harness。
+- AR/AW/W 调度已拆成 per-port issue/latch/state，例如 `ar_latched` 与
+  `ar_latched_mmio`、`aw_latched` 与 `aw_latched_mmio`、`w_current` 与
+  `w_current_mmio`。
+- targeted test 已覆盖 DDR 与 MMIO 同周期发出 `AR`、同周期发出 `AW`、同周期发出
+  `W`。这些同周期发射测试当前覆盖的是非 LLC 直连外部路径；LLC-on 路径的上游仍先
+  进入 LLC core request stage，MMIO bypass 经过 LLC 后再下发到 MMIO 口。
+- read/write outstanding 仍维持全局共享上限；后续工作应把同等 native dual-port
+  语义迁移到最终 RTL 顶层，并接入 EC harness。
 
 ## Simulator Reset PC 约束
 
@@ -160,12 +172,23 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 
 并同步修改 difftest/oracle，使 C++ DUT、reference 和 oracle 从同一 DDR/RAM 起点开始执行。低地址 boot stub 仍保留在 backing memory 中，但不再作为默认 AXI ICache 启动路径。
 
+注意：低地址 boot stub 原本会设置 Linux boot ABI：
+
+- `a0 = hartid = 0`
+- `a1 = fdt = 0x83e0_0000`
+
+当 `RESET_PC=0x8000_0000` 且加载 Linux image 时，simulator 需要显式向 DUT PRF、
+difftest reference 和 oracle 灌入上述参数；否则 Linux 可能在缺少 FDT 参数的情况下
+构造出不完整页表，导致 strict ITLB 语义下出现大量重复 page fault/低 IPC。
+
 ## 已完成的最小验证
 
 已通过的 targeted tests：
 
-- `axi_interconnect_dual_port_test`：5 passed, 0 failed。
-  覆盖 DDR/MMIO 路由、MMIO 大读写阻塞、同 line AR/AW hazard gate。
+- `axi_interconnect_dual_port_test`：15 passed, 0 failed。
+  覆盖 DDR/MMIO 路由、MMIO 大读写阻塞、同 line AR/AW hazard gate、legacy LLC
+  MMIO backing 读写、LLC-MMIO bypass，以及非 LLC-on 模式下的写路径地址分类、
+  DDR 256-bit 对齐/`wstrb` 移位、mode2 mapped-window 写捕获和 mode3 bypass 写捕获。
 - `axi_interconnect_llc_axi4_test`：历史版本 29 passed, 0 failed；本轮未在 standalone
   submodule CMake 下复测，因为该 test env 链接 `SimDDR.cpp`，仍依赖父仓库
   `PhysMemory.h`。
@@ -183,8 +206,36 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 - `./build_dual_axi_large_20260428/simulator -c 1000 baremetal/sha-test.bin`
 - `make large BUILD_DIR=build_dual_axi_large_bpu_20260428 EXTRA_CXXFLAGS=-DCONFIG_BPU -j8`
 - `./build_dual_axi_large_bpu_20260428/simulator -c 1000 baremetal/sha-test.bin`
+- `make large BUILD_DIR=build_dual_axi_bootargs_large_bpu_20260428 EXTRA_CXXFLAGS=-DCONFIG_BPU -j8`
+- `AXI_SUBMODULE_MODE=1 AXI_SUBMODULE_OFFSET=0 ./build_dual_axi_bootargs_large_bpu_20260428/simulator -c 300000 ../img/linux.bin`
+  - `sim-time(cycle)=120719`
+  - `committed=300001`
+  - `ipc=2.485118`
+  - `DTLB req/grant/resp=0/0/0`
+  - `ITLB req/grant/resp=0/0/0`
+- `AXI_SUBMODULE_MODE=1 AXI_SUBMODULE_OFFSET=0 ./build_dual_axi_bootargs_large_bpu_20260428/simulator -c 5000000 ../img/linux.bin`
+  - `sim-time(cycle)=2079429`
+  - `committed=5000005`
+  - `ipc=2.404509`
+  - `DTLB req/grant/resp=458/499/409`
+  - `ITLB req/grant/resp=32/42/15`
+- `AXI_SUBMODULE_MODE=1 AXI_SUBMODULE_OFFSET=0 ./build_dual_axi_bootargs_large_bpu_20260428/simulator -c 10000 baremetal/sha-test.bin`
+  - `sim-time(cycle)=14615`
+  - `committed=10000`
+  - `ipc=0.684229`
+  - `DTLB req/grant/resp=0/0/0`
+  - `ITLB req/grant/resp=0/0/0`
+- `make default BUILD_DIR=build_dual_axi_bootargs_default_20260428 -j8`
+- `AXI_SUBMODULE_MODE=1 AXI_SUBMODULE_OFFSET=0 ./build_dual_axi_bootargs_default_20260428/simulator -c 1000 baremetal/sha-test.bin`
+  - `sim-time(cycle)=4702`
+  - `committed=1000`
+  - `ipc=0.212675`
+  - `DTLB req/grant/resp=0/0/0`
+  - `ITLB req/grant/resp=0/0/0`
 
-以上 smoke tests 均达到 `MAX_COMMIT_INST=1000` 后正常退出，日志中未出现 `Difftest: error`。
+早期 smoke tests 均达到 `MAX_COMMIT_INST=1000` 后正常退出，日志中未出现 `Difftest: error`。
+最新 300k/5M Linux、10k large+BPU SHA 与 1k default SHA smoke 分别达到目标 commit
+数后正常退出，同样未匹配到 `Difftest: error` 或 `DEADLOCK`。
 
 这些 simulator smoke tests 依赖父仓库的临时适配改动，只用于证明当前 submodule 行为
 没有立即破坏父仓库启动路径；后续接到最新版 simulator 父仓库时，父仓库侧适配需要重新做，

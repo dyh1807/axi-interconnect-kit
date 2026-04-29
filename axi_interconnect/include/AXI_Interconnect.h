@@ -59,6 +59,17 @@ struct AWLatch_t {
   uint8_t id;
 };
 
+struct ARIssueMeta_t {
+  bool valid = false;
+  bool from_llc = false;
+  bool resp_extract_from_aligned_beat = false;
+  uint8_t llc_mem_id = 0;
+  uint32_t upstream_addr = 0;
+  uint8_t upstream_total_size = 0;
+  int master_id = -1;
+  uint8_t orig_id = 0;
+};
+
 // ============================================================================
 // Pending Transaction Tracking
 // ============================================================================
@@ -218,7 +229,22 @@ private:
   int find_write_pending_by_axi_id(uint8_t axi_id) const;
   int find_next_aw_pending() const;
   int find_next_w_pending() const;
-  void refresh_non_llc_w_active();
+  int find_next_aw_pending(DownstreamPort port) const;
+  int find_next_w_pending(DownstreamPort port) const;
+  void refresh_non_llc_w_active(DownstreamPort port);
+  ARLatch_t &ar_latch(DownstreamPort port);
+  const ARLatch_t &ar_latch(DownstreamPort port) const;
+  AWLatch_t &aw_latch(DownstreamPort port);
+  const AWLatch_t &aw_latch(DownstreamPort port) const;
+  bool &w_active_ref(DownstreamPort port);
+  bool w_active_ref(DownstreamPort port) const;
+  WritePendingTxn &w_current_ref(DownstreamPort port);
+  const WritePendingTxn &w_current_ref(DownstreamPort port) const;
+  int &w_current_master_ref(DownstreamPort port);
+  bool any_ar_latched() const;
+  bool any_aw_latched() const;
+  bool any_w_active() const;
+  bool external_write_busy() const;
 
   // Read arbiter state
   uint8_t r_arb_rr_idx;
@@ -229,18 +255,22 @@ private:
   bool req_drop_warned[NUM_READ_MASTERS];
   uint8_t w_arb_rr_idx;
   int w_current_master;
+  int w_current_master_mmio;
   bool w_req_ready_r[NUM_WRITE_MASTERS];
   bool write_req_fire_c[NUM_WRITE_MASTERS];
 
   // AR latch for AXI compliance
   ARLatch_t ar_latched;
+  ARLatch_t ar_latched_mmio;
 
   // Pending read transactions
   std::vector<ReadPendingTxn> r_pending;
 
   // Write state
   bool w_active;
+  bool w_active_mmio;
   WritePendingTxn w_current;
+  WritePendingTxn w_current_mmio;
   std::deque<WritePendingTxn> w_pending;
   bool w_resp_valid[NUM_WRITE_MASTERS];
   uint8_t w_resp_id[NUM_WRITE_MASTERS];
@@ -248,6 +278,7 @@ private:
 
   // AW latch for AXI compliance
   AWLatch_t aw_latched;
+  AWLatch_t aw_latched_mmio;
 
   void comb_read_arbiter();
   void comb_read_response();
@@ -302,9 +333,13 @@ private:
   bool llc_mem_write_resp_valid_ = false;
   uint8_t llc_mem_write_resp_ = 0;
   uint32_t llc_mem_ignored_b_count_ = 0;
+  bool llc_synth_read_resp_valid_ = false;
+  uint8_t llc_synth_read_resp_id_ = 0;
+  WideReadData_t llc_synth_read_resp_data_{};
   bool ar_from_llc_c = false;
   uint8_t ar_llc_mem_id_c = 0;
   DownstreamPort ar_port_c = DownstreamPort::DDR;
+  ARIssueMeta_t ar_issue_c[2] = {};
   bool ar_llc_resp_extract_from_aligned_beat_c = false;
   uint32_t ar_llc_upstream_addr_c = 0;
   uint8_t ar_llc_upstream_total_size_c = 0;
@@ -313,6 +348,7 @@ private:
   DownstreamPort aw_port_c = DownstreamPort::DDR;
   uint8_t runtime_mode_ = 1;
   uint32_t llc_mapped_offset_ = 0;
+  bool llc_mapped_offset_override_ = false;
   bool reconfig_pending_ = false;
   uint8_t reconfig_target_mode_ = 1;
   uint32_t reconfig_target_offset_ = 0;

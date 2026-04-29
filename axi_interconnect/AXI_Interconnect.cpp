@@ -17,6 +17,14 @@
 
 extern long long sim_time;
 
+#if defined(__GNUC__)
+extern uint32_t pmem_read(uint32_t paddr) __attribute__((weak));
+extern void pmem_write(uint32_t paddr, uint32_t data) __attribute__((weak));
+#else
+extern uint32_t pmem_read(uint32_t paddr);
+extern void pmem_write(uint32_t paddr, uint32_t data);
+#endif
+
 namespace axi_interconnect {
 
 namespace {
@@ -51,6 +59,14 @@ constexpr uint32_t kDefaultMappedLlcOffset = 0x30000000u;
 
 #ifndef CONFIG_AXI_LLC_DEBUG_LOG
 #define CONFIG_AXI_LLC_DEBUG_LOG 0
+#endif
+
+#ifndef CONFIG_AXI_LLC_FOCUS_RANGE_BEGIN
+#define CONFIG_AXI_LLC_FOCUS_RANGE_BEGIN 0u
+#endif
+
+#ifndef CONFIG_AXI_LLC_FOCUS_RANGE_END
+#define CONFIG_AXI_LLC_FOCUS_RANGE_END 0u
 #endif
 
 #ifndef CONFIG_AXI_LLC_RESP_TRACE_BEGIN
@@ -90,10 +106,16 @@ bool llc_focus_line(uint32_t line_addr) {
   if (CONFIG_AXI_LLC_DEBUG_LOG == 0) {
     return false;
   }
+  constexpr uint32_t kRangeBegin =
+      static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_RANGE_BEGIN);
+  constexpr uint32_t kRangeEnd =
+      static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_RANGE_END);
   return (CONFIG_AXI_LLC_FOCUS_LINE0 != 0u &&
           line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE0)) ||
          (CONFIG_AXI_LLC_FOCUS_LINE1 != 0u &&
-          line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1));
+          line_addr == static_cast<uint32_t>(CONFIG_AXI_LLC_FOCUS_LINE1)) ||
+         (kRangeEnd > kRangeBegin && line_addr >= kRangeBegin &&
+          line_addr < kRangeEnd);
 }
 
 bool focus_read_line(uint32_t line_addr) { return llc_focus_line(line_addr); }
@@ -110,6 +132,66 @@ bool mmio_request_supported(uint8_t total_size) {
 
 bool downstream_request_supported(DownstreamPort port, uint8_t total_size) {
   return port != DownstreamPort::MMIO || mmio_request_supported(total_size);
+}
+
+bool unsupported_mmio_request(DownstreamPort port, uint8_t total_size) {
+  return port == DownstreamPort::MMIO && !mmio_request_supported(total_size);
+}
+
+int port_index(DownstreamPort port) {
+  return port == DownstreamPort::MMIO ? 1 : 0;
+}
+
+uint32_t read_backing_word_or_zero(uint32_t paddr) {
+#if defined(__GNUC__)
+  if (::pmem_read == nullptr) {
+    return 0;
+  }
+#endif
+  return ::pmem_read(paddr);
+}
+
+void write_backing_word_if_available(uint32_t paddr, uint32_t data) {
+#if defined(__GNUC__)
+  if (::pmem_write == nullptr) {
+    return;
+  }
+#endif
+  ::pmem_write(paddr, data);
+}
+
+WideReadData_t load_legacy_mmio_backing_line(uint32_t addr) {
+  WideReadData_t data{};
+  data.clear();
+  for (uint32_t word = 0; word < MAX_READ_TRANSACTION_WORDS; ++word) {
+    data[static_cast<int>(word)] =
+        read_backing_word_or_zero(addr + word * sizeof(uint32_t));
+  }
+  return data;
+}
+
+void store_legacy_mmio_backing_line(uint32_t addr, const WideWriteData_t &wdata,
+                                    const WideWriteStrb_t &wstrb,
+                                    uint8_t total_size) {
+  const uint32_t byte_count = static_cast<uint32_t>(total_size) + 1u;
+  const uint32_t bounded_bytes =
+      std::min<uint32_t>(byte_count, MAX_WRITE_TRANSACTION_BYTES);
+  for (uint32_t byte = 0; byte < bounded_bytes; ++byte) {
+    if (!wstrb.test(byte)) {
+      continue;
+    }
+    const uint32_t word_idx = byte / sizeof(uint32_t);
+    const uint32_t payload_shift = (byte % sizeof(uint32_t)) * 8u;
+    const uint32_t byte_in_word = (addr + byte) % sizeof(uint32_t);
+    const uint32_t word_addr = (addr + byte) & ~0x3u;
+    const uint32_t shift = byte_in_word * 8u;
+    const uint32_t mask = 0xFFu << shift;
+    const uint32_t new_byte =
+        (wdata[static_cast<int>(word_idx)] >> payload_shift) & 0xFFu;
+    const uint32_t old_word = read_backing_word_or_zero(word_addr);
+    write_backing_word_if_available(word_addr,
+                                    (old_word & ~mask) | (new_byte << shift));
+  }
 }
 
 bool focus_read_txn(const ReadPendingTxn &txn) {
@@ -448,13 +530,68 @@ AXI_Interconnect::downstream_io(DownstreamPort port) const {
   return port == DownstreamPort::DDR ? axi_ddr_io : axi_mmio_io;
 }
 
+ARLatch_t &AXI_Interconnect::ar_latch(DownstreamPort port) {
+  return port == DownstreamPort::DDR ? ar_latched : ar_latched_mmio;
+}
+
+const ARLatch_t &AXI_Interconnect::ar_latch(DownstreamPort port) const {
+  return port == DownstreamPort::DDR ? ar_latched : ar_latched_mmio;
+}
+
+AWLatch_t &AXI_Interconnect::aw_latch(DownstreamPort port) {
+  return port == DownstreamPort::DDR ? aw_latched : aw_latched_mmio;
+}
+
+const AWLatch_t &AXI_Interconnect::aw_latch(DownstreamPort port) const {
+  return port == DownstreamPort::DDR ? aw_latched : aw_latched_mmio;
+}
+
+bool &AXI_Interconnect::w_active_ref(DownstreamPort port) {
+  return port == DownstreamPort::DDR ? w_active : w_active_mmio;
+}
+
+bool AXI_Interconnect::w_active_ref(DownstreamPort port) const {
+  return port == DownstreamPort::DDR ? w_active : w_active_mmio;
+}
+
+WritePendingTxn &AXI_Interconnect::w_current_ref(DownstreamPort port) {
+  return port == DownstreamPort::DDR ? w_current : w_current_mmio;
+}
+
+const WritePendingTxn &
+AXI_Interconnect::w_current_ref(DownstreamPort port) const {
+  return port == DownstreamPort::DDR ? w_current : w_current_mmio;
+}
+
+int &AXI_Interconnect::w_current_master_ref(DownstreamPort port) {
+  return port == DownstreamPort::DDR ? w_current_master : w_current_master_mmio;
+}
+
+bool AXI_Interconnect::any_ar_latched() const {
+  return ar_latched.valid || ar_latched_mmio.valid;
+}
+
+bool AXI_Interconnect::any_aw_latched() const {
+  return aw_latched.valid || aw_latched_mmio.valid;
+}
+
+bool AXI_Interconnect::any_w_active() const {
+  return w_active || w_active_mmio;
+}
+
+bool AXI_Interconnect::external_write_busy() const {
+  return any_w_active() || any_aw_latched();
+}
+
 void AXI_Interconnect::sample_runtime_controls() {
   uint64_t env_value = 0;
   if (read_env_u64("AXI_SUBMODULE_MODE", env_value)) {
     mode = static_cast<uint8_t>(env_value & 0x3u);
   }
+  llc_mapped_offset_override_ = false;
   if (read_env_u64("AXI_SUBMODULE_OFFSET", env_value)) {
     llc_mapped_offset = static_cast<uint32_t>(env_value);
+    llc_mapped_offset_override_ = true;
   }
 
   runtime_mode_ = requested_mode();
@@ -493,7 +630,8 @@ uint8_t AXI_Interconnect::requested_mode() const {
 
 uint32_t AXI_Interconnect::requested_llc_mapped_offset() const {
   const uint32_t requested = static_cast<uint32_t>(llc_mapped_offset);
-  return requested == 0 ? kDefaultMappedLlcOffset : requested;
+  return (!llc_mapped_offset_override_ && requested == 0) ? kDefaultMappedLlcOffset
+                                                         : requested;
 }
 
 bool AXI_Interconnect::requested_config_differs_from_active() const {
@@ -569,6 +707,9 @@ uint32_t AXI_Interconnect::translate_llc_addr(uint32_t addr,
 
 bool AXI_Interconnect::effective_llc_bypass(uint32_t addr, uint8_t total_size,
                                             bool upstream_bypass) const {
+  if (request_uses_mmio_port(addr, total_size)) {
+    return true;
+  }
   if (runtime_mode_ == 2u) {
     return !request_in_mapped_window(addr, total_size);
   }
@@ -605,37 +746,49 @@ void AXI_Interconnect::init() {
   llc_mem_write_resp_valid_ = false;
   llc_mem_write_resp_ = 0;
   llc_mem_ignored_b_count_ = 0;
+  llc_synth_read_resp_valid_ = false;
+  llc_synth_read_resp_id_ = 0;
+  llc_synth_read_resp_data_.clear();
 
-  // Clear AR latch
-  ar_latched.valid = false;
-  ar_latched.accepted_upstream = false;
-  ar_latched.to_llc = false;
-  ar_latched.resp_extract_from_aligned_beat = false;
-  ar_latched.port = DownstreamPort::DDR;
-  ar_latched.addr = 0;
-  ar_latched.upstream_addr = 0;
-  ar_latched.len = 0;
-  ar_latched.size = kDownstreamAxiSize;
-  ar_latched.burst = sim_ddr::AXI_BURST_INCR;
-  ar_latched.id = 0;
-  ar_latched.master_id = 0;
-  ar_latched.orig_id = 0;
-  ar_latched.upstream_total_size = 0;
+  auto clear_ar_latch = [](ARLatch_t &latch, DownstreamPort port) {
+    latch.valid = false;
+    latch.accepted_upstream = false;
+    latch.to_llc = false;
+    latch.resp_extract_from_aligned_beat = false;
+    latch.port = port;
+    latch.addr = 0;
+    latch.upstream_addr = 0;
+    latch.len = 0;
+    latch.size = port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+    latch.burst = sim_ddr::AXI_BURST_INCR;
+    latch.id = 0;
+    latch.master_id = 0;
+    latch.orig_id = 0;
+    latch.upstream_total_size = 0;
+  };
+  clear_ar_latch(ar_latched, DownstreamPort::DDR);
+  clear_ar_latch(ar_latched_mmio, DownstreamPort::MMIO);
 
   w_active = false;
+  w_active_mmio = false;
   w_current = {};
+  w_current_mmio = {};
   w_pending.clear();
   w_arb_rr_idx = 0;
   w_current_master = -1;
+  w_current_master_mmio = -1;
 
-  // Clear AW latch
-  aw_latched.valid = false;
-  aw_latched.port = DownstreamPort::DDR;
-  aw_latched.addr = 0;
-  aw_latched.len = 0;
-  aw_latched.size = kDownstreamAxiSize;
-  aw_latched.burst = sim_ddr::AXI_BURST_INCR;
-  aw_latched.id = 0;
+  auto clear_aw_latch = [](AWLatch_t &latch, DownstreamPort port) {
+    latch.valid = false;
+    latch.port = port;
+    latch.addr = 0;
+    latch.len = 0;
+    latch.size = port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+    latch.burst = sim_ddr::AXI_BURST_INCR;
+    latch.id = 0;
+  };
+  clear_aw_latch(aw_latched, DownstreamPort::DDR);
+  clear_aw_latch(aw_latched_mmio, DownstreamPort::MMIO);
 
   // Clear registered req.ready signals
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
@@ -674,6 +827,8 @@ void AXI_Interconnect::init() {
     axi_compat::set_bit(axi_mmio_io.w.wstrb, byte, true);
   }
   ar_port_c = DownstreamPort::DDR;
+  ar_issue_c[0] = {};
+  ar_issue_c[1] = {};
   aw_port_c = DownstreamPort::DDR;
 }
 
@@ -684,6 +839,9 @@ uint8_t AXI_Interconnect::alloc_read_axi_id() const {
   }
   if (ar_latched.valid) {
     used[ar_latched.id & ((1u << sim_ddr::AXI_ID_WIDTH) - 1u)] = true;
+  }
+  if (ar_latched_mmio.valid) {
+    used[ar_latched_mmio.id & ((1u << sim_ddr::AXI_ID_WIDTH) - 1u)] = true;
   }
   for (uint8_t id = 0; id < (1u << sim_ddr::AXI_ID_WIDTH); ++id) {
     if (!used[id]) {
@@ -703,11 +861,15 @@ uint8_t AXI_Interconnect::count_master_read_pending(uint8_t master_id) const {
   if (ar_latched.valid && ar_latched.master_id == master_id) {
     ++count;
   }
+  if (ar_latched_mmio.valid && ar_latched_mmio.master_id == master_id) {
+    ++count;
+  }
   return count;
 }
 
 uint8_t AXI_Interconnect::count_total_read_inflight() const {
-  return static_cast<uint8_t>(r_pending.size() + (ar_latched.valid ? 1 : 0));
+  return static_cast<uint8_t>(r_pending.size() + (ar_latched.valid ? 1 : 0) +
+                              (ar_latched_mmio.valid ? 1 : 0));
 }
 
 uint8_t AXI_Interconnect::alloc_write_axi_id() const {
@@ -717,6 +879,9 @@ uint8_t AXI_Interconnect::alloc_write_axi_id() const {
   }
   if (aw_latched.valid) {
     used[aw_latched.id & ((1u << sim_ddr::AXI_ID_WIDTH) - 1u)] = true;
+  }
+  if (aw_latched_mmio.valid) {
+    used[aw_latched_mmio.id & ((1u << sim_ddr::AXI_ID_WIDTH) - 1u)] = true;
   }
   for (uint8_t id = 0; id < (1u << sim_ddr::AXI_ID_WIDTH); ++id) {
     if (!used[id]) {
@@ -743,7 +908,8 @@ uint32_t AXI_Interconnect::count_llc_write_pending() const {
 }
 
 bool AXI_Interconnect::non_llc_path_quiescent() const {
-  if (ar_latched.valid || !r_pending.empty() || aw_latched.valid || w_active ||
+  if (any_ar_latched() || !r_pending.empty() || any_aw_latched() ||
+      any_w_active() ||
       !w_pending.empty()) {
     return false;
   }
@@ -764,10 +930,11 @@ bool AXI_Interconnect::llc_path_quiescent() const {
   if (!llc_enabled()) {
     return true;
   }
-  if (ar_latched.valid && ar_latched.to_llc) {
+  if ((ar_latched.valid && ar_latched.to_llc) ||
+      (ar_latched_mmio.valid && ar_latched_mmio.to_llc)) {
     return false;
   }
-  if (w_active || aw_latched.valid || llc_mem_write_resp_valid_ ||
+  if (any_w_active() || any_aw_latched() || llc_mem_write_resp_valid_ ||
       llc_mem_ignored_b_count_ != 0) {
     return false;
   }
@@ -865,8 +1032,16 @@ bool AXI_Interconnect::has_same_line_write_hazard(uint32_t line_addr) const {
   if (w_active && AXI_LLC::line_addr(llc_config, w_current.addr) == line_addr) {
     return true;
   }
+  if (w_active_mmio &&
+      AXI_LLC::line_addr(llc_config, w_current_mmio.addr) == line_addr) {
+    return true;
+  }
   if (aw_latched.valid &&
       AXI_LLC::line_addr(llc_config, aw_latched.addr) == line_addr) {
+    return true;
+  }
+  if (aw_latched_mmio.valid &&
+      AXI_LLC::line_addr(llc_config, aw_latched_mmio.addr) == line_addr) {
     return true;
   }
   return false;
@@ -881,12 +1056,20 @@ uint32_t AXI_Interconnect::external_hazard_line_addr(uint32_t addr) const {
 
 bool AXI_Interconnect::has_external_pending_read_hazard(uint32_t addr) const {
   const uint32_t line = external_hazard_line_addr(addr);
-  if ((axi_ddr_io.ar.arvalid || axi_mmio_io.ar.arvalid) &&
-      external_hazard_line_addr(ar_llc_upstream_addr_c) == line) {
-    return true;
+  for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
+    const auto &io = downstream_io(port);
+    const auto &meta = ar_issue_c[port_index(port)];
+    if (io.ar.arvalid && meta.valid &&
+        external_hazard_line_addr(meta.upstream_addr) == line) {
+      return true;
+    }
   }
   if (ar_latched.valid &&
       external_hazard_line_addr(ar_latched.upstream_addr) == line) {
+    return true;
+  }
+  if (ar_latched_mmio.valid &&
+      external_hazard_line_addr(ar_latched_mmio.upstream_addr) == line) {
     return true;
   }
   for (const auto &txn : r_pending) {
@@ -903,7 +1086,14 @@ bool AXI_Interconnect::has_external_pending_write_hazard(uint32_t addr) const {
   if (aw_latched.valid && external_hazard_line_addr(aw_latched.addr) == line) {
     return true;
   }
+  if (aw_latched_mmio.valid &&
+      external_hazard_line_addr(aw_latched_mmio.addr) == line) {
+    return true;
+  }
   if (w_active && external_hazard_line_addr(w_current.addr) == line) {
+    return true;
+  }
+  if (w_active_mmio && external_hazard_line_addr(w_current_mmio.addr) == line) {
     return true;
   }
   for (const auto &txn : w_pending) {
@@ -940,6 +1130,15 @@ int AXI_Interconnect::find_next_aw_pending() const {
   return -1;
 }
 
+int AXI_Interconnect::find_next_aw_pending(DownstreamPort port) const {
+  for (size_t i = 0; i < w_pending.size(); ++i) {
+    if (!w_pending[i].aw_done && w_pending[i].port == port) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 int AXI_Interconnect::find_next_w_pending() const {
   for (size_t i = 0; i < w_pending.size(); ++i) {
     if (w_pending[i].aw_done && !w_pending[i].w_done) {
@@ -949,31 +1148,43 @@ int AXI_Interconnect::find_next_w_pending() const {
   return -1;
 }
 
-void AXI_Interconnect::refresh_non_llc_w_active() {
+int AXI_Interconnect::find_next_w_pending(DownstreamPort port) const {
+  for (size_t i = 0; i < w_pending.size(); ++i) {
+    if (w_pending[i].port == port && w_pending[i].aw_done && !w_pending[i].w_done) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+void AXI_Interconnect::refresh_non_llc_w_active(DownstreamPort port) {
   if (llc_enabled()) {
     return;
   }
-  if (w_active) {
+  bool &active = w_active_ref(port);
+  auto &current = w_current_ref(port);
+  int &current_master = w_current_master_ref(port);
+  if (active) {
     return;
   }
-  const int idx = find_next_w_pending();
+  const int idx = find_next_w_pending(port);
   if (idx < 0) {
-    w_current = {};
-    w_current_master = -1;
+    current = {};
+    current_master = -1;
     return;
   }
-  w_current = w_pending[static_cast<size_t>(idx)];
-  w_active = true;
-  w_current_master = w_current.master_id;
-  if (focus_write_line(w_current.addr)) {
+  current = w_pending[static_cast<size_t>(idx)];
+  active = true;
+  current_master = current.master_id;
+  if (focus_write_line(current.addr)) {
     std::printf(
         "[AXI-W][SELECT] cyc=%lld axi_id=%u master=%u addr=0x%08x beats=%u "
         "beats_sent=%u aw_done=%d w_done=%d\n",
-        sim_time, static_cast<unsigned>(w_current.axi_id),
-        static_cast<unsigned>(w_current.master_id), w_current.addr,
-        static_cast<unsigned>(w_current.total_beats),
-        static_cast<unsigned>(w_current.beats_sent),
-        static_cast<int>(w_current.aw_done), static_cast<int>(w_current.w_done));
+        sim_time, static_cast<unsigned>(current.axi_id),
+        static_cast<unsigned>(current.master_id), current.addr,
+        static_cast<unsigned>(current.total_beats),
+        static_cast<unsigned>(current.beats_sent),
+        static_cast<int>(current.aw_done), static_cast<int>(current.w_done));
   }
 }
 
@@ -994,6 +1205,11 @@ bool AXI_Interconnect::has_read_id_conflict(uint8_t master_id,
                                             uint8_t orig_id) const {
   if (ar_latched.valid && !ar_latched.to_llc &&
       ar_latched.master_id == master_id && ar_latched.orig_id == orig_id) {
+    return true;
+  }
+  if (ar_latched_mmio.valid && !ar_latched_mmio.to_llc &&
+      ar_latched_mmio.master_id == master_id &&
+      ar_latched_mmio.orig_id == orig_id) {
     return true;
   }
   for (const auto &txn : r_pending) {
@@ -1032,7 +1248,7 @@ bool AXI_Interconnect::has_read_id_conflict(uint8_t master_id,
 }
 
 bool AXI_Interconnect::can_issue_llc_read_req() const {
-  return !ar_latched.valid && count_total_read_inflight() < MAX_OUTSTANDING &&
+  return !any_ar_latched() && count_total_read_inflight() < MAX_OUTSTANDING &&
          alloc_read_axi_id() != kInvalidAxiReadId;
 }
 
@@ -1051,6 +1267,11 @@ void AXI_Interconnect::prepare_llc_inputs(bool sample_upstream_ready) {
             line_addr_value) {
       return true;
     }
+    if (ar_latched_mmio.valid && ar_latched_mmio.to_llc &&
+        AXI_LLC::line_addr(llc_config, ar_latched_mmio.upstream_addr) ==
+            line_addr_value) {
+      return true;
+    }
     for (const auto &txn : r_pending) {
       if (txn.to_llc &&
           AXI_LLC::line_addr(llc_config, txn.upstream_addr) ==
@@ -1061,7 +1282,7 @@ void AXI_Interconnect::prepare_llc_inputs(bool sample_upstream_ready) {
     return false;
   };
   const bool llc_external_write_busy =
-      w_active || aw_latched.valid || llc_mem_write_resp_valid_ ||
+      external_write_busy() || llc_mem_write_resp_valid_ ||
       llc_mem_ignored_b_count_ != 0;
   llc.io.ext_in.mem.invalidate_all =
       invalidate_all_requested() && !llc_external_write_busy;
@@ -1149,24 +1370,38 @@ void AXI_Interconnect::prepare_llc_inputs(bool sample_upstream_ready) {
       llc.io.ext_out.mem.read_req_addr, llc_mem_read_req_size);
   const bool llc_mem_read_req_supported =
       downstream_request_supported(llc_mem_read_req_port, llc_mem_read_req_size);
+  const bool llc_mem_read_req_synth =
+      unsupported_mmio_request(llc_mem_read_req_port, llc_mem_read_req_size);
   llc.io.ext_in.mem.read_req_ready =
-      can_issue_llc_read_req() &&
-      (!llc.io.ext_out.mem.read_req_valid ||
-       (llc_mem_read_req_supported &&
-        can_issue_external_read(llc.io.ext_out.mem.read_req_addr)));
+      (llc.io.ext_out.mem.read_req_valid && llc_mem_read_req_synth)
+          ? !llc_synth_read_resp_valid_
+          : (can_issue_llc_read_req() &&
+             (!llc.io.ext_out.mem.read_req_valid ||
+              (llc_mem_read_req_supported &&
+               can_issue_external_read(llc.io.ext_out.mem.read_req_addr))));
   const uint8_t llc_mem_write_req_size =
       static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size);
   const DownstreamPort llc_mem_write_req_port = classify_downstream_port(
       llc.io.ext_out.mem.write_req_addr, llc_mem_write_req_size);
   const bool llc_mem_write_req_supported = downstream_request_supported(
       llc_mem_write_req_port, llc_mem_write_req_size);
+  const bool llc_mem_write_req_synth =
+      unsupported_mmio_request(llc_mem_write_req_port, llc_mem_write_req_size);
   llc.io.ext_in.mem.write_req_ready =
-      !w_active && !aw_latched.valid && !llc_mem_write_resp_valid_ &&
+      !any_w_active() && !any_aw_latched() && !llc_mem_write_resp_valid_ &&
       (!llc.io.ext_out.mem.write_req_valid ||
+       llc_mem_write_req_synth ||
        (llc_mem_write_req_supported &&
         can_issue_external_write(llc.io.ext_out.mem.write_req_addr)));
   llc.io.ext_in.mem.write_resp_valid = llc_mem_write_resp_valid_;
   llc.io.ext_in.mem.write_resp = llc_mem_write_resp_;
+
+  if (llc_synth_read_resp_valid_) {
+    llc.io.ext_in.mem.read_resp_valid = true;
+    llc.io.ext_in.mem.read_resp_data = llc_synth_read_resp_data_;
+    llc.io.ext_in.mem.read_resp_id = llc_synth_read_resp_id_;
+    return;
+  }
 
   for (const auto &txn : r_pending) {
     if (!txn.to_llc || txn.beats_done != txn.total_beats) {
@@ -1204,7 +1439,7 @@ void AXI_Interconnect::comb_outputs() {
         (llc_upstream_req[i].valid ||
          (llc_core_req_stage_.valid && !llc_core_req_stage_.is_write &&
           llc_core_req_stage_.master == i)) &&
-        !ar_latched.valid;
+        !any_ar_latched();
     read_ports[i].req.ready =
         req_ready_r[i] && !llc_slot_busy &&
         !(llc_enabled() && invalidate_all_requested()) &&
@@ -1213,10 +1448,11 @@ void AXI_Interconnect::comb_outputs() {
     read_ports[i].req.accepted_id = read_req_accepted_id[i];
   }
 
-  // If AR is latched (waiting for arready), also keep req.ready true
-  if (ar_latched.valid) {
-    if (!ar_latched.to_llc && ar_latched.master_id < NUM_READ_MASTERS) {
-      read_ports[ar_latched.master_id].req.ready = true;
+  // If AR is latched (waiting for arready), also keep req.ready true.
+  for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
+    const auto &latch = ar_latch(port);
+    if (latch.valid && !latch.to_llc && latch.master_id < NUM_READ_MASTERS) {
+      read_ports[latch.master_id].req.ready = true;
     }
   }
 
@@ -1282,6 +1518,8 @@ void AXI_Interconnect::comb_read_arbiter() {
   ar_port_c = DownstreamPort::DDR;
   ar_master_c = -1;
   ar_orig_id_c = 0;
+  ar_issue_c[0] = {};
+  ar_issue_c[1] = {};
   for (int i = 0; i < NUM_READ_MASTERS; ++i) {
     llc_upstream_accept_c[i] = false;
     llc_upstream_capture_c[i] = {};
@@ -1311,26 +1549,77 @@ void AXI_Interconnect::comb_read_arbiter() {
   axi_ddr_io.ar.arvalid = false;
   axi_mmio_io.ar.arvalid = false;
 
-  // If AR is latched (waiting for arready), output latched values
-  if (ar_latched.valid) {
-    auto &ar_io = downstream_io(ar_latched.port);
-    ar_io.ar.arvalid = true; // MUST stay valid until handshake!
-    ar_io.ar.araddr = ar_latched.addr;
-    ar_io.ar.arlen = ar_latched.len;
-    ar_io.ar.arsize = ar_latched.size;
-    ar_io.ar.arburst = ar_latched.burst;
-    ar_io.ar.arid = ar_latched.id;
-    // Keep req.ready=true for the master whose request is latched so the
-    // upstream handshake remains visible until the downstream AR handshake wins.
-    if (!ar_latched.to_llc && !ar_latched.accepted_upstream &&
-        ar_latched.master_id < NUM_READ_MASTERS) {
-      read_ports[ar_latched.master_id].req.ready = true;
-      req_ready_r[ar_latched.master_id] = true;
-    }
-    return; // Cannot accept new requests while AR pending
-  }
+  bool port_busy[2] = {false, false};
+  bool comb_read_id_used[1u << sim_ddr::AXI_ID_WIDTH] = {false};
+  uint8_t comb_master_read_count[NUM_READ_MASTERS] = {};
 
-  // No latched AR, can accept new request
+  auto alloc_comb_read_axi_id = [&]() -> uint8_t {
+    bool used[1u << sim_ddr::AXI_ID_WIDTH] = {false};
+    for (const auto &txn : r_pending) {
+      used[txn.axi_id & kAxiIdMask] = true;
+    }
+    for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
+      const auto &latch = ar_latch(port);
+      if (latch.valid) {
+        used[latch.id & kAxiIdMask] = true;
+      }
+    }
+    for (uint8_t id = 0; id < (1u << sim_ddr::AXI_ID_WIDTH); ++id) {
+      if (!used[id] && !comb_read_id_used[id]) {
+        comb_read_id_used[id] = true;
+        return id;
+      }
+    }
+    return kInvalidAxiReadId;
+  };
+
+  auto can_accept_read_master_comb = [&](uint8_t master_id) {
+    return master_id < NUM_READ_MASTERS &&
+           count_total_read_inflight() +
+                   comb_master_read_count[0] + comb_master_read_count[1] +
+                   comb_master_read_count[2] + comb_master_read_count[3] <
+               MAX_OUTSTANDING &&
+           count_master_read_pending(master_id) +
+                   comb_master_read_count[master_id] <
+               MAX_READ_OUTSTANDING_PER_MASTER;
+  };
+
+  auto drive_ar = [&](const DownstreamReadIssue &issue, uint8_t axi_id,
+                      const ARIssueMeta_t &meta) {
+    const int pidx = port_index(issue.port);
+    auto &ar_io = downstream_io(issue.port);
+    ar_io.ar.arvalid = true;
+    ar_io.ar.araddr = issue.addr;
+    ar_io.ar.arlen = calc_burst_len(issue.total_size);
+    ar_io.ar.arsize =
+        issue.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+    ar_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
+    ar_io.ar.arid = axi_id;
+    ar_issue_c[pidx] = meta;
+    ar_issue_c[pidx].valid = true;
+    port_busy[pidx] = true;
+    ar_port_c = issue.port;
+  };
+
+  for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
+    auto &latch = ar_latch(port);
+    if (!latch.valid) {
+      continue;
+    }
+    auto &ar_io = downstream_io(port);
+    ar_io.ar.arvalid = true;
+    ar_io.ar.araddr = latch.addr;
+    ar_io.ar.arlen = latch.len;
+    ar_io.ar.arsize = latch.size;
+    ar_io.ar.arburst = latch.burst;
+    ar_io.ar.arid = latch.id;
+    port_busy[port_index(port)] = true;
+    if (!latch.to_llc && !latch.accepted_upstream &&
+        latch.master_id < NUM_READ_MASTERS) {
+      read_ports[latch.master_id].req.ready = true;
+      req_ready_r[latch.master_id] = true;
+    }
+  }
 
   if (llc_enabled()) {
     if (llc.io.ext_out.mem.read_req_valid && can_issue_llc_read_req() &&
@@ -1339,34 +1628,37 @@ void AXI_Interconnect::comb_read_arbiter() {
           static_cast<uint8_t>(llc.io.ext_out.mem.read_req_size);
       const auto issue_port = classify_downstream_port(
           llc.io.ext_out.mem.read_req_addr, issue_size);
-      if (downstream_request_supported(issue_port, issue_size)) {
-        const auto issue = make_downstream_read_issue(
-            issue_port, llc.io.ext_out.mem.read_req_addr, issue_size,
-            llc_config.line_bytes,
-            llc.io.ext_out.mem.read_req_mode2_ddr_aligned);
-        if (llc_focus_line(llc.io.ext_out.mem.read_req_addr)) {
-          std::printf(
-              "[AXI-LLC][AR-ISSUE] cyc=%lld addr=0x%08x slot=%u size=%u\n",
-              sim_time, issue.addr,
-              static_cast<unsigned>(llc.io.ext_out.mem.read_req_id),
-              static_cast<unsigned>(issue.total_size));
+      if (!port_busy[port_index(issue_port)] &&
+          downstream_request_supported(issue_port, issue_size)) {
+        const uint8_t axi_id = alloc_comb_read_axi_id();
+        if (axi_id != kInvalidAxiReadId) {
+          const auto issue = make_downstream_read_issue(
+              issue_port, llc.io.ext_out.mem.read_req_addr, issue_size,
+              llc_config.line_bytes,
+              llc.io.ext_out.mem.read_req_mode2_ddr_aligned);
+          if (llc_focus_line(llc.io.ext_out.mem.read_req_addr)) {
+            std::printf(
+                "[AXI-LLC][AR-ISSUE] cyc=%lld addr=0x%08x slot=%u size=%u\n",
+                sim_time, issue.addr,
+                static_cast<unsigned>(llc.io.ext_out.mem.read_req_id),
+                static_cast<unsigned>(issue.total_size));
+          }
+          ar_from_llc_c = true;
+          ar_llc_mem_id_c = llc.io.ext_out.mem.read_req_id;
+          ar_llc_resp_extract_from_aligned_beat_c =
+              issue.extract_from_aligned_beat;
+          ar_llc_upstream_addr_c = llc.io.ext_out.mem.read_req_addr;
+          ar_llc_upstream_total_size_c = llc.io.ext_out.mem.read_req_size;
+          ARIssueMeta_t meta{};
+          meta.from_llc = true;
+          meta.llc_mem_id = llc.io.ext_out.mem.read_req_id;
+          meta.resp_extract_from_aligned_beat = issue.extract_from_aligned_beat;
+          meta.upstream_addr = llc.io.ext_out.mem.read_req_addr;
+          meta.upstream_total_size = llc.io.ext_out.mem.read_req_size;
+          meta.master_id = 0;
+          meta.orig_id = llc.io.ext_out.mem.read_req_id;
+          drive_ar(issue, axi_id, meta);
         }
-        ar_from_llc_c = true;
-        ar_llc_mem_id_c = llc.io.ext_out.mem.read_req_id;
-        ar_llc_resp_extract_from_aligned_beat_c =
-            issue.extract_from_aligned_beat;
-        ar_llc_upstream_addr_c = llc.io.ext_out.mem.read_req_addr;
-        ar_llc_upstream_total_size_c = llc.io.ext_out.mem.read_req_size;
-        ar_port_c = issue.port;
-        auto &ar_io = downstream_io(issue.port);
-        ar_io.ar.arvalid = true;
-        ar_io.ar.araddr = issue.addr;
-        ar_io.ar.arlen = calc_burst_len(issue.total_size);
-        ar_io.ar.arsize = issue.port == DownstreamPort::MMIO
-                              ? kMmioAxiSize
-                              : kDownstreamAxiSize;
-        ar_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-        ar_io.ar.arid = alloc_read_axi_id();
       }
     }
     for (int master = 0; master < NUM_READ_MASTERS; ++master) {
@@ -1388,8 +1680,11 @@ void AXI_Interconnect::comb_read_arbiter() {
           static_cast<uint8_t>(read_ports[master].req.total_size);
       const DownstreamPort req_port =
           classify_downstream_port(req_addr, req_total_size);
+      const bool req_supported =
+          downstream_request_supported(req_port, req_total_size);
       if (!request_uses_direct_mapped_llc(req_addr, req_total_size) &&
-          !downstream_request_supported(req_port, req_total_size)) {
+          !req_supported &&
+          !unsupported_mmio_request(req_port, req_total_size)) {
         continue;
       }
       const bool allow_same_cycle_accept = (master == MASTER_DCACHE_R);
@@ -1468,11 +1763,17 @@ void AXI_Interconnect::comb_read_arbiter() {
     if (!downstream_request_supported(cap_port, cap.total_size)) {
       continue;
     }
+    if (port_busy[port_index(cap_port)]) {
+      continue;
+    }
+    if (!can_accept_read_master_comb(static_cast<uint8_t>(i))) {
+      continue;
+    }
 
     r_current_master = i;
     ar_master_c = i;
     ar_orig_id_c = cap.id;
-    uint8_t axi_id = alloc_read_axi_id();
+    uint8_t axi_id = alloc_comb_read_axi_id();
     if (axi_id == kInvalidAxiReadId) {
       continue;
     }
@@ -1481,17 +1782,15 @@ void AXI_Interconnect::comb_read_arbiter() {
     ar_llc_resp_extract_from_aligned_beat_c = issue.extract_from_aligned_beat;
     ar_llc_upstream_addr_c = cap.addr;
     ar_llc_upstream_total_size_c = cap.total_size;
-    ar_port_c = issue.port;
-    auto &ar_io = downstream_io(issue.port);
-    ar_io.ar.arvalid = true;
-    ar_io.ar.araddr = issue.addr;
-    ar_io.ar.arlen = calc_burst_len(issue.total_size);
-    ar_io.ar.arsize =
-        issue.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
-    ar_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-    ar_io.ar.arid = axi_id;
+    ARIssueMeta_t meta{};
+    meta.resp_extract_from_aligned_beat = issue.extract_from_aligned_beat;
+    meta.upstream_addr = cap.addr;
+    meta.upstream_total_size = cap.total_size;
+    meta.master_id = i;
+    meta.orig_id = cap.id;
+    drive_ar(issue, axi_id, meta);
     read_ports[i].req.ready = true;
-    return;
+    comb_master_read_count[i]++;
   }
 
   // Round-robin search for valid request
@@ -1516,9 +1815,15 @@ void AXI_Interconnect::comb_read_arbiter() {
       if (!downstream_request_supported(req_port, req_total_size)) {
         continue;
       }
+      if (port_busy[port_index(req_port)]) {
+        continue;
+      }
+      if (!can_accept_read_master_comb(static_cast<uint8_t>(idx))) {
+        continue;
+      }
 
       r_current_master = idx;
-      uint8_t axi_id = alloc_read_axi_id();
+      uint8_t axi_id = alloc_comb_read_axi_id();
       if (axi_id == kInvalidAxiReadId) {
         continue;
       }
@@ -1534,7 +1839,7 @@ void AXI_Interconnect::comb_read_arbiter() {
             static_cast<uint8_t>(read_ports[idx].req.total_size);
         read_req_hold[idx].id = static_cast<uint8_t>(read_ports[idx].req.id);
         read_req_hold[idx].bypass = read_ports[idx].req.bypass;
-        break;
+        continue;
       }
 
       // Data-side masters can use same-cycle accept to keep the AR issue rate
@@ -1546,17 +1851,18 @@ void AXI_Interconnect::comb_read_arbiter() {
       ar_llc_resp_extract_from_aligned_beat_c = issue.extract_from_aligned_beat;
       ar_llc_upstream_addr_c = req_addr;
       ar_llc_upstream_total_size_c = req_total_size;
-      ar_port_c = issue.port;
-      auto &ar_io = downstream_io(issue.port);
-      ar_io.ar.arvalid = true;
-      ar_io.ar.araddr = issue.addr;
-      ar_io.ar.arlen = calc_burst_len(issue.total_size);
-      ar_io.ar.arsize =
-          issue.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
-      ar_io.ar.arburst = sim_ddr::AXI_BURST_INCR;
-      ar_io.ar.arid = axi_id;
+      ARIssueMeta_t meta{};
+      meta.resp_extract_from_aligned_beat = issue.extract_from_aligned_beat;
+      meta.upstream_addr = req_addr;
+      meta.upstream_total_size = req_total_size;
+      meta.master_id = idx;
+      meta.orig_id = static_cast<uint8_t>(read_ports[idx].req.id);
+      drive_ar(issue, axi_id, meta);
       read_ports[idx].req.ready = true;
-      break;
+      comb_master_read_count[idx]++;
+      if (port_busy[0] && port_busy[1]) {
+        break;
+      }
     }
   }
 }
@@ -1617,40 +1923,74 @@ void AXI_Interconnect::comb_write_request() {
   axi_ddr_io.w.wvalid = false;
   axi_mmio_io.w.wvalid = false;
 
+  auto drive_aw_latch = [&](DownstreamPort port) {
+    const auto &latch = aw_latch(port);
+    if (!latch.valid) {
+      return;
+    }
+    auto &aw_io = downstream_io(port);
+    aw_io.aw.awvalid = true;
+    aw_io.aw.awaddr = latch.addr;
+    aw_io.aw.awlen = latch.len;
+    aw_io.aw.awsize = latch.size;
+    aw_io.aw.awburst = latch.burst;
+    aw_io.aw.awid = latch.id;
+  };
+
+  auto drive_aw_txn = [&](const WritePendingTxn &txn) {
+    aw_port_c = txn.port;
+    auto &aw_io = downstream_io(txn.port);
+    aw_io.aw.awvalid = true;
+    aw_io.aw.awaddr = txn.addr;
+    aw_io.aw.awlen = txn.total_beats - 1;
+    aw_io.aw.awsize =
+        txn.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+    aw_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
+    aw_io.aw.awid = txn.axi_id;
+  };
+
+  auto drive_w_current = [&](DownstreamPort port) {
+    const bool active = w_active_ref(port);
+    const auto &current = w_current_ref(port);
+    if (!active || !current.aw_done || current.w_done) {
+      return;
+    }
+    auto &w_io = downstream_io(port);
+    w_io.w.wvalid = true;
+    w_io.w.wdata =
+        pack_downstream_write_beat(current.wdata, current.beats_sent);
+    w_io.w.wstrb =
+        pack_downstream_write_strobe(current.wstrb, current.beats_sent);
+    w_io.w.wlast = (current.beats_sent == current.total_beats - 1);
+  };
+
   if (llc_enabled()) {
-    if (aw_latched.valid) {
-      auto &aw_io = downstream_io(aw_latched.port);
-      aw_io.aw.awvalid = true;
-      aw_io.aw.awaddr = aw_latched.addr;
-      aw_io.aw.awlen = aw_latched.len;
-      aw_io.aw.awsize = aw_latched.size;
-      aw_io.aw.awburst = aw_latched.burst;
-      aw_io.aw.awid = aw_latched.id;
-    } else {
-      if (!w_active && !llc_mem_write_resp_valid_ &&
-          llc.io.ext_out.mem.write_req_valid &&
-          can_issue_external_write(llc.io.ext_out.mem.write_req_addr)) {
-        const uint8_t issue_size =
-            static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size);
-        const auto issue_port = classify_downstream_port(
-            llc.io.ext_out.mem.write_req_addr, issue_size);
-        if (downstream_request_supported(issue_port, issue_size)) {
-          const auto issue = make_downstream_write_issue(
-              issue_port, llc.io.ext_out.mem.write_req_addr, issue_size,
-              llc.io.ext_out.mem.write_req_data,
-              llc.io.ext_out.mem.write_req_strobe, llc_config.line_bytes,
-              llc.io.ext_out.mem.write_req_mode2_ddr_aligned);
-          aw_port_c = issue.port;
-          auto &aw_io = downstream_io(issue.port);
-          aw_io.aw.awvalid = true;
-          aw_io.aw.awaddr = issue.addr;
-          aw_io.aw.awlen = calc_burst_len(issue.total_size);
-          aw_io.aw.awsize = issue.port == DownstreamPort::MMIO
-                                ? kMmioAxiSize
-                                : kDownstreamAxiSize;
-          aw_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
-          aw_io.aw.awid = llc.io.ext_out.mem.write_req_id & 0x7;
-        }
+    drive_aw_latch(DownstreamPort::DDR);
+    drive_aw_latch(DownstreamPort::MMIO);
+    if (!any_w_active() && !llc_mem_write_resp_valid_ &&
+        llc.io.ext_out.mem.write_req_valid &&
+        can_issue_external_write(llc.io.ext_out.mem.write_req_addr)) {
+      const uint8_t issue_size =
+          static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size);
+      const auto issue_port = classify_downstream_port(
+          llc.io.ext_out.mem.write_req_addr, issue_size);
+      if (!aw_latch(issue_port).valid &&
+          downstream_request_supported(issue_port, issue_size)) {
+        const auto issue = make_downstream_write_issue(
+            issue_port, llc.io.ext_out.mem.write_req_addr, issue_size,
+            llc.io.ext_out.mem.write_req_data,
+            llc.io.ext_out.mem.write_req_strobe, llc_config.line_bytes,
+            llc.io.ext_out.mem.write_req_mode2_ddr_aligned);
+        auto &aw_io = downstream_io(issue.port);
+        aw_port_c = issue.port;
+        aw_io.aw.awvalid = true;
+        aw_io.aw.awaddr = issue.addr;
+        aw_io.aw.awlen = calc_burst_len(issue.total_size);
+        aw_io.aw.awsize = issue.port == DownstreamPort::MMIO
+                              ? kMmioAxiSize
+                              : kDownstreamAxiSize;
+        aw_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
+        aw_io.aw.awid = llc.io.ext_out.mem.write_req_id & 0x7;
       }
     }
 
@@ -1676,8 +2016,11 @@ void AXI_Interconnect::comb_write_request() {
             static_cast<uint8_t>(write_ports[idx].req.total_size);
         const DownstreamPort req_port =
             classify_downstream_port(req_addr, req_total_size);
+        const bool req_supported =
+            downstream_request_supported(req_port, req_total_size);
         if (!request_uses_direct_mapped_llc(req_addr, req_total_size) &&
-            !downstream_request_supported(req_port, req_total_size)) {
+            !req_supported &&
+            !unsupported_mmio_request(req_port, req_total_size)) {
           continue;
         }
         if (w_req_ready_curr[idx]) {
@@ -1707,94 +2050,64 @@ void AXI_Interconnect::comb_write_request() {
       }
     }
 
-    if (w_active && w_current.aw_done && !w_current.w_done) {
-      auto &w_io = downstream_io(w_current.port);
-      w_io.w.wvalid = true;
-      w_io.w.wdata =
-          pack_downstream_write_beat(w_current.wdata, w_current.beats_sent);
-      w_io.w.wstrb =
-          pack_downstream_write_strobe(w_current.wstrb, w_current.beats_sent);
-      w_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
-    }
+    drive_w_current(DownstreamPort::DDR);
+    drive_w_current(DownstreamPort::MMIO);
     return;
   }
 
-  // If AW is latched (waiting for awready), output latched values
-  if (aw_latched.valid) {
-    auto &aw_io = downstream_io(aw_latched.port);
-    aw_io.aw.awvalid = true; // MUST stay valid until handshake!
-    aw_io.aw.awaddr = aw_latched.addr;
-    aw_io.aw.awlen = aw_latched.len;
-    aw_io.aw.awsize = aw_latched.size;
-    aw_io.aw.awburst = aw_latched.burst;
-    aw_io.aw.awid = aw_latched.id;
-  } else {
-    // Let already-accepted write transactions drain even while a mode-2
-    // transition flush is pending. Only block acceptance of new upstream work.
+  for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
+    if (aw_latch(port).valid) {
+      drive_aw_latch(port);
+      continue;
+    }
     if (!any_w_resp_valid) {
-      const int aw_idx = find_next_aw_pending();
+      const int aw_idx = find_next_aw_pending(port);
       if (aw_idx >= 0) {
         const auto &txn = w_pending[static_cast<size_t>(aw_idx)];
         if (can_issue_external_write(txn.addr)) {
-          aw_port_c = txn.port;
-          auto &aw_io = downstream_io(txn.port);
-          aw_io.aw.awvalid = true;
-          aw_io.aw.awaddr = txn.addr;
-          aw_io.aw.awlen = txn.total_beats - 1;
-          aw_io.aw.awsize =
-              txn.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
-          aw_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
-          aw_io.aw.awid = txn.axi_id;
+          drive_aw_txn(txn);
         }
       }
     }
+  }
 
-    if (!mode_transition_needs_flush()) {
-      // Ready-first handshake: raise req.ready one cycle before accepting.
-      if (can_accept_write_now() && !any_w_resp_valid) {
-        for (int k = 0; k < NUM_WRITE_MASTERS; k++) {
-          int idx = (w_arb_rr_idx + k) % NUM_WRITE_MASTERS;
-          if (!write_ports[idx].req.valid) {
-            continue;
-          }
-          if (!write_size_supported(write_ports[idx].req.total_size)) {
-            printf("[axi] write size too large total_size=%u master=%d\n",
-                   static_cast<unsigned>(write_ports[idx].req.total_size), idx);
-            continue;
-          }
-          const uint32_t req_addr =
-              static_cast<uint32_t>(write_ports[idx].req.addr);
-          const uint8_t req_total_size =
-              static_cast<uint8_t>(write_ports[idx].req.total_size);
-          const DownstreamPort req_port =
-              classify_downstream_port(req_addr, req_total_size);
-          if (!downstream_request_supported(req_port, req_total_size)) {
-            continue;
-          }
-          if (w_req_ready_curr[idx]) {
-            write_ports[idx].req.ready = true;
-            write_req_fire_c[idx] = true;
-            break;
-          } else {
-            w_req_ready_r[idx] = true;
-            write_ports[idx].req.ready = true;
-          }
+  if (!mode_transition_needs_flush()) {
+    // Ready-first handshake: raise req.ready one cycle before accepting.
+    if (can_accept_write_now() && !any_w_resp_valid) {
+      for (int k = 0; k < NUM_WRITE_MASTERS; k++) {
+        int idx = (w_arb_rr_idx + k) % NUM_WRITE_MASTERS;
+        if (!write_ports[idx].req.valid) {
+          continue;
+        }
+        if (!write_size_supported(write_ports[idx].req.total_size)) {
+          printf("[axi] write size too large total_size=%u master=%d\n",
+                 static_cast<unsigned>(write_ports[idx].req.total_size), idx);
+          continue;
+        }
+        const uint32_t req_addr =
+            static_cast<uint32_t>(write_ports[idx].req.addr);
+        const uint8_t req_total_size =
+            static_cast<uint8_t>(write_ports[idx].req.total_size);
+        const DownstreamPort req_port =
+            classify_downstream_port(req_addr, req_total_size);
+        if (!downstream_request_supported(req_port, req_total_size)) {
+          continue;
+        }
+        if (w_req_ready_curr[idx]) {
+          write_ports[idx].req.ready = true;
+          write_req_fire_c[idx] = true;
           break;
+        } else {
+          w_req_ready_r[idx] = true;
+          write_ports[idx].req.ready = true;
         }
+        break;
       }
     }
   }
 
-  // W channel: send data after AW done
-  if (w_active && w_current.aw_done && !w_current.w_done) {
-    auto &w_io = downstream_io(w_current.port);
-    w_io.w.wvalid = true;
-    w_io.w.wdata =
-        pack_downstream_write_beat(w_current.wdata, w_current.beats_sent);
-    w_io.w.wstrb =
-        pack_downstream_write_strobe(w_current.wstrb, w_current.beats_sent);
-    w_io.w.wlast = (w_current.beats_sent == w_current.total_beats - 1);
-  }
+  drive_w_current(DownstreamPort::DDR);
+  drive_w_current(DownstreamPort::MMIO);
 }
 
 void AXI_Interconnect::comb_write_response() {
@@ -1827,6 +2140,7 @@ void AXI_Interconnect::seq() {
   constexpr uint32_t kPendingTimeout = 100000;
   const LlcCoreReqStage llc_core_req_stage_prev = llc_core_req_stage_;
   const bool llc_mem_write_resp_valid_prev = llc_mem_write_resp_valid_;
+  const bool llc_synth_read_resp_valid_prev = llc_synth_read_resp_valid_;
   const uint8_t req_mode = requested_mode();
   const uint32_t req_offset = requested_llc_mapped_offset();
   const bool requested_diff = requested_config_differs_from_active();
@@ -1846,63 +2160,63 @@ void AXI_Interconnect::seq() {
       }
       return false;
     };
-	    if (!(llc_core_req_stage_prev.valid && !llc_core_req_stage_prev.is_write)) {
-	      return;
-	    }
-	    const int master = llc_core_req_stage_prev.master;
-	    if (master < 0 || master >= NUM_READ_MASTERS ||
-	        !llc.io.ext_out.upstream.read_req[master].ready) {
-	      return;
-	    }
-	    const auto &consumed_req = llc_core_req_stage_prev.read;
-	      bool retained = llc.io.regs.lookup_valid_r &&
-	                      llc.io.regs.lookup_master_r ==
-	                          static_cast<uint8_t>(master) &&
-                      llc.io.regs.lookup_id_r ==
-                          consumed_req.id;
-      for (uint32_t slot = 0; !retained && slot < llc_config.mshr_num &&
-                              slot < MAX_OUTSTANDING;
-           ++slot) {
-        const auto &entry = llc.io.regs.mshr[slot];
-        retained = entry.valid && !entry.is_prefetch &&
-                   entry.master == static_cast<uint8_t>(master) &&
-                   entry.id == consumed_req.id;
-      }
-      retained = retained || (llc.io.regs.read_resp_valid_r[master] &&
-                              llc.io.regs.read_resp_id_r[master] ==
-                                  consumed_req.id);
-      retained = retained || read_resp_queue_has_id(master, consumed_req.id);
-      if (!retained) {
-        std::printf(
-            "[axi][llc] consumed request without retained llc state "
-            "master=%d sim_time=%lld addr=0x%08x id=%u bypass=%d "
-            "lookup{valid=%d master=%u id=%u addr=0x%08x} "
-            "resp{valid=%d id=%u q_count=%u q_head=%u q_tail=%u} "
-            "mshr0{valid=%d master=%u id=%u line=0x%08x} "
-            "mshr1{valid=%d master=%u id=%u line=0x%08x}\n",
-            master, sim_time, consumed_req.addr,
-            static_cast<unsigned>(consumed_req.id),
-            static_cast<int>(consumed_req.bypass),
-            static_cast<int>(llc.io.regs.lookup_valid_r),
-            static_cast<unsigned>(llc.io.regs.lookup_master_r),
-            static_cast<unsigned>(llc.io.regs.lookup_id_r),
-            llc.io.regs.lookup_addr_r,
-            static_cast<int>(llc.io.regs.read_resp_valid_r[master]),
-            static_cast<unsigned>(llc.io.regs.read_resp_id_r[master]),
-            static_cast<unsigned>(llc.io.regs.read_resp_q_count_r[master]),
-            static_cast<unsigned>(llc.io.regs.read_resp_q_head_r[master]),
-            static_cast<unsigned>(llc.io.regs.read_resp_q_tail_r[master]),
-            static_cast<int>(llc.io.regs.mshr[0].valid),
-            static_cast<unsigned>(llc.io.regs.mshr[0].master),
-            static_cast<unsigned>(llc.io.regs.mshr[0].id),
-            llc.io.regs.mshr[0].line_addr,
-            static_cast<int>(llc.io.regs.mshr[1].valid),
-            static_cast<unsigned>(llc.io.regs.mshr[1].master),
-	            static_cast<unsigned>(llc.io.regs.mshr[1].id),
-	            llc.io.regs.mshr[1].line_addr);
-	        std::exit(1);
-	      }
-	  };
+    if (!(llc_core_req_stage_prev.valid &&
+          !llc_core_req_stage_prev.is_write)) {
+      return;
+    }
+    const int master = llc_core_req_stage_prev.master;
+    if (master < 0 || master >= NUM_READ_MASTERS ||
+        !llc.io.ext_out.upstream.read_req[master].ready) {
+      return;
+    }
+    const auto &consumed_req = llc_core_req_stage_prev.read;
+    bool retained = llc.io.regs.lookup_valid_r &&
+                    llc.io.regs.lookup_master_r ==
+                        static_cast<uint8_t>(master) &&
+                    llc.io.regs.lookup_id_r == consumed_req.id;
+    for (uint32_t slot = 0; !retained && slot < llc_config.mshr_num &&
+                            slot < MAX_OUTSTANDING;
+         ++slot) {
+      const auto &entry = llc.io.regs.mshr[slot];
+      retained = entry.valid && !entry.is_prefetch &&
+                 entry.master == static_cast<uint8_t>(master) &&
+                 entry.id == consumed_req.id;
+    }
+    retained = retained || (llc.io.regs.read_resp_valid_r[master] &&
+                            llc.io.regs.read_resp_id_r[master] ==
+                                consumed_req.id);
+    retained = retained || read_resp_queue_has_id(master, consumed_req.id);
+    if (!retained) {
+      std::printf(
+          "[axi][llc] consumed request without retained llc state "
+          "master=%d sim_time=%lld addr=0x%08x id=%u bypass=%d "
+          "lookup{valid=%d master=%u id=%u addr=0x%08x} "
+          "resp{valid=%d id=%u q_count=%u q_head=%u q_tail=%u} "
+          "mshr0{valid=%d master=%u id=%u line=0x%08x} "
+          "mshr1{valid=%d master=%u id=%u line=0x%08x}\n",
+          master, sim_time, consumed_req.addr,
+          static_cast<unsigned>(consumed_req.id),
+          static_cast<int>(consumed_req.bypass),
+          static_cast<int>(llc.io.regs.lookup_valid_r),
+          static_cast<unsigned>(llc.io.regs.lookup_master_r),
+          static_cast<unsigned>(llc.io.regs.lookup_id_r),
+          llc.io.regs.lookup_addr_r,
+          static_cast<int>(llc.io.regs.read_resp_valid_r[master]),
+          static_cast<unsigned>(llc.io.regs.read_resp_id_r[master]),
+          static_cast<unsigned>(llc.io.regs.read_resp_q_count_r[master]),
+          static_cast<unsigned>(llc.io.regs.read_resp_q_head_r[master]),
+          static_cast<unsigned>(llc.io.regs.read_resp_q_tail_r[master]),
+          static_cast<int>(llc.io.regs.mshr[0].valid),
+          static_cast<unsigned>(llc.io.regs.mshr[0].master),
+          static_cast<unsigned>(llc.io.regs.mshr[0].id),
+          llc.io.regs.mshr[0].line_addr,
+          static_cast<int>(llc.io.regs.mshr[1].valid),
+          static_cast<unsigned>(llc.io.regs.mshr[1].master),
+          static_cast<unsigned>(llc.io.regs.mshr[1].id),
+          llc.io.regs.mshr[1].line_addr);
+      std::exit(1);
+    }
+  };
   for (int i = 0; i < NUM_READ_MASTERS; i++) {
     read_req_accepted[i] = false;
     read_req_accepted_id[i] = 0;
@@ -1911,155 +2225,15 @@ void AXI_Interconnect::seq() {
     write_req_accepted[i] = false;
   }
 
-  auto resolve_ar_master = [this](uint8_t &orig_id) -> int {
-    if (ar_master_c >= 0 && ar_master_c < NUM_READ_MASTERS) {
-      orig_id = ar_orig_id_c;
-      return ar_master_c;
-    }
-    if (r_current_master >= 0 && r_current_master < NUM_READ_MASTERS &&
-        read_ports[r_current_master].req.valid &&
-        read_ports[r_current_master].req.ready) {
-      orig_id = static_cast<uint8_t>(read_ports[r_current_master].req.id);
-      return r_current_master;
-    }
-    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-      if (read_ports[i].req.valid && read_ports[i].req.ready) {
-        orig_id = static_cast<uint8_t>(read_ports[i].req.id);
-        return i;
-      }
-    }
-    return -1;
-  };
-
   // ========== AR Channel with Latch ==========
-  const DownstreamPort seq_ar_port =
-      ar_latched.valid ? ar_latched.port : ar_port_c;
-  auto &seq_ar_io = downstream_io(seq_ar_port);
-
-  // If new AR request and NOT immediately ready, latch it
-  if (seq_ar_io.ar.arvalid && !ar_latched.valid && !seq_ar_io.ar.arready) {
-    uint8_t orig_id = 0;
-    int master_idx = -1;
-    if (ar_from_llc_c) {
-      master_idx = 0;
-      orig_id = ar_llc_mem_id_c;
-    } else {
-      master_idx = resolve_ar_master(orig_id);
-      if (master_idx < 0) {
-        return;
-      }
-      for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-        if (read_ports[i].req.valid && read_ports[i].req.ready) {
-          master_idx = i;
-          orig_id = read_ports[i].req.id;
-          break;
-        }
-      }
-    }
-    if (master_idx >= 0) {
-      // Latch the request
-      ar_latched.valid = true;
-      ar_latched.accepted_upstream = false;
-      ar_latched.port = seq_ar_port;
-      ar_latched.addr = seq_ar_io.ar.araddr;
-      ar_latched.len = seq_ar_io.ar.arlen;
-      ar_latched.size = seq_ar_io.ar.arsize;
-      ar_latched.burst = seq_ar_io.ar.arburst;
-      ar_latched.id = seq_ar_io.ar.arid;
-      ar_latched.master_id = static_cast<uint8_t>(master_idx);
-      ar_latched.orig_id = orig_id;
-      ar_latched.to_llc = ar_from_llc_c;
-      ar_latched.resp_extract_from_aligned_beat =
-          ar_llc_resp_extract_from_aligned_beat_c;
-      ar_latched.upstream_addr = ar_llc_upstream_addr_c;
-      ar_latched.upstream_total_size = ar_llc_upstream_total_size_c;
-      if (!ar_from_llc_c) {
-        // A latched AR only means the interconnect has locally buffered the
-        // request under downstream backpressure. Upstream acceptance must wait
-        // until the real downstream AR handshake commits and an r_pending txn
-        // is created, otherwise MSHR/icache can believe the miss is issued
-        // while the request is still absent from the fabric.
-        ar_latched.accepted_upstream = false;
-      }
-    }
-  }
-
-  // AR handshake complete
-  if (seq_ar_io.ar.arvalid && seq_ar_io.ar.arready) {
-    ReadPendingTxn txn;
-    if (ar_latched.valid) {
-      // Use latched values
-      txn.axi_id = ar_latched.id;
-      txn.master_id = ar_latched.master_id;
-      txn.orig_id = ar_latched.orig_id;
-      txn.total_beats = ar_latched.len + 1;
-      txn.port = ar_latched.port;
-      txn.addr = ar_latched.addr;
-      txn.upstream_addr = ar_latched.upstream_addr;
-      txn.upstream_total_size = ar_latched.upstream_total_size;
-      txn.resp_extract_from_aligned_beat =
-          ar_latched.resp_extract_from_aligned_beat;
-      txn.to_llc = ar_latched.to_llc;
-      const bool upstream_accepted = ar_latched.accepted_upstream;
-      ar_latched.valid = false; // Clear latch
-      ar_latched.accepted_upstream = false;
-      ar_latched.to_llc = false;
-      ar_latched.resp_extract_from_aligned_beat = false;
-      ar_latched.port = DownstreamPort::DDR;
-      ar_latched.upstream_addr = 0;
-      ar_latched.upstream_total_size = 0;
-      if (!txn.to_llc && !upstream_accepted &&
-          txn.master_id < NUM_READ_MASTERS) {
-        read_req_accepted[txn.master_id] = true;
-        read_req_accepted_id[txn.master_id] = txn.orig_id;
-        read_req_hold[txn.master_id] = {};
-      }
-    } else {
-      // Direct handshake (same cycle)
-      uint8_t orig_id = 0;
-      int master_idx = -1;
-      if (ar_from_llc_c) {
-        master_idx = 0;
-        orig_id = ar_llc_mem_id_c;
-      } else {
-        master_idx = resolve_ar_master(orig_id);
-        if (master_idx < 0) {
-          goto read_handshake_done;
-        }
-        for (int i = 0; i < NUM_READ_MASTERS; ++i) {
-          if (read_ports[i].req.valid && read_ports[i].req.ready) {
-            master_idx = i;
-            orig_id = read_ports[i].req.id;
-            break;
-          }
-        }
-      }
-      if (master_idx < 0) {
-        goto read_handshake_done;
-      }
-      txn.axi_id = seq_ar_io.ar.arid;
-      txn.master_id = static_cast<uint8_t>(master_idx);
-      txn.orig_id = orig_id;
-      txn.total_beats = seq_ar_io.ar.arlen + 1;
-      txn.port = seq_ar_port;
-      txn.addr = seq_ar_io.ar.araddr;
-      txn.upstream_addr = ar_llc_upstream_addr_c;
-      txn.upstream_total_size = ar_llc_upstream_total_size_c;
-      txn.resp_extract_from_aligned_beat =
-          ar_llc_resp_extract_from_aligned_beat_c;
-      txn.to_llc = ar_from_llc_c;
-      if (!ar_from_llc_c) {
-        read_req_hold[master_idx] = {};
-      }
-    }
+  auto finish_ar_txn = [&](ReadPendingTxn &txn) {
     txn.beats_done = 0;
     txn.data.clear();
     txn.stall_cycles = 0;
     txn.last_beats_done = 0;
     txn.timeout_warned = false;
     r_pending.push_back(txn);
-    if ((sim_time < 400 ||
-         focus_read_txn(txn) ||
+    if ((sim_time < 400 || focus_read_txn(txn) ||
          trace_icache_read_txn(txn, sim_time)) &&
         !txn.to_llc) {
       dump_focus_read_txn("AR-HS", sim_time, txn);
@@ -2068,7 +2242,8 @@ void AXI_Interconnect::seq() {
       std::printf(
           "[AXI-LLC][AR-HS] cyc=%lld addr=0x%08x slot=%u axi_id=%u beats=%u\n",
           sim_time, txn.addr, static_cast<unsigned>(txn.orig_id),
-          static_cast<unsigned>(txn.axi_id), static_cast<unsigned>(txn.total_beats));
+          static_cast<unsigned>(txn.axi_id),
+          static_cast<unsigned>(txn.total_beats));
     }
     r_arb_rr_idx = (txn.master_id + 1) % NUM_READ_MASTERS;
     if (!txn.to_llc && txn.master_id < NUM_READ_MASTERS) {
@@ -2076,10 +2251,86 @@ void AXI_Interconnect::seq() {
       read_req_accepted_id[txn.master_id] = txn.orig_id;
       read_req_hold[txn.master_id] = {};
     }
+  };
 
-    // req_ready_r is recomputed in comb_read_arbiter.
-  }
-read_handshake_done:
+  auto process_ar_port = [&](DownstreamPort port) {
+    auto &seq_ar_io = downstream_io(port);
+    auto &latch = ar_latch(port);
+    const auto &meta = ar_issue_c[port_index(port)];
+
+    if (seq_ar_io.ar.arvalid && !latch.valid && !seq_ar_io.ar.arready &&
+        meta.valid) {
+      latch.valid = true;
+      latch.accepted_upstream = false;
+      latch.port = port;
+      latch.addr = seq_ar_io.ar.araddr;
+      latch.len = seq_ar_io.ar.arlen;
+      latch.size = seq_ar_io.ar.arsize;
+      latch.burst = seq_ar_io.ar.arburst;
+      latch.id = seq_ar_io.ar.arid;
+      latch.master_id = static_cast<uint8_t>(meta.master_id < 0 ? 0 : meta.master_id);
+      latch.orig_id = meta.orig_id;
+      latch.to_llc = meta.from_llc;
+      latch.resp_extract_from_aligned_beat =
+          meta.resp_extract_from_aligned_beat;
+      latch.upstream_addr = meta.upstream_addr;
+      latch.upstream_total_size = meta.upstream_total_size;
+    }
+
+    if (!seq_ar_io.ar.arvalid || !seq_ar_io.ar.arready) {
+      return;
+    }
+
+    ReadPendingTxn txn;
+    if (latch.valid) {
+      txn.axi_id = latch.id;
+      txn.master_id = latch.master_id;
+      txn.orig_id = latch.orig_id;
+      txn.total_beats = latch.len + 1;
+      txn.port = latch.port;
+      txn.addr = latch.addr;
+      txn.upstream_addr = latch.upstream_addr;
+      txn.upstream_total_size = latch.upstream_total_size;
+      txn.resp_extract_from_aligned_beat =
+          latch.resp_extract_from_aligned_beat;
+      txn.to_llc = latch.to_llc;
+      const bool upstream_accepted = latch.accepted_upstream;
+      latch.valid = false;
+      latch.accepted_upstream = false;
+      latch.to_llc = false;
+      latch.resp_extract_from_aligned_beat = false;
+      latch.port = port;
+      latch.upstream_addr = 0;
+      latch.upstream_total_size = 0;
+      if (!txn.to_llc && !upstream_accepted &&
+          txn.master_id < NUM_READ_MASTERS) {
+        read_req_accepted[txn.master_id] = true;
+        read_req_accepted_id[txn.master_id] = txn.orig_id;
+        read_req_hold[txn.master_id] = {};
+      }
+    } else {
+      if (!meta.valid || meta.master_id < 0) {
+        return;
+      }
+      txn.axi_id = seq_ar_io.ar.arid;
+      txn.master_id = static_cast<uint8_t>(meta.master_id);
+      txn.orig_id = meta.orig_id;
+      txn.total_beats = seq_ar_io.ar.arlen + 1;
+      txn.port = port;
+      txn.addr = seq_ar_io.ar.araddr;
+      txn.upstream_addr = meta.upstream_addr;
+      txn.upstream_total_size = meta.upstream_total_size;
+      txn.resp_extract_from_aligned_beat =
+          meta.resp_extract_from_aligned_beat;
+      txn.to_llc = meta.from_llc;
+      if (!meta.from_llc) {
+        read_req_hold[meta.master_id] = {};
+      }
+    }
+    finish_ar_txn(txn);
+  };
+  process_ar_port(DownstreamPort::DDR);
+  process_ar_port(DownstreamPort::MMIO);
 
   if (llc_enabled()) {
     auto promote_write_head = [&]() {
@@ -2320,8 +2571,8 @@ read_handshake_done:
       }
     }
   }
-  if (llc_enabled() && llc.io.ext_in.mem.read_resp_valid &&
-      llc.io.ext_out.mem.read_resp_ready) {
+  if (llc_enabled() && !llc_synth_read_resp_valid_prev &&
+      llc.io.ext_in.mem.read_resp_valid && llc.io.ext_out.mem.read_resp_ready) {
     const uint8_t mem_id = llc.io.ext_in.mem.read_resp_id;
     auto it = std::find_if(r_pending.begin(), r_pending.end(),
                            [mem_id](const ReadPendingTxn &t) {
@@ -2399,7 +2650,7 @@ read_handshake_done:
       }
     }
 
-    if (!w_active && llc.io.ext_out.mem.write_req_valid &&
+    if (!any_w_active() && llc.io.ext_out.mem.write_req_valid &&
         llc.io.ext_in.mem.write_req_ready &&
         can_issue_external_write(llc.io.ext_out.mem.write_req_addr)) {
       const uint8_t issue_size =
@@ -2412,51 +2663,58 @@ read_handshake_done:
             llc.io.ext_out.mem.write_req_data,
             llc.io.ext_out.mem.write_req_strobe, llc_config.line_bytes,
             llc.io.ext_out.mem.write_req_mode2_ddr_aligned);
-        w_active = true;
-        w_current = {};
-        w_current.port = issue.port;
-        w_current.addr = issue.addr;
-        w_current.wdata = issue.wdata;
-        w_current.wstrb = issue.wstrb;
-        w_current.orig_id = llc.io.ext_out.mem.write_req_id;
-        w_current.total_beats = calc_burst_len(issue.total_size) + 1;
-        w_current.beats_sent = 0;
-        w_current.aw_done = false;
-        w_current.w_done = false;
-        w_current.llc_victim_write =
+        bool &active = w_active_ref(issue.port);
+        auto &current = w_current_ref(issue.port);
+        auto &latch = aw_latch(issue.port);
+        active = true;
+        current = {};
+        current.port = issue.port;
+        current.addr = issue.addr;
+        current.wdata = issue.wdata;
+        current.wstrb = issue.wstrb;
+        current.orig_id = llc.io.ext_out.mem.write_req_id;
+        current.total_beats = calc_burst_len(issue.total_size) + 1;
+        current.beats_sent = 0;
+        current.aw_done = false;
+        current.w_done = false;
+        current.llc_victim_write =
             llc.io.regs.victim_wb_valid_r || llc.io.reg_write.victim_wb_valid_r;
-        w_current_master = -1;
+        w_current_master_ref(issue.port) = -1;
 
-        aw_latched.valid = true;
-        aw_latched.port = w_current.port;
-        aw_latched.addr = w_current.addr;
-        aw_latched.len = w_current.total_beats - 1;
-        aw_latched.size = w_current.port == DownstreamPort::MMIO
-                              ? kMmioAxiSize
-                              : kDownstreamAxiSize;
-        aw_latched.burst = sim_ddr::AXI_BURST_INCR;
-        aw_latched.id = w_current.orig_id & 0x7;
+        latch.valid = true;
+        latch.port = current.port;
+        latch.addr = current.addr;
+        latch.len = current.total_beats - 1;
+        latch.size = current.port == DownstreamPort::MMIO ? kMmioAxiSize
+                                                          : kDownstreamAxiSize;
+        latch.burst = sim_ddr::AXI_BURST_INCR;
+        latch.id = current.orig_id & 0x7;
       }
     }
 
-    auto &llc_w_io = downstream_io(w_current.port);
-    if (llc_w_io.aw.awvalid && llc_w_io.aw.awready) {
-      aw_latched.valid = false;
-      aw_latched.port = DownstreamPort::DDR;
-      w_current.aw_done = true;
-    }
+    for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
+      auto &llc_w_io = downstream_io(port);
+      auto &latch = aw_latch(port);
+      auto &current = w_current_ref(port);
+      bool &active = w_active_ref(port);
+      if (llc_w_io.aw.awvalid && llc_w_io.aw.awready) {
+        latch.valid = false;
+        latch.port = port;
+        current.aw_done = true;
+      }
 
-    if (llc_w_io.w.wvalid && llc_w_io.w.wready) {
-      w_current.beats_sent++;
-      if (llc_w_io.w.wlast) {
-        w_current.w_done = true;
-        if (w_current.llc_victim_write) {
-          llc_mem_write_resp_valid_ = true;
-          llc_mem_write_resp_ = sim_ddr::AXI_RESP_OKAY;
-          llc_mem_ignored_b_count_++;
-          w_active = false;
-          w_current = {};
-          w_current_master = -1;
+      if (active && llc_w_io.w.wvalid && llc_w_io.w.wready) {
+        current.beats_sent++;
+        if (llc_w_io.w.wlast) {
+          current.w_done = true;
+          if (current.llc_victim_write) {
+            llc_mem_write_resp_valid_ = true;
+            llc_mem_write_resp_ = sim_ddr::AXI_RESP_OKAY;
+            llc_mem_ignored_b_count_++;
+            active = false;
+            current = {};
+            w_current_master_ref(port) = -1;
+          }
         }
       }
     }
@@ -2478,11 +2736,48 @@ read_handshake_done:
     if (llc_mem_write_resp_valid_prev && llc.io.ext_out.mem.write_resp_ready) {
       llc_mem_write_resp_valid_ = false;
       llc_mem_write_resp_ = 0;
-      if (w_active) {
-        w_active = false;
-        w_current = {};
-        w_current_master = -1;
+      for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
+        if (w_active_ref(port)) {
+          w_active_ref(port) = false;
+          w_current_ref(port) = {};
+          w_current_master_ref(port) = -1;
+        }
       }
+    }
+
+    if (llc_synth_read_resp_valid_prev &&
+        llc.io.ext_out.mem.read_resp_ready) {
+      llc_synth_read_resp_valid_ = false;
+      llc_synth_read_resp_id_ = 0;
+      llc_synth_read_resp_data_.clear();
+    }
+
+    const uint8_t llc_read_req_size =
+        static_cast<uint8_t>(llc.io.ext_out.mem.read_req_size);
+    const DownstreamPort llc_read_req_port = classify_downstream_port(
+        llc.io.ext_out.mem.read_req_addr, llc_read_req_size);
+    if (llc.io.ext_out.mem.read_req_valid &&
+        llc.io.ext_in.mem.read_req_ready &&
+        unsupported_mmio_request(llc_read_req_port, llc_read_req_size)) {
+      llc_synth_read_resp_valid_ = true;
+      llc_synth_read_resp_id_ = llc.io.ext_out.mem.read_req_id;
+      llc_synth_read_resp_data_ =
+          load_legacy_mmio_backing_line(llc.io.ext_out.mem.read_req_addr);
+    }
+
+    const uint8_t llc_write_req_size =
+        static_cast<uint8_t>(llc.io.ext_out.mem.write_req_size);
+    const DownstreamPort llc_write_req_port = classify_downstream_port(
+        llc.io.ext_out.mem.write_req_addr, llc_write_req_size);
+    if (llc.io.ext_out.mem.write_req_valid &&
+        llc.io.ext_in.mem.write_req_ready &&
+        unsupported_mmio_request(llc_write_req_port, llc_write_req_size)) {
+      store_legacy_mmio_backing_line(llc.io.ext_out.mem.write_req_addr,
+                                     llc.io.ext_out.mem.write_req_data,
+                                     llc.io.ext_out.mem.write_req_strobe,
+                                     llc_write_req_size);
+      llc_mem_write_resp_valid_ = true;
+      llc_mem_write_resp_ = sim_ddr::AXI_RESP_OKAY;
     }
 
     llc.seq();
@@ -2566,69 +2861,72 @@ read_handshake_done:
     break;
   }
 
-  // AW handshake
-  const DownstreamPort seq_aw_port =
-      aw_latched.valid ? aw_latched.port : aw_port_c;
-  auto &seq_aw_io = downstream_io(seq_aw_port);
-  if (seq_aw_io.aw.awvalid && seq_aw_io.aw.awready) {
-    const uint8_t axi_id = aw_latched.valid ? aw_latched.id : seq_aw_io.aw.awid;
-    const int pending_idx = find_write_pending_by_axi_id(axi_id);
-    if (pending_idx >= 0) {
-      w_pending[static_cast<size_t>(pending_idx)].aw_done = true;
-      const auto &txn = w_pending[static_cast<size_t>(pending_idx)];
-      if (focus_write_line(txn.addr)) {
-        std::printf(
-            "[AXI-W][AW-HS] cyc=%lld axi_id=%u addr=0x%08x len=%u beats=%u\n",
-            sim_time, static_cast<unsigned>(axi_id), txn.addr,
-            static_cast<unsigned>(seq_aw_io.aw.awlen),
-            static_cast<unsigned>(txn.total_beats));
-      }
-    }
-    aw_latched.valid = false; // Clear latch
-    aw_latched.port = DownstreamPort::DDR;
-  }
-
-  // W handshake
-  auto &seq_w_io = downstream_io(w_current.port);
-  if (seq_w_io.w.wvalid && seq_w_io.w.wready) {
-    const int pending_idx = find_write_pending_by_axi_id(w_current.axi_id);
-    if (pending_idx >= 0) {
-      auto &txn = w_pending[static_cast<size_t>(pending_idx)];
-      if (focus_write_line(txn.addr)) {
-        const uint32_t beat_addr =
-            txn.addr + static_cast<uint32_t>(txn.beats_sent) * kDownstreamBeatBytes;
-        const std::string beat_hex =
-            axi_compat::hex_string(seq_w_io.w.wdata, kDownstreamBeatBytes);
-        const std::string strobe_hex =
-            axi_compat::hex_string(seq_w_io.w.wstrb,
-                                   sim_ddr::AXI_STRB_STORAGE_BYTES);
-        std::printf(
-            "[AXI-W][W-HS] cyc=%lld axi_id=%u beat=%u/%u beat_addr=0x%08x "
-            "data=%s wstrb=%s wlast=%d\n",
-            sim_time, static_cast<unsigned>(txn.axi_id),
-            static_cast<unsigned>(txn.beats_sent),
-            static_cast<unsigned>(txn.total_beats), beat_addr, beat_hex.c_str(),
-            strobe_hex.c_str(),
-            static_cast<int>(seq_w_io.w.wlast));
-      }
-      txn.beats_sent++;
-      w_current.beats_sent = txn.beats_sent;
-    }
-    if (seq_w_io.w.wlast) {
-      if (const int idx = find_write_pending_by_axi_id(w_current.axi_id); idx >= 0) {
-        w_pending[static_cast<size_t>(idx)].w_done = true;
-        const auto &txn = w_pending[static_cast<size_t>(idx)];
+  for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
+    auto &seq_aw_io = downstream_io(port);
+    auto &latch = aw_latch(port);
+    if (seq_aw_io.aw.awvalid && seq_aw_io.aw.awready) {
+      const uint8_t axi_id = latch.valid ? latch.id : seq_aw_io.aw.awid;
+      const int pending_idx = find_write_pending_by_axi_id(axi_id);
+      if (pending_idx >= 0) {
+        w_pending[static_cast<size_t>(pending_idx)].aw_done = true;
+        const auto &txn = w_pending[static_cast<size_t>(pending_idx)];
         if (focus_write_line(txn.addr)) {
           std::printf(
-              "[AXI-W][W-DONE] cyc=%lld axi_id=%u addr=0x%08x beats_sent=%u\n",
-              sim_time, static_cast<unsigned>(txn.axi_id), txn.addr,
-              static_cast<unsigned>(txn.beats_sent));
+              "[AXI-W][AW-HS] cyc=%lld axi_id=%u addr=0x%08x len=%u beats=%u\n",
+              sim_time, static_cast<unsigned>(axi_id), txn.addr,
+              static_cast<unsigned>(seq_aw_io.aw.awlen),
+              static_cast<unsigned>(txn.total_beats));
         }
       }
-      w_current.w_done = true;
-      w_active = false;
-      w_current = {};
-      w_current_master = -1;
+      latch.valid = false;
+      latch.port = port;
+    }
+
+    auto &seq_w_io = downstream_io(port);
+    auto &current = w_current_ref(port);
+    bool &active = w_active_ref(port);
+    if (active && seq_w_io.w.wvalid && seq_w_io.w.wready) {
+      const int pending_idx = find_write_pending_by_axi_id(current.axi_id);
+      if (pending_idx >= 0) {
+        auto &txn = w_pending[static_cast<size_t>(pending_idx)];
+        if (focus_write_line(txn.addr)) {
+          const uint32_t beat_addr =
+              txn.addr +
+              static_cast<uint32_t>(txn.beats_sent) * kDownstreamBeatBytes;
+          const std::string beat_hex =
+              axi_compat::hex_string(seq_w_io.w.wdata, kDownstreamBeatBytes);
+          const std::string strobe_hex =
+              axi_compat::hex_string(seq_w_io.w.wstrb,
+                                     sim_ddr::AXI_STRB_STORAGE_BYTES);
+          std::printf(
+              "[AXI-W][W-HS] cyc=%lld axi_id=%u beat=%u/%u beat_addr=0x%08x "
+              "data=%s wstrb=%s wlast=%d\n",
+              sim_time, static_cast<unsigned>(txn.axi_id),
+              static_cast<unsigned>(txn.beats_sent),
+              static_cast<unsigned>(txn.total_beats), beat_addr,
+              beat_hex.c_str(), strobe_hex.c_str(),
+              static_cast<int>(seq_w_io.w.wlast));
+        }
+        txn.beats_sent++;
+        current.beats_sent = txn.beats_sent;
+      }
+      if (seq_w_io.w.wlast) {
+        if (const int idx = find_write_pending_by_axi_id(current.axi_id);
+            idx >= 0) {
+          w_pending[static_cast<size_t>(idx)].w_done = true;
+          const auto &txn = w_pending[static_cast<size_t>(idx)];
+          if (focus_write_line(txn.addr)) {
+            std::printf(
+                "[AXI-W][W-DONE] cyc=%lld axi_id=%u addr=0x%08x beats_sent=%u\n",
+                sim_time, static_cast<unsigned>(txn.axi_id), txn.addr,
+                static_cast<unsigned>(txn.beats_sent));
+          }
+        }
+        current.w_done = true;
+        active = false;
+        current = {};
+        w_current_master_ref(port) = -1;
+      }
     }
   }
 
@@ -2668,24 +2966,28 @@ read_handshake_done:
     }
   }
 
-  if (!aw_latched.valid) {
-    const int next_aw_idx = find_next_aw_pending();
-    if (next_aw_idx >= 0) {
-      const auto &txn = w_pending[static_cast<size_t>(next_aw_idx)];
-      if (can_issue_external_write(txn.addr)) {
-        aw_latched.valid = true;
-        aw_latched.port = txn.port;
-        aw_latched.addr = txn.addr;
-        aw_latched.len = txn.total_beats - 1;
-        aw_latched.size =
-            txn.port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
-        aw_latched.burst = sim_ddr::AXI_BURST_INCR;
-        aw_latched.id = txn.axi_id;
+  for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
+    auto &latch = aw_latch(port);
+    if (!latch.valid) {
+      const int next_aw_idx = find_next_aw_pending(port);
+      if (next_aw_idx >= 0) {
+        const auto &txn = w_pending[static_cast<size_t>(next_aw_idx)];
+        if (can_issue_external_write(txn.addr)) {
+          latch.valid = true;
+          latch.port = port;
+          latch.addr = txn.addr;
+          latch.len = txn.total_beats - 1;
+          latch.size =
+              port == DownstreamPort::MMIO ? kMmioAxiSize : kDownstreamAxiSize;
+          latch.burst = sim_ddr::AXI_BURST_INCR;
+          latch.id = txn.axi_id;
+        }
       }
     }
   }
 
-  refresh_non_llc_w_active();
+  refresh_non_llc_w_active(DownstreamPort::DDR);
+  refresh_non_llc_w_active(DownstreamPort::MMIO);
 
   llc.seq();
   if (requested_diff) {

@@ -14,6 +14,38 @@ uint32_t *p_memory = nullptr;
 long long sim_time = 0;
 
 namespace {
+uint32_t g_legacy_backing_words[32] = {};
+
+void reset_legacy_backing() {
+  for (auto &word : g_legacy_backing_words) {
+    word = 0;
+  }
+}
+
+uint32_t legacy_backing_index(uint32_t paddr) {
+  return (paddr - 0x10000000u) >> 2;
+}
+
+} // namespace
+
+uint32_t pmem_read(uint32_t paddr) {
+  if (paddr >= 0x10000000u &&
+      legacy_backing_index(paddr) <
+          (sizeof(g_legacy_backing_words) / sizeof(g_legacy_backing_words[0]))) {
+    return g_legacy_backing_words[legacy_backing_index(paddr)];
+  }
+  return 0;
+}
+
+void pmem_write(uint32_t paddr, uint32_t data) {
+  if (paddr >= 0x10000000u &&
+      legacy_backing_index(paddr) <
+          (sizeof(g_legacy_backing_words) / sizeof(g_legacy_backing_words[0]))) {
+    g_legacy_backing_words[legacy_backing_index(paddr)] = data;
+  }
+}
+
+namespace {
 
 void clear_inputs(axi_interconnect::AXI_Interconnect &dut) {
   for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; ++i) {
@@ -50,12 +82,115 @@ void set_downstream_ready(axi_interconnect::AXI_Interconnect &dut) {
 void init_dut(axi_interconnect::AXI_Interconnect &dut) {
   unsetenv("AXI_SUBMODULE_MODE");
   unsetenv("AXI_SUBMODULE_OFFSET");
+  reset_legacy_backing();
   axi_interconnect::AXI_LLCConfig cfg{};
   cfg.enable = false;
   dut.set_llc_config(cfg);
   dut.mode = 0;
   dut.init();
   set_downstream_ready(dut);
+}
+
+void init_llc_dut(axi_interconnect::AXI_Interconnect &dut) {
+  unsetenv("AXI_SUBMODULE_MODE");
+  unsetenv("AXI_SUBMODULE_OFFSET");
+  reset_legacy_backing();
+  axi_interconnect::AXI_LLCConfig cfg{};
+  cfg.enable = true;
+  dut.set_llc_config(cfg);
+  dut.mode = 1;
+  dut.init();
+  set_downstream_ready(dut);
+}
+
+void init_llc_dut_mode(axi_interconnect::AXI_Interconnect &dut, uint8_t mode,
+                       uint32_t offset = 0x30000000u) {
+  unsetenv("AXI_SUBMODULE_MODE");
+  unsetenv("AXI_SUBMODULE_OFFSET");
+  reset_legacy_backing();
+  axi_interconnect::AXI_LLCConfig cfg{};
+  cfg.enable = true;
+  cfg.size_bytes = 8u << 20;
+  dut.set_llc_config(cfg);
+  dut.mode = mode;
+  dut.llc_mapped_offset = offset;
+  dut.init();
+  set_downstream_ready(dut);
+}
+
+void cycle_outputs(axi_interconnect::AXI_Interconnect &dut) {
+  set_downstream_ready(dut);
+  dut.comb_outputs();
+}
+
+void cycle_inputs(axi_interconnect::AXI_Interconnect &dut) {
+  set_downstream_ready(dut);
+  dut.comb_inputs();
+  dut.seq();
+  ++sim_time;
+}
+
+axi_interconnect::WideWriteData_t single_word_data(uint32_t value) {
+  axi_interconnect::WideWriteData_t data{};
+  data.clear();
+  data[0] = value;
+  return data;
+}
+
+axi_interconnect::WideWriteStrb_t byte_strobe(uint32_t mask) {
+  axi_interconnect::WideWriteStrb_t strobe{};
+  strobe.clear();
+  for (uint32_t byte = 0; byte < axi_interconnect::MAX_WRITE_TRANSACTION_BYTES;
+       ++byte) {
+    if ((mask & (1u << byte)) != 0) {
+      strobe.set(byte, true);
+    }
+  }
+  return strobe;
+}
+
+bool enqueue_non_llc_write(axi_interconnect::AXI_Interconnect &dut,
+                           uint8_t master, uint32_t addr, uint8_t total_size,
+                           uint32_t data, uint32_t strobe, uint8_t id) {
+  for (int retry = 0; retry < 8; ++retry) {
+    cycle_outputs(dut);
+    const bool ready_snapshot = dut.write_ports[master].req.ready;
+    auto &req = dut.write_ports[master].req;
+    req.valid = true;
+    req.addr = addr;
+    req.total_size = total_size;
+    req.id = id;
+    req.wdata = single_word_data(data);
+    req.wstrb = byte_strobe(strobe);
+    req.bypass = false;
+    cycle_inputs(dut);
+    if (ready_snapshot) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool capture_llc_write(axi_interconnect::AXI_Interconnect &dut,
+                       uint8_t master, uint32_t addr, uint8_t total_size,
+                       uint32_t data, uint32_t strobe, uint8_t id) {
+  for (int retry = 0; retry < 8; ++retry) {
+    cycle_outputs(dut);
+    const bool ready_snapshot = dut.write_ports[master].req.ready;
+    auto &req = dut.write_ports[master].req;
+    req.valid = true;
+    req.addr = addr;
+    req.total_size = total_size;
+    req.id = id;
+    req.wdata = single_word_data(data);
+    req.wstrb = byte_strobe(strobe);
+    req.bypass = false;
+    cycle_inputs(dut);
+    if (ready_snapshot) {
+      return dut.llc_upstream_write_req[master].valid;
+    }
+  }
+  return false;
 }
 
 bool test_ddr_read_routes_to_port0() {
@@ -149,6 +284,225 @@ bool test_mmio_large_write_blocks() {
   return true;
 }
 
+bool test_llc_unsupported_mmio_read_synthesizes_response() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+  g_legacy_backing_words[0] = 0xaabbccddu;
+  g_legacy_backing_words[1] = 0x11223344u;
+
+  dut.llc.io.ext_out.mem.read_req_valid = true;
+  dut.llc.io.ext_out.mem.read_req_addr = 0x10000000u;
+  dut.llc.io.ext_out.mem.read_req_size = 63;
+  dut.llc.io.ext_out.mem.read_req_id = 4;
+  dut.prepare_llc_inputs(true);
+  if (!dut.llc.io.ext_in.mem.read_req_ready) {
+    std::printf("FAIL: unsupported LLC MMIO read did not complete internally\n");
+    return false;
+  }
+
+  dut.comb_read_arbiter();
+  if (dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid) {
+    std::printf("FAIL: unsupported LLC MMIO read escaped to external AXI\n");
+    return false;
+  }
+
+  dut.seq();
+  dut.prepare_llc_inputs(true);
+  if (!dut.llc.io.ext_in.mem.read_resp_valid ||
+      dut.llc.io.ext_in.mem.read_resp_id != 4 ||
+      dut.llc.io.ext_in.mem.read_resp_data[0] != 0xaabbccddu ||
+      dut.llc.io.ext_in.mem.read_resp_data[1] != 0x11223344u) {
+    std::printf("FAIL: synthesized LLC MMIO read response missing\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_llc_unsupported_mmio_write_synthesizes_response() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  dut.llc.io.ext_out.mem.write_req_valid = true;
+  dut.llc.io.ext_out.mem.write_req_addr = 0x10000000u;
+  dut.llc.io.ext_out.mem.write_req_size = 63;
+  dut.llc.io.ext_out.mem.write_req_id = 5;
+  dut.llc.io.ext_out.mem.write_req_data[0] = 0x55667788u;
+  dut.llc.io.ext_out.mem.write_req_data[1] = 0x99aabbccu;
+  dut.llc.io.ext_out.mem.write_req_strobe.set(0, true);
+  dut.llc.io.ext_out.mem.write_req_strobe.set(1, true);
+  dut.llc.io.ext_out.mem.write_req_strobe.set(2, true);
+  dut.llc.io.ext_out.mem.write_req_strobe.set(3, true);
+  dut.llc.io.ext_out.mem.write_req_strobe.set(4, true);
+  dut.llc.io.ext_out.mem.write_req_strobe.set(5, true);
+  dut.llc.io.ext_out.mem.write_req_strobe.set(6, true);
+  dut.llc.io.ext_out.mem.write_req_strobe.set(7, true);
+  dut.llc.io.ext_out.mem.write_resp_ready = true;
+  dut.prepare_llc_inputs(true);
+  if (!dut.llc.io.ext_in.mem.write_req_ready) {
+    std::printf("FAIL: unsupported LLC MMIO write did not complete internally\n");
+    return false;
+  }
+
+  dut.comb_write_request();
+  if (dut.axi_ddr_io.aw.awvalid || dut.axi_mmio_io.aw.awvalid ||
+      dut.axi_ddr_io.w.wvalid || dut.axi_mmio_io.w.wvalid) {
+    std::printf("FAIL: unsupported LLC MMIO write escaped to external AXI\n");
+    return false;
+  }
+
+  dut.seq();
+  dut.prepare_llc_inputs(true);
+  if (!dut.llc.io.ext_in.mem.write_resp_valid ||
+      dut.llc.io.ext_in.mem.write_resp != sim_ddr::AXI_RESP_OKAY ||
+      g_legacy_backing_words[0] != 0x55667788u ||
+      g_legacy_backing_words[1] != 0x99aabbccu) {
+    std::printf("FAIL: synthesized LLC MMIO write response missing\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_llc_mmio_upstream_forces_bypass() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  auto &req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  req.valid = true;
+  req.addr = 0x10000000u;
+  req.total_size = 63;
+  req.id = 9;
+  req.bypass = false;
+  dut.comb_read_arbiter();
+
+  const auto &cap = dut.llc_upstream_capture_c[axi_interconnect::MASTER_DCACHE_R];
+  if (!cap.valid || !cap.bypass || cap.addr != 0x10000000u ||
+      cap.total_size != 63) {
+    std::printf("FAIL: MMIO-classified LLC upstream read was not forced bypass\n");
+    return false;
+  }
+  if (dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid) {
+    std::printf("FAIL: upstream LLC MMIO capture escaped directly to AXI\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_ddr_and_mmio_read_issue_same_cycle() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  dut.req_ready_r[axi_interconnect::MASTER_ICACHE] = true;
+  auto &icache_req = dut.read_ports[axi_interconnect::MASTER_ICACHE].req;
+  icache_req.valid = true;
+  icache_req.addr = 0x40000200u;
+  icache_req.total_size = 63;
+  icache_req.id = 7;
+
+  auto &dcache_req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  dcache_req.valid = true;
+  dcache_req.addr = 0x10000000u;
+  dcache_req.total_size = 3;
+  dcache_req.id = 8;
+
+  dut.comb_inputs();
+
+  if (!dut.axi_ddr_io.ar.arvalid || !dut.axi_mmio_io.ar.arvalid) {
+    std::printf("FAIL: DDR/MMIO AR did not issue in the same cycle\n");
+    return false;
+  }
+  if (dut.axi_ddr_io.ar.araddr != 0x40000200u ||
+      dut.axi_ddr_io.ar.arlen != 1 ||
+      dut.axi_mmio_io.ar.araddr != 0x10000000u ||
+      dut.axi_mmio_io.ar.arlen != 0) {
+    std::printf("FAIL: same-cycle AR shape mismatch ddr_addr=0x%08x "
+                "ddr_len=%u mmio_addr=0x%08x mmio_len=%u\n",
+                static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr),
+                static_cast<unsigned>(dut.axi_ddr_io.ar.arlen),
+                static_cast<uint32_t>(dut.axi_mmio_io.ar.araddr),
+                static_cast<unsigned>(dut.axi_mmio_io.ar.arlen));
+    return false;
+  }
+  return true;
+}
+
+bool test_ddr_and_mmio_aw_issue_same_cycle() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  axi_interconnect::WritePendingTxn ddr{};
+  ddr.axi_id = 1;
+  ddr.master_id = axi_interconnect::MASTER_DCACHE_W;
+  ddr.orig_id = 1;
+  ddr.port = axi_interconnect::DownstreamPort::DDR;
+  ddr.addr = 0x40000400u;
+  ddr.total_beats = 2;
+  axi_interconnect::WritePendingTxn mmio{};
+  mmio.axi_id = 2;
+  mmio.master_id = axi_interconnect::MASTER_UNCORE_LSU_W;
+  mmio.orig_id = 2;
+  mmio.port = axi_interconnect::DownstreamPort::MMIO;
+  mmio.addr = 0x10000004u;
+  mmio.total_beats = 1;
+  dut.w_pending.push_back(ddr);
+  dut.w_pending.push_back(mmio);
+
+  dut.comb_inputs();
+
+  if (!dut.axi_ddr_io.aw.awvalid || !dut.axi_mmio_io.aw.awvalid) {
+    std::printf("FAIL: DDR/MMIO AW did not issue in the same cycle\n");
+    return false;
+  }
+  if (dut.axi_ddr_io.aw.awaddr != 0x40000400u ||
+      dut.axi_ddr_io.aw.awlen != 1 ||
+      dut.axi_mmio_io.aw.awaddr != 0x10000004u ||
+      dut.axi_mmio_io.aw.awlen != 0) {
+    std::printf("FAIL: same-cycle AW shape mismatch\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_ddr_and_mmio_w_issue_same_cycle() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  dut.w_active = true;
+  dut.w_current = {};
+  dut.w_current.port = axi_interconnect::DownstreamPort::DDR;
+  dut.w_current.aw_done = true;
+  dut.w_current.total_beats = 2;
+  dut.w_current.wdata[0] = 0x11112222u;
+  dut.w_current.wstrb.set(0, true);
+
+  dut.w_active_mmio = true;
+  dut.w_current_mmio = {};
+  dut.w_current_mmio.port = axi_interconnect::DownstreamPort::MMIO;
+  dut.w_current_mmio.aw_done = true;
+  dut.w_current_mmio.total_beats = 1;
+  dut.w_current_mmio.wdata[0] = 0x33334444u;
+  dut.w_current_mmio.wstrb.set(0, true);
+
+  dut.comb_inputs();
+
+  if (!dut.axi_ddr_io.w.wvalid || !dut.axi_mmio_io.w.wvalid) {
+    std::printf("FAIL: DDR/MMIO W did not issue in the same cycle\n");
+    return false;
+  }
+  if (dut.axi_ddr_io.w.wlast || !dut.axi_mmio_io.w.wlast) {
+    std::printf("FAIL: same-cycle W last mismatch ddr_last=%u mmio_last=%u\n",
+                static_cast<unsigned>(dut.axi_ddr_io.w.wlast),
+                static_cast<unsigned>(dut.axi_mmio_io.w.wlast));
+    return false;
+  }
+  return true;
+}
+
 bool test_same_line_write_waits_for_read_return() {
   axi_interconnect::AXI_Interconnect dut;
   init_dut(dut);
@@ -196,6 +550,115 @@ bool test_same_line_write_waits_for_read_return() {
   return true;
 }
 
+bool test_mode0_ddr_partial_write_aligns_to_256b() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  if (!enqueue_non_llc_write(dut, axi_interconnect::MASTER_DCACHE_W,
+                             0x40000004u, 3, 0xaabbccddu, 0xfu, 0x11)) {
+    std::printf("FAIL: mode0 DDR partial write was not accepted\n");
+    return false;
+  }
+  if (dut.w_pending.empty()) {
+    std::printf("FAIL: mode0 DDR write was not enqueued\n");
+    return false;
+  }
+  const auto &txn = dut.w_pending.back();
+  if (txn.port != axi_interconnect::DownstreamPort::DDR ||
+      txn.addr != 0x40000000u || txn.total_beats != 1 ||
+      txn.wdata[1] != 0xaabbccddu) {
+    std::printf("FAIL: mode0 DDR write alignment mismatch addr=0x%08x "
+                "beats=%u data1=0x%08x\n",
+                txn.addr, static_cast<unsigned>(txn.total_beats),
+                txn.wdata[1]);
+    return false;
+  }
+  for (int byte = 0; byte < 8; ++byte) {
+    const bool expected = byte >= 4;
+    if (txn.wstrb.test(byte) != expected) {
+      std::printf("FAIL: mode0 DDR shifted strobe mismatch byte=%d got=%d\n",
+                  byte, static_cast<int>(txn.wstrb.test(byte)));
+      return false;
+    }
+  }
+  return true;
+}
+
+bool test_mode0_mmio_word_write_uses_mmio_port() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  if (!enqueue_non_llc_write(dut, axi_interconnect::MASTER_UNCORE_LSU_W,
+                             0x10000004u, 3, 0x11223344u, 0xfu, 0x12)) {
+    std::printf("FAIL: mode0 MMIO word write was not accepted\n");
+    return false;
+  }
+  if (dut.w_pending.empty()) {
+    std::printf("FAIL: mode0 MMIO write was not enqueued\n");
+    return false;
+  }
+  const auto &txn = dut.w_pending.back();
+  if (txn.port != axi_interconnect::DownstreamPort::MMIO ||
+      txn.addr != 0x10000004u || txn.total_beats != 1 ||
+      txn.wdata[0] != 0x11223344u || txn.wstrb.slice_u32(0) != 0xfu) {
+    std::printf("FAIL: mode0 MMIO write shape mismatch addr=0x%08x "
+                "beats=%u data0=0x%08x strb=0x%llx\n",
+                txn.addr, static_cast<unsigned>(txn.total_beats),
+                txn.wdata[0],
+                static_cast<unsigned long long>(txn.wstrb.slice_u32(0)));
+    return false;
+  }
+  return true;
+}
+
+bool test_mode2_mapped_write_captures_direct_mapped_llc() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut_mode(dut, 2, 0x30000000u);
+  clear_inputs(dut);
+
+  if (!capture_llc_write(dut, axi_interconnect::MASTER_DCACHE_W,
+                         0x30000004u, 3, 0x55667788u, 0xfu, 0x13)) {
+    std::printf("FAIL: mode2 mapped write was not captured\n");
+    return false;
+  }
+  const auto &cap = dut.llc_upstream_write_req[axi_interconnect::MASTER_DCACHE_W];
+  if (cap.addr != 0x00000004u || !cap.direct_mapped || cap.bypass ||
+      cap.mode2_ddr_aligned) {
+    std::printf("FAIL: mode2 mapped write flags mismatch addr=0x%08x "
+                "direct=%d bypass=%d aligned=%d\n",
+                cap.addr, static_cast<int>(cap.direct_mapped),
+                static_cast<int>(cap.bypass),
+                static_cast<int>(cap.mode2_ddr_aligned));
+    return false;
+  }
+  return true;
+}
+
+bool test_mode3_ddr_write_forces_llc_bypass() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut_mode(dut, 3, 0x30000000u);
+  clear_inputs(dut);
+
+  if (!capture_llc_write(dut, axi_interconnect::MASTER_DCACHE_W,
+                         0x40000004u, 3, 0x99aabbccu, 0xfu, 0x14)) {
+    std::printf("FAIL: mode3 DDR write was not captured\n");
+    return false;
+  }
+  const auto &cap = dut.llc_upstream_write_req[axi_interconnect::MASTER_DCACHE_W];
+  if (cap.addr != 0x40000004u || cap.direct_mapped || !cap.bypass ||
+      cap.mode2_ddr_aligned) {
+    std::printf("FAIL: mode3 DDR write flags mismatch addr=0x%08x "
+                "direct=%d bypass=%d aligned=%d\n",
+                cap.addr, static_cast<int>(cap.direct_mapped),
+                static_cast<int>(cap.bypass),
+                static_cast<int>(cap.mode2_ddr_aligned));
+    return false;
+  }
+  return true;
+}
+
 } // namespace
 
 int main() {
@@ -215,7 +678,25 @@ int main() {
   run("MMIO read routes to port1", test_mmio_read_routes_to_port1);
   run("MMIO cacheline read blocks", test_mmio_large_read_blocks);
   run("MMIO cacheline write blocks", test_mmio_large_write_blocks);
+  run("LLC unsupported MMIO read synthesizes response",
+      test_llc_unsupported_mmio_read_synthesizes_response);
+  run("LLC unsupported MMIO write synthesizes response",
+      test_llc_unsupported_mmio_write_synthesizes_response);
+  run("LLC MMIO upstream forces bypass", test_llc_mmio_upstream_forces_bypass);
+  run("DDR and MMIO AR issue same-cycle",
+      test_ddr_and_mmio_read_issue_same_cycle);
+  run("DDR and MMIO AW issue same-cycle",
+      test_ddr_and_mmio_aw_issue_same_cycle);
+  run("DDR and MMIO W issue same-cycle", test_ddr_and_mmio_w_issue_same_cycle);
   run("same-line AW waits for R", test_same_line_write_waits_for_read_return);
+  run("mode0 DDR partial write aligns to 256b",
+      test_mode0_ddr_partial_write_aligns_to_256b);
+  run("mode0 MMIO word write uses MMIO port",
+      test_mode0_mmio_word_write_uses_mmio_port);
+  run("mode2 mapped write captures direct-mapped LLC",
+      test_mode2_mapped_write_captures_direct_mapped_llc);
+  run("mode3 DDR write forces LLC bypass",
+      test_mode3_ddr_write_forces_llc_bypass);
 
   std::printf("dual-port routing results: %d passed, %d failed\n", passed,
               failed);
