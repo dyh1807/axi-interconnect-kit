@@ -795,7 +795,7 @@ bool test_llc_unsupported_mmio_write_synthesizes_response() {
   return true;
 }
 
-bool test_llc_mmio_upstream_forces_bypass() {
+bool test_llc_unsupported_mmio_upstream_read_blocks() {
   axi_interconnect::AXI_Interconnect dut;
   init_llc_dut(dut);
   clear_inputs(dut);
@@ -809,13 +809,12 @@ bool test_llc_mmio_upstream_forces_bypass() {
   dut.comb_read_arbiter();
 
   const auto &cap = dut.llc_upstream_capture_c[axi_interconnect::MASTER_DCACHE_R];
-  if (!cap.valid || !cap.bypass || cap.addr != 0x10000000u ||
-      cap.total_size != 63) {
-    std::printf("FAIL: MMIO-classified LLC upstream read was not forced bypass\n");
+  if (cap.valid || dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req.ready) {
+    std::printf("FAIL: unsupported MMIO read was accepted by LLC path\n");
     return false;
   }
   if (dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid) {
-    std::printf("FAIL: upstream LLC MMIO capture escaped directly to AXI\n");
+    std::printf("FAIL: unsupported MMIO read escaped to external AXI\n");
     return false;
   }
   return true;
@@ -2021,7 +2020,8 @@ int main() {
       test_llc_unsupported_mmio_read_synthesizes_response);
   run("LLC unsupported MMIO write synthesizes response",
       test_llc_unsupported_mmio_write_synthesizes_response);
-  run("LLC MMIO upstream forces bypass", test_llc_mmio_upstream_forces_bypass);
+  run("LLC unsupported MMIO upstream read blocks",
+      test_llc_unsupported_mmio_upstream_read_blocks);
   run("LLC MMIO word read bypasses LLC core",
       test_llc_mmio_word_read_bypasses_llc_core);
   run("LLC direct MMIO read resp blocks LLC resp ready",
