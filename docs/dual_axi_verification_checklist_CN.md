@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=167 / open=15。本轮新增 MODE_MAPPED local-window actual C++ trace
+当前计数：done=168 / open=15。本轮新增 MODE_MAPPED local-window actual C++ trace
 到实际 RTL subsystem 的 write/read 一致性检查，并补齐 mapped-window 上/下边界外
 MMIO read/write 双向路由检查，以及 mapped-window 跨界 8B unsupported blocked
 检查；继续补齐 MODE_CACHE `invalidate_all` 挂起时新 read/write blocked，以及
@@ -35,7 +35,8 @@ production-width same-line read-before-write / write-before-read 的 bridge-leve
 并补跑 `axi_llc_axi_bridge_dual` 子模块 DC link sanity；
 并在父仓库临时适配 cacheability/MMIO 分类后，补跑 large + `CONFIG_BPU`
 Linux 300k/5M commit sanity，确认不再触发低地址 cacheline read deadlock 且 300k
-周期数未出现可见回退。
+周期数未出现可见回退；并新增实际 `axi_llc_subsystem_core.v` startup idle RTL
+contract，验证 reset 后 valid sweep 收敛到 MODE_CACHE idle 且无伪请求/响应。
 剩余 open 项主要集中在端到端 hw-cbmc 形式 EC、production-width core/subsystem 组合覆盖、
 RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
 
@@ -196,8 +197,12 @@ RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
   log 为
   `local_debug/hw_cbmc_dual_bridge_prod_width_bypass_cacheline_read_response_20260505_154112.log`，
   并已纳入 manifest；`formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
-- [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 51/51，最新目录
-  `rtl/local_debug/vcs_all_contracts_20260504_235200`。
+- [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 52/52，最新目录
+  `rtl/local_debug/vcs_all_contracts_20260505_171141_with_startup`。本轮新增
+  `tb_axi_llc_subsystem_core_startup_idle_contract`，直接实例化实际
+  `axi_llc_subsystem_core.v`，小参数/generic store 下验证 reset startup sweep 结束后
+  `active_mode=MODE_CACHE`、`reconfig_state=IDLE`、`config_error=0`，且无意外
+  upstream response、cache/bypass lower request 或 victim-line 输出。
 - [x] native dual-AXI RTL contract：`rtl/run_dual_axi_contracts.sh` 当前通过 4/4，最新目录
   `rtl/local_debug/vcs_dual_axi_contracts_20260504_235450`。
 - [x] `axi_llc_axi_bridge_dual` 子模块 DC link sanity：`AXI_LLC_DC_TOP=axi_llc_axi_bridge_dual`
@@ -572,9 +577,10 @@ RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
   `formal/run_passed_hw_cbmc.sh`，不再视为稳定 manifest 缺口；
   `formal/subsystem_core_dirty_evict_writeback`
   是 core-alone 实验入口，当前失败集中在 startup/reconfig idle harness 收敛约束，不作为生产
-  RTL 失败结论。已有 `cache_ctrl` 与 `subsystem_dual` dirty-evict proof 分担 dirty victim
-  主链路覆盖；后续若继续推进，应拆成 `core_startup_idle`、两路 dirty fill、dirty
-  writeback issue、dirty writeback response 四个小入口。
+  RTL 失败结论。startup/reconfig idle 已改由 VCS contract 直接验证实际
+  `axi_llc_subsystem_core.v` 并通过；已有 `cache_ctrl` 与 `subsystem_dual`
+  dirty-evict proof 分担 dirty victim 主链路覆盖；后续若继续推进 core-alone formal，
+  应拆成两路 dirty fill、dirty writeback issue、dirty writeback response 等小入口。
 - [ ] 更完整 `axi_llc_axi_bridge.v` 组合场景仍可继续扩展：生产宽度 64B cacheline
   read/write 的 `AR/AW`、两拍 `W` payload、两拍 `R` payload/response 已分别由
   `bridge_prod_width_cacheline_*` 覆盖；4B read/write route、unsupported MMIO 大
@@ -820,9 +826,9 @@ RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
   gate，且 bridge 报告中的大宽度寄存器/多处 2048-bit mux、LINT-1/LINT-52、高 fanout
   和 signedness warning 仍需继续清理或在 DC 时序报告中审视。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
-  `rtl/run_dual_axi_contracts.sh`；当前通过 51/51 与 4/4，其中全量 RTL contract 最新
-  51/51 目录为
-  `rtl/local_debug/vcs_all_contracts_20260505_143227`，dual-only 4/4 目录为
+  `rtl/run_dual_axi_contracts.sh`；当前通过 52/52 与 4/4，其中全量 RTL contract 最新
+  52/52 目录为
+  `rtl/local_debug/vcs_all_contracts_20260505_171141_with_startup`，dual-only 4/4 目录为
   `rtl/local_debug/vcs_dual_axi_contracts_20260505_143514`。
 - [x] C++ 模块功能回归：实际 C++ 改动后需重跑
   `ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`；本轮已复跑并通过

@@ -769,8 +769,9 @@ formal/subsystem_dual_mmio_read_route/run_hw_cbmc.sh
 
 明确不覆盖：
 
-- 不把 reset 后 reconfig/active-mode 收敛作为本入口证明目标；该项后续应拆独立
-  reconfig smoke。
+- 不把 reset 后 reconfig/active-mode 收敛作为本入口证明目标；该项已由
+  `rtl/tb/tb_axi_llc_subsystem_core_startup_idle_contract.v` 通过 VCS directed
+  contract 覆盖。
 - 不验证 `R` response 回收、MMIO write route、cacheable DDR refill/hit/miss 路径。
 - 为绕开 hw-cbmc 对 0 次复制拼接的前端限制，该 formal 参数将 `MODE_BITS` 扩为 3；
   被验证逻辑仍来自实际生产 RTL。
@@ -840,8 +841,9 @@ formal/subsystem_dual_mmio_write_route/run_hw_cbmc.sh
 
 明确不覆盖：
 
-- 不把 reset 后 reconfig/active-mode 收敛作为本入口证明目标；该项后续应拆独立
-  reconfig smoke。
+- 不把 reset 后 reconfig/active-mode 收敛作为本入口证明目标；该项已由
+  `rtl/tb/tb_axi_llc_subsystem_core_startup_idle_contract.v` 通过 VCS directed
+  contract 覆盖。
 
 ### `formal/subsystem_dual_mmio_write_response`
 

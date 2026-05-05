@@ -60,6 +60,7 @@
 - `tb_axi_llc_subsystem_dual_mmio_contract.v`
 - `tb_axi_llc_subsystem_dual_outstanding_contract.v`
 - `tb_axi_llc_subsystem_dual_cpp_trace_contract.v`
+- `tb_axi_llc_subsystem_core_startup_idle_contract.v`
 - `tb_axi_llc_subsystem_read_master_timing_contract.v`
 - `tb_llc_smic12_store_contract.v`
 
@@ -466,6 +467,17 @@ core 内部 hazard 遮掉。
 
 - `flist/tb_axi_llc_subsystem_read_master_timing_contract.f`
 
+### `tb_axi_llc_subsystem_core_startup_idle_contract.v`
+
+目标是独立验证实际 `axi_llc_subsystem_core.v` 的 reset startup 行为：
+
+- reset 后 reconfig FSM 先进入 valid sweep，再收敛到 `MODE_CACHE` idle
+- 合法 reset mode 下 `config_error` 不应拉高
+- 无上游请求时，不应产生 upstream response、cache/bypass lower request 或 victim-line 输出
+
+该 bench 使用小参数和 generic store，重点是卡住 core reset/sweep/idle 合同；它不替代
+cache hit/miss、dirty victim 或 dual external AXI 路由合同。
+
 ## 运行方式
 
 推荐从 `rtl/` 目录下使用 `flist/*.f` 驱动仿真器，例如：
@@ -498,7 +510,7 @@ vvp simv_reconfig
 ./run_all_contracts.sh
 ```
 
-该脚本按 `flist/tb_*.f` 排序编译并运行当前 51 个 testbench，扫描 `FAIL`，并兼容
-`<test> PASS` 与旧 bench 的独立 `PASS` marker。2026-05-04 在 `eda-05` 上通过
-`bash_eda05 + VCS` 跑通，结果为 51 passed / 0 failed。最新输出目录为
-`rtl/local_debug/vcs_all_contracts_20260504_103301`。
+该脚本按 `flist/tb_*.f` 排序编译并运行当前 52 个 testbench，扫描 `FAIL`，并兼容
+`<test> PASS` 与旧 bench 的独立 `PASS` marker。2026-05-05 在 `eda-05` 上通过
+`bash_eda05 + VCS` 跑通，结果为 52 passed / 0 failed。最新输出目录为
+`rtl/local_debug/vcs_all_contracts_20260505_171141_with_startup`。
