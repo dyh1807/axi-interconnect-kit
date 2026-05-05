@@ -2150,14 +2150,6 @@ bool AXI_LLC::try_complete_lookup() {
       if (table_busy) {
         return stall_lookup_on_table_busy();
       }
-      AXI_LLCMetaEntry_t meta = hit_meta;
-      meta.flags = 0;
-      io.table_out.meta.enable = true;
-      io.table_out.meta.write = true;
-      io.table_out.meta.index = set;
-      io.table_out.meta.way = static_cast<uint32_t>(hit_way);
-      encode_meta(meta, io.table_out.meta.payload);
-      io.table_out.meta.byte_enable.assign(AXI_LLC_META_ENTRY_BYTES, 1);
       io.table_out.valid.enable = true;
       io.table_out.valid.write = true;
       io.table_out.valid.index = set;

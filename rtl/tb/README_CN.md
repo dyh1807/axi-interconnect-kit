@@ -56,6 +56,10 @@
 - `tb_axi_llc_axi_bridge_write_id_reuse_contract.v`
 - `tb_axi_llc_axi_bridge_dual_contract.v`
 - `tb_axi_llc_axi_dual_port_router_contract.v`
+- `tb_axi_llc_dual_port_hazard_scoreboard_contract.v`
+- `tb_axi_llc_subsystem_dual_mmio_contract.v`
+- `tb_axi_llc_subsystem_dual_outstanding_contract.v`
+- `tb_axi_llc_subsystem_dual_cpp_trace_contract.v`
 - `tb_axi_llc_subsystem_read_master_timing_contract.v`
 - `tb_llc_smic12_store_contract.v`
 
@@ -342,10 +346,38 @@ core 内部 hazard 遮掉。
 - 直接面向 `axi_llc_axi_bridge_dual.v`
 - 覆盖 lower request 层直接分流，不经过单 AXI 中间口
 - 验证 DDR cache read 与 MMIO bypass read 可以同周期都被接受，并分别发到两个 AXI 口
+- 验证 DDR cache write 与 MMIO bypass write 可以同周期都被接受，并分别发到两个 AXI 口
 - 验证 MMIO 口为 32-bit / 1 beat
 - 验证大于 4B 的 MMIO 请求会被 backpressure 挡住
+- 验证 MMIO write `B` 先于 DDR write `B` 返回时，response 仍分别回到 bypass/cache source
+- 验证同一 cache response source 同时有 DDR/MMIO read response 待回、且
+  `cache_resp_ready=0` 时，外部 DDR/MMIO `R` 仍先被各自 bridge 用 `RREADY` 接收并
+  缓存；之后 response mux 再按 MMIO 优先级送回上游
+- 验证同一 cache response source 同时有 DDR/MMIO write `B` 待回、且
+  `cache_resp_ready=0` 时，外部 DDR/MMIO `B` 仍先被各自 bridge 用 `BREADY` 接收并
+  缓存；之后 response mux 再按 MMIO 优先级送回上游
+- 验证 native bridge 外部 `AR/AW` 同 line hazard：读未返回时同 line 写不能发
+  `AW/W`，写未完成时同 line 读不能发 `AR`，不同 line 不被该 gate 串行化
+- 验证 same-line 写已被 read hazard 挡住、且上游 read response ready 拉低时，DDR
+  `R` 两个 beat 仍必须被 `RREADY` 接收，不能把外部 `R` 接收依赖到 response mux /
+  上游 ready / 写侧完成
+- 验证 same-line 读已被 write hazard 挡住、且上游 write response ready 拉低时，
+  DDR `B` 仍必须被 `BREADY` 接收；bridge 层外部 `AR` issue hazard 在 `B` fire 后
+  释放，不等待上游 write response 被消费
 
-当前该 bench 先覆盖 native dual bridge 的最小合同；全局 outstanding 共享计数仍需后续补齐。
+当前该 bench 仍不验证全局 shared outstanding 计数；该预算由上游 compat/top 层约束。
+
+### `tb_axi_llc_dual_port_hazard_scoreboard_contract.v`
+
+- 直接面向 `axi_llc_dual_port_hazard_scoreboard.v`
+- 覆盖 DDR `AR` 记录 pending-read hazard，并验证错误 `RID` 不释放、匹配 `RID`
+  释放
+- 覆盖 DDR `AW` 记录 pending-write hazard，并验证错误 `BID` 不释放、匹配 `BID`
+  释放
+- 覆盖 DDR/MMIO read/write entries 可以同时占用 shared slots，并按 port/id 分别释放
+- 该 bench 直接解析生产 `axi_llc_dual_port_hazard_match.v` 和
+  `axi_llc_dual_port_slot_hazard.v`，用于补足完整 scoreboard formal harness 暂时
+  不能在默认 timeout 内收敛的状态覆盖
 
 ### `tb_axi_llc_subsystem_dual_mmio_contract.v`
 
@@ -355,6 +387,72 @@ core 内部 hazard 遮掉。
 - 验证 MMIO 口为 32-bit / 1 beat，读写 response 回到原 upstream ID
 - 覆盖 DDR cache refill `AR` 被 backpressure 保持时，MMIO read/write 仍可在独立
   MMIO AXI 口发射和返回，不被 DDR 口串行化
+- 覆盖 DDR bypass read 已发 `AR`、尚未收到 `R` 时，同 line DDR bypass write 不得
+  提前发 `AW/W`；`R` 返回后写事务继续完成并回到原 upstream ID
+- 进一步把 upstream read response ready 拉低，验证 DDR `R` 仍会先被 `RREADY`
+  接收并缓存在内部；同 line 写只依赖外部 `R` 已接收，不等待 upstream read response
+  被消费
+- 覆盖对称 write-then-read 场景：同 line read 在 write 完成前不会被 top/compat
+  接收；upstream write response ready 拉低时，DDR `B` 仍会先被 `BREADY` 接收并
+  缓存在内部；当前 core-path 接收面会等 write response slot 被上游消费后，再接收
+  并继续该 same-line read
+
+### `tb_axi_llc_subsystem_dual_outstanding_contract.v`
+
+- 直接面向 `axi_llc_subsystem_dual.v`
+- 在 `MODE_OFF` direct-bypass 场景验证 DDR/MMIO 两个外部口共享 read outstanding 总预算 32
+- 先让 DDR/MMIO read 合计 32 个 outstanding 不返回，确认第 33 个 read 被挡住
+- 在 read outstanding 已满时继续接受 32 个 write，确认读写预算相互独立
+- reset 后反向验证 write outstanding 已满时仍能接受 32 个 read，并挡住第 33 个 read
+- 验证 DDR read 与 MMIO read 同时在途时，MMIO `R` 先返回、DDR `R` 后返回，
+  response 仍分别回到原 read master
+- 验证 DDR write 与 MMIO write 同时在途时，MMIO `B` 先返回、DDR `B` 后返回，
+  response 仍分别回到原 write master
+- 验证 DDR/MMIO `R` 同时返回且上游 `read_resp_ready=0` 时，外部 `RREADY` 不被
+  top/compat response stall 反压，两个 response 都能缓存并回到正确 master
+- 验证 DDR/MMIO `B` 同时返回且上游 `write_resp_ready=0` 时，外部 `BREADY` 不被
+  top/compat response stall 反压，两个 response 都能缓存并回到正确 master
+
+### `tb_axi_llc_subsystem_dual_cpp_trace_contract.v`
+
+- 直接面向实际 `axi_llc_subsystem_dual.v`
+- 期望值不是手写 RTL reference，而是由
+  `axi_interconnect/axi_interconnect_dual_port_trace_vectors.cpp` 调用实际
+  `AXI_Interconnect` comb/seq 路径生成到 `rtl/include/axi_dual_cpp_trace_vectors.vh`
+- 覆盖 MODE_OFF 下 DDR direct 4B 未对齐 read、8B read、64B cacheline 2-beat read、
+  4B 未对齐 write、64B cacheline 2-beat write、MMIO direct 4B read/write，以及
+  unsupported MMIO 8B read/write
+- 覆盖 MODE_OFF 下 DDR/MMIO read 同时在途：MMIO `R` 先返回且上游 read response
+  被 stall 时，外部 MMIO/DDR `RREADY` 仍必须按实际 C++ trace 拉高并先缓存 response，
+  最终回到各自原 upstream ID/data
+- 覆盖 MODE_OFF 下 DDR/MMIO write 同时在途：MMIO `B` 先返回且上游 write response
+  被 stall 时，外部 MMIO/DDR `BREADY` 仍必须按实际 C++ trace 拉高并先缓存 response，
+  最终回到各自原 upstream ID/code
+- 覆盖 MODE_CACHE 下 MMIO 4B read/write：LLC-on 时 MMIO 请求仍按实际 C++
+  `AXI_Interconnect` trace 直接走 MMIO AXI 口，`AR/AW/W/R/B` 形状与 response
+  ID/data/code 对齐，且不误走 DDR/cacheable LLC core 路径
+- 对比 upstream 请求、DDR/MMIO `AR/AW/W/R/B` 形状、DDR 256-bit beat
+  payload/strobe、MMIO 32-bit payload/strobe、response ID/data/code，并检查 DDR/MMIO
+  trace 不误走对侧 AXI 口；unsupported MMIO trace 还要求 ready=0、不 accepted、不发出
+  任一外部 AXI `AR/AW/W`
+- 该 bench 是 trace-based 功能 EC；它用于缩小实际 C++/RTL 语义差距，但不替代
+  后续 hw-cbmc 同 harness 端到端形式 EC
+
+### `tb_llc_cache_ctrl_cpp_trace_contract.v`
+
+- 直接面向实际 `llc_cache_ctrl.v`
+- 期望值由 `axi_interconnect/axi_llc_cache_trace_vectors.cpp` 调用实际 `AXI_LLC`
+  comb/seq 路径生成到 `rtl/include/axi_llc_cache_cpp_trace_vectors.vh`
+- 当前覆盖 8B line/2-way 小参数下的 partial write hit merge、read miss refill、
+  partial write miss refill、dirty victim full-line writeback、dirty victim + partial-write
+  miss 和 `invalidate_line` hit：lookup set、data/meta/valid/repl 写回、clean/dirty meta
+  更新、lower memory request/response、dirty victim 写回顺序、read/write response
+  ID/code、invalidate valid-only clear，以及不误发 bypass request
+- dirty victim + partial-write miss 路径按实际 C++/RTL 语义检查：先发 refill read，
+  refill 后 merge/install 并返回写响应，同时 dirty victim snapshot 必须外部化并继续发
+  full-line writeback；该合同不要求等待 victim `B` 后才回包
+- 该 bench 只做必要的接口编码适配：C++ meta/valid/repl 抽象表项映射到 RTL
+  `llc_cache_ctrl` row encoding；行为期望仍来自实际 C++ 状态机
 
 ### `tb_axi_llc_subsystem_read_master_timing_contract.v`
 
@@ -384,4 +482,23 @@ iverilog -f flist/tb_axi_reconfig_ctrl.f -o simv_reconfig
 vvp simv_reconfig
 ```
 
-目前已在 `eda-10` 上通过 `bash_eda10 + VCS` 跑通当前这些 testbench。
+当前 native dual-AXI 相关 contract 可用统一入口运行：
+
+```sh
+./run_dual_axi_contracts.sh
+```
+
+该脚本会编译并运行 bridge dual、native dual top MMIO、native dual top outstanding/owner、
+以及 hazard scoreboard 四个 contract，并检查 `PASS` 标记；由于 VCS 对 `$finish(1)`
+不一定返回非零码，脚本同时会扫描 `FAIL`。
+
+全量 RTL directed / contract tests 可用统一入口运行：
+
+```sh
+./run_all_contracts.sh
+```
+
+该脚本按 `flist/tb_*.f` 排序编译并运行当前 51 个 testbench，扫描 `FAIL`，并兼容
+`<test> PASS` 与旧 bench 的独立 `PASS` marker。2026-05-04 在 `eda-05` 上通过
+`bash_eda05 + VCS` 跑通，结果为 51 passed / 0 failed。最新输出目录为
+`rtl/local_debug/vcs_all_contracts_20260504_103301`。

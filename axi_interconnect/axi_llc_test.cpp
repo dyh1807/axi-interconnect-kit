@@ -132,6 +132,22 @@ AXI_LLC_Bytes_t make_valid_set_from_meta(const AXI_LLCConfig &config,
   return valid;
 }
 
+AXI_LLC_Bytes_t make_valid_bits(const AXI_LLCConfig &config, uint32_t bits) {
+  AXI_LLC_Bytes_t valid;
+  valid.resize(AXI_LLC::valid_row_bytes(config));
+  for (uint32_t way = 0; way < config.ways; ++way) {
+    if (((bits >> way) & 0x1u) == 0) {
+      continue;
+    }
+    const size_t byte_idx = static_cast<size_t>(way >> 3);
+    if (byte_idx < valid.size()) {
+      valid.data()[byte_idx] =
+          static_cast<uint8_t>(valid.data()[byte_idx] | (1u << (way & 0x7u)));
+    }
+  }
+  return valid;
+}
+
 void derive_lookup_valid_from_meta(AXI_LLC &llc,
                                    const AXI_LLCConfig &config) {
   llc.io.lookup_in.valid_valid = true;
@@ -1676,16 +1692,23 @@ bool test_line_invalidate_maintenance() {
   derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   llc.comb();
-  if (!llc.io.table_out.meta.enable || !llc.io.table_out.meta.write ||
-      llc.io.table_out.meta.way != 1) {
-    printf("FAIL: invalidate meta write missing enable=%d write=%d way=%u\n",
+  if (llc.io.table_out.meta.enable || llc.io.table_out.data.enable ||
+      llc.io.table_out.repl.enable) {
+    printf("FAIL: invalidate should only update valid table meta=%d data=%d repl=%d\n",
            static_cast<int>(llc.io.table_out.meta.enable),
-           static_cast<int>(llc.io.table_out.meta.write), llc.io.table_out.meta.way);
+           static_cast<int>(llc.io.table_out.data.enable),
+           static_cast<int>(llc.io.table_out.repl.enable));
     return false;
   }
-  const auto meta = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
-  if (meta.flags != 0) {
-    printf("FAIL: invalidate meta flags not cleared flags=0x%x\n", meta.flags);
+  if (!llc.io.table_out.valid.enable || !llc.io.table_out.valid.write ||
+      llc.io.table_out.valid.way != 1 || llc.io.table_out.valid.payload.size() == 0 ||
+      (llc.io.table_out.valid.payload.data()[0] & 0x2u) != 0) {
+    printf("FAIL: invalidate valid clear missing enable=%d write=%d way=%u bits=0x%x\n",
+           static_cast<int>(llc.io.table_out.valid.enable),
+           static_cast<int>(llc.io.table_out.valid.write), llc.io.table_out.valid.way,
+           llc.io.table_out.valid.payload.size() == 0
+               ? 0
+               : llc.io.table_out.valid.payload.data()[0]);
     return false;
   }
   if (llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].valid) {
@@ -1755,16 +1778,22 @@ bool test_line_invalidate_same_set_other_way_survives() {
   derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   llc.comb();
-  if (!llc.io.table_out.meta.enable || !llc.io.table_out.meta.write ||
-      llc.io.table_out.meta.way != 0) {
-    printf("FAIL: targeted invalidate wrote wrong way=%u\n",
-           llc.io.table_out.meta.way);
+  if (llc.io.table_out.meta.enable || llc.io.table_out.data.enable ||
+      llc.io.table_out.repl.enable) {
+    printf("FAIL: targeted invalidate should only update valid table meta=%d data=%d repl=%d\n",
+           static_cast<int>(llc.io.table_out.meta.enable),
+           static_cast<int>(llc.io.table_out.data.enable),
+           static_cast<int>(llc.io.table_out.repl.enable));
     return false;
   }
-  const auto invalidated = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
-  if (invalidated.flags != 0) {
-    printf("FAIL: targeted invalidate did not clear victim flags=0x%x\n",
-           invalidated.flags);
+  if (!llc.io.table_out.valid.enable || !llc.io.table_out.valid.write ||
+      llc.io.table_out.valid.way != 0 || llc.io.table_out.valid.payload.size() == 0 ||
+      (llc.io.table_out.valid.payload.data()[0] & 0x1u) != 0) {
+    printf("FAIL: targeted invalidate did not clear victim valid way=%u bits=0x%x\n",
+           llc.io.table_out.valid.way,
+           llc.io.table_out.valid.payload.size() == 0
+               ? 0
+               : llc.io.table_out.valid.payload.data()[0]);
     return false;
   }
   llc.seq();
@@ -1799,16 +1828,12 @@ bool test_line_invalidate_same_set_other_way_survives() {
   write_line_words(llc.io.lookup_in.data, config, 1, 0x5500);
   llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
                                AXI_LLC_META_ENTRY_BYTES);
-  AXI_LLCMetaEntry_t victim_meta_cleared{};
-  victim_meta_cleared.tag = victim_tag;
-  victim_meta_cleared.flags = 0;
-  AXI_LLC_Bytes_t enc_victim_cleared;
-  AXI_LLC::encode_meta(victim_meta_cleared, enc_victim_cleared);
-  std::memcpy(llc.io.lookup_in.meta.data(), enc_victim_cleared.data(),
+  std::memcpy(llc.io.lookup_in.meta.data(), enc_victim.data(),
               AXI_LLC_META_ENTRY_BYTES);
   std::memcpy(llc.io.lookup_in.meta.data() + AXI_LLC_META_ENTRY_BYTES,
               enc_survivor.data(), AXI_LLC_META_ENTRY_BYTES);
-  derive_lookup_valid_from_meta(llc, config);
+  llc.io.lookup_in.valid_valid = true;
+  llc.io.lookup_in.valid = make_valid_bits(config, 0x2u);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 

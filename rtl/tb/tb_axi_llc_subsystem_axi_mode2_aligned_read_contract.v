@@ -313,6 +313,8 @@ module tb_axi_llc_subsystem_axi_mode2_aligned_read_contract;
                 fail_now("mode2 read AR timeout");
             end
             if (axi_araddr !== exp_addr) begin
+                $display("DBG mode2 read AR actual=%h expected=%h len=%h expected_len=%h",
+                         axi_araddr, exp_addr, axi_arlen, exp_len);
                 fail_now("mode2 read AR address mismatch");
             end
             if (axi_arlen !== exp_len) begin

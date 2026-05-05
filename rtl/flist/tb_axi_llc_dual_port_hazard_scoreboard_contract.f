@@ -1,0 +1,5 @@
+src/axi_llc_dual_port_slot_hazard.v
+src/axi_llc_dual_port_hazard_match.v
+src/axi_llc_dual_port_hazard_scoreboard.v
+-top tb_axi_llc_dual_port_hazard_scoreboard_contract
+tb/tb_axi_llc_dual_port_hazard_scoreboard_contract.v

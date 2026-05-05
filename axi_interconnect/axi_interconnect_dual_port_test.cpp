@@ -147,16 +147,45 @@ axi_interconnect::WideWriteStrb_t byte_strobe(uint32_t mask) {
   strobe.clear();
   for (uint32_t byte = 0; byte < axi_interconnect::MAX_WRITE_TRANSACTION_BYTES;
        ++byte) {
-    if ((mask & (1u << byte)) != 0) {
+    if (byte < 32 && ((mask & (uint32_t{1} << byte)) != 0)) {
       strobe.set(byte, true);
     }
   }
   return strobe;
 }
 
-bool enqueue_non_llc_write(axi_interconnect::AXI_Interconnect &dut,
-                           uint8_t master, uint32_t addr, uint8_t total_size,
-                           uint32_t data, uint32_t strobe, uint8_t id) {
+sim_ddr::axi_data_t ddr_read_beat(uint32_t base) {
+  sim_ddr::axi_data_t data{};
+  for (uint8_t word = 0; word < sim_ddr::AXI_DATA_WORDS; ++word) {
+    axi_compat::set_u32(data, word, base + word);
+  }
+  return data;
+}
+
+axi_interconnect::WideWriteData_t line_write_data(uint32_t base) {
+  axi_interconnect::WideWriteData_t data{};
+  data.clear();
+  for (uint32_t word = 0; word < axi_interconnect::MAX_WRITE_TRANSACTION_WORDS;
+       ++word) {
+    data[word] = base + word;
+  }
+  return data;
+}
+
+axi_interconnect::WideWriteStrb_t full_line_strobe() {
+  axi_interconnect::WideWriteStrb_t strobe{};
+  strobe.clear();
+  for (uint32_t byte = 0; byte < axi_interconnect::MAX_WRITE_TRANSACTION_BYTES;
+       ++byte) {
+    strobe.set(byte, true);
+  }
+  return strobe;
+}
+
+bool enqueue_non_llc_write_payload(
+    axi_interconnect::AXI_Interconnect &dut, uint8_t master, uint32_t addr,
+    uint8_t total_size, const axi_interconnect::WideWriteData_t &data,
+    const axi_interconnect::WideWriteStrb_t &strobe, uint8_t id) {
   for (int retry = 0; retry < 8; ++retry) {
     cycle_outputs(dut);
     const bool ready_snapshot = dut.write_ports[master].req.ready;
@@ -165,8 +194,8 @@ bool enqueue_non_llc_write(axi_interconnect::AXI_Interconnect &dut,
     req.addr = addr;
     req.total_size = total_size;
     req.id = id;
-    req.wdata = single_word_data(data);
-    req.wstrb = byte_strobe(strobe);
+    req.wdata = data;
+    req.wstrb = strobe;
     req.bypass = false;
     cycle_inputs(dut);
     if (ready_snapshot) {
@@ -174,6 +203,14 @@ bool enqueue_non_llc_write(axi_interconnect::AXI_Interconnect &dut,
     }
   }
   return false;
+}
+
+bool enqueue_non_llc_write(axi_interconnect::AXI_Interconnect &dut,
+                           uint8_t master, uint32_t addr, uint8_t total_size,
+                           uint32_t data, uint32_t strobe, uint8_t id) {
+  return enqueue_non_llc_write_payload(dut, master, addr, total_size,
+                                       single_word_data(data),
+                                       byte_strobe(strobe), id);
 }
 
 bool capture_llc_write(axi_interconnect::AXI_Interconnect &dut,
@@ -265,6 +302,349 @@ bool test_ddr_read_routes_to_port0() {
                 static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr),
                 static_cast<unsigned>(dut.axi_ddr_io.ar.arlen),
                 static_cast<unsigned>(dut.axi_ddr_io.ar.arsize));
+    return false;
+  }
+  return true;
+}
+
+bool run_mode0_ddr_read_response_case(uint32_t addr, uint8_t total_size,
+                                      uint8_t req_id,
+                                      uint32_t expected_word0,
+                                      uint32_t expected_word1) {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  auto &req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  req.valid = true;
+  req.addr = addr;
+  req.total_size = total_size;
+  req.id = req_id;
+  dut.comb_inputs();
+
+  const uint32_t aligned_addr =
+      (addr / sim_ddr::AXI_DATA_BYTES) * sim_ddr::AXI_DATA_BYTES;
+  if (!dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid ||
+      dut.axi_ddr_io.ar.araddr != aligned_addr ||
+      dut.axi_ddr_io.ar.arlen != 0 ||
+      dut.axi_ddr_io.ar.arsize != sim_ddr::AXI_SIZE_CODE ||
+      !req.ready) {
+    std::printf("FAIL: mode0 DDR read issue mismatch addr=0x%08x "
+                "arvalid=%d mmio_arvalid=%d araddr=0x%08x len=%u "
+                "size=%u ready=%d\n",
+                addr, static_cast<int>(dut.axi_ddr_io.ar.arvalid),
+                static_cast<int>(dut.axi_mmio_io.ar.arvalid),
+                static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr),
+                static_cast<unsigned>(dut.axi_ddr_io.ar.arlen),
+                static_cast<unsigned>(dut.axi_ddr_io.ar.arsize),
+                static_cast<int>(req.ready));
+    return false;
+  }
+
+  const uint8_t axi_id = static_cast<uint8_t>(dut.axi_ddr_io.ar.arid);
+  dut.seq();
+  ++sim_time;
+  clear_inputs(dut);
+  dut.comb_inputs();
+  if (dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid) {
+    std::printf("FAIL: mode0 DDR read AR remained asserted after retire "
+                "ddr_arvalid=%d mmio_arvalid=%d\n",
+                static_cast<int>(dut.axi_ddr_io.ar.arvalid),
+                static_cast<int>(dut.axi_mmio_io.ar.arvalid));
+    return false;
+  }
+  if (dut.r_pending.size() != 1 ||
+      dut.r_pending[0].addr != aligned_addr ||
+      dut.r_pending[0].upstream_addr != addr ||
+      dut.r_pending[0].upstream_total_size != total_size ||
+      !dut.r_pending[0].resp_extract_from_aligned_beat) {
+    std::printf("FAIL: mode0 DDR read pending mismatch pending=%zu\n",
+                dut.r_pending.size());
+    return false;
+  }
+
+  dut.axi_ddr_io.r.rvalid = true;
+  dut.axi_ddr_io.r.rid = axi_id;
+  dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+  dut.axi_ddr_io.r.rlast = true;
+  dut.axi_ddr_io.r.rdata = ddr_read_beat(0x1000u);
+  dut.comb_outputs();
+  if (!dut.axi_ddr_io.r.rready) {
+    std::printf("FAIL: mode0 DDR read R was backpressured\n");
+    return false;
+  }
+  dut.seq();
+  ++sim_time;
+
+  dut.axi_ddr_io.r.rvalid = false;
+  dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp.ready = true;
+  dut.comb_outputs();
+  const auto &resp = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp;
+  if (!resp.valid || resp.id != req_id || resp.data[0] != expected_word0 ||
+      resp.data[1] != expected_word1) {
+    std::printf("FAIL: mode0 DDR read response mismatch valid=%d id=%u "
+                "word0=0x%08x word1=0x%08x expected0=0x%08x "
+                "expected1=0x%08x\n",
+                static_cast<int>(resp.valid), static_cast<unsigned>(resp.id),
+                resp.data[0], resp.data[1], expected_word0, expected_word1);
+    return false;
+  }
+
+  dut.seq();
+  ++sim_time;
+  if (!dut.r_pending.empty()) {
+    const auto &pending = dut.r_pending.front();
+    std::printf("FAIL: mode0 DDR read response did not retire resp_valid=%d "
+                "resp_ready=%d resp_id=%u pending_master=%u "
+                "pending_orig_id=%u pending_beats=%u/%u\n",
+                static_cast<int>(resp.valid), static_cast<int>(resp.ready),
+                static_cast<unsigned>(resp.id),
+                static_cast<unsigned>(pending.master_id),
+                static_cast<unsigned>(pending.orig_id),
+                static_cast<unsigned>(pending.beats_done),
+                static_cast<unsigned>(pending.total_beats));
+    return false;
+  }
+  return true;
+}
+
+bool test_mode0_ddr_read_response_slices_aligned_beat() {
+  constexpr uint32_t kBaseWord = 0x1000u;
+  return run_mode0_ddr_read_response_case(0x40000004u, 3, 0x1,
+                                          kBaseWord + 1u, kBaseWord + 2u) &&
+         run_mode0_ddr_read_response_case(0x40000000u, 7, 0x2,
+                                          kBaseWord + 0u, kBaseWord + 1u);
+}
+
+bool test_mode0_ddr_cacheline_read_two_beat_response() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  constexpr uint32_t kAddr = 0x40000000u;
+  constexpr uint8_t kReqId = 0x4u;
+  constexpr uint8_t kMaster = axi_interconnect::MASTER_DCACHE_R;
+
+  auto &req = dut.read_ports[kMaster].req;
+  req.valid = true;
+  req.addr = kAddr;
+  req.total_size = 63;
+  req.id = kReqId;
+  dut.comb_inputs();
+  if (!dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid ||
+      dut.axi_ddr_io.ar.araddr != kAddr ||
+      dut.axi_ddr_io.ar.arlen != 1 ||
+      dut.axi_ddr_io.ar.arsize != sim_ddr::AXI_SIZE_CODE ||
+      !req.ready) {
+    std::printf("FAIL: mode0 DDR cacheline read AR mismatch arvalid=%d "
+                "mmio_arvalid=%d araddr=0x%08x len=%u size=%u ready=%d\n",
+                static_cast<int>(dut.axi_ddr_io.ar.arvalid),
+                static_cast<int>(dut.axi_mmio_io.ar.arvalid),
+                static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr),
+                static_cast<unsigned>(dut.axi_ddr_io.ar.arlen),
+                static_cast<unsigned>(dut.axi_ddr_io.ar.arsize),
+                static_cast<int>(req.ready));
+    return false;
+  }
+
+  const uint8_t axi_id = static_cast<uint8_t>(dut.axi_ddr_io.ar.arid);
+  dut.seq();
+  ++sim_time;
+  clear_inputs(dut);
+  dut.comb_inputs();
+  if (dut.r_pending.size() != 1 ||
+      dut.r_pending[0].total_beats != 2 ||
+      dut.r_pending[0].resp_extract_from_aligned_beat) {
+    std::printf("FAIL: mode0 DDR cacheline read pending mismatch pending=%zu "
+                "beats=%u extract=%d\n",
+                dut.r_pending.size(),
+                dut.r_pending.empty()
+                    ? 0u
+                    : static_cast<unsigned>(dut.r_pending[0].total_beats),
+                dut.r_pending.empty()
+                    ? 0
+                    : static_cast<int>(
+                          dut.r_pending[0].resp_extract_from_aligned_beat));
+    return false;
+  }
+
+  for (uint32_t beat = 0; beat < 2; ++beat) {
+    clear_inputs(dut);
+    dut.comb_inputs();
+    dut.axi_ddr_io.r.rvalid = true;
+    dut.axi_ddr_io.r.rid = axi_id;
+    dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+    dut.axi_ddr_io.r.rlast = beat == 1;
+    dut.axi_ddr_io.r.rdata = ddr_read_beat(beat == 0 ? 0x2000u : 0x3000u);
+    dut.comb_outputs();
+    if (!dut.axi_ddr_io.r.rready) {
+      std::printf("FAIL: mode0 DDR cacheline R beat %u was backpressured\n",
+                  beat);
+      return false;
+    }
+    dut.seq();
+    ++sim_time;
+    dut.axi_ddr_io.r.rvalid = false;
+    dut.read_ports[kMaster].resp.ready = true;
+    dut.comb_outputs();
+    if (beat == 0 && dut.read_ports[kMaster].resp.valid) {
+      std::printf("FAIL: mode0 DDR cacheline read responded before RLAST\n");
+      return false;
+    }
+  }
+
+  dut.read_ports[kMaster].resp.ready = true;
+  dut.comb_outputs();
+  const auto &resp = dut.read_ports[kMaster].resp;
+  if (!resp.valid || resp.id != kReqId) {
+    std::printf("FAIL: mode0 DDR cacheline read response missing valid=%d "
+                "id=%u\n",
+                static_cast<int>(resp.valid), static_cast<unsigned>(resp.id));
+    return false;
+  }
+  for (uint32_t word = 0; word < 16; ++word) {
+    const uint32_t expected =
+        word < 8 ? (0x2000u + word) : (0x3000u + (word - 8u));
+    if (resp.data[word] != expected) {
+      std::printf("FAIL: mode0 DDR cacheline read data mismatch word=%u "
+                  "got=0x%08x expected=0x%08x\n",
+                  word, resp.data[word], expected);
+      return false;
+    }
+  }
+
+  dut.seq();
+  ++sim_time;
+  if (!dut.r_pending.empty()) {
+    std::printf("FAIL: mode0 DDR cacheline read response did not retire\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_same_master_direct_read_response_completion_order_stable() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  constexpr uint8_t kMaster = axi_interconnect::MASTER_DCACHE_R;
+  constexpr uint32_t kAddr0 = 0x40002000u;
+  constexpr uint32_t kAddr1 = 0x40002020u;
+  constexpr uint8_t kReqId0 = 0x6u;
+  constexpr uint8_t kReqId1 = 0x7u;
+
+  auto issue_read = [&](uint32_t addr, uint8_t req_id, uint8_t &axi_id) {
+    clear_inputs(dut);
+    auto &req = dut.read_ports[kMaster].req;
+    req.valid = true;
+    req.addr = addr;
+    req.total_size = 3;
+    req.id = req_id;
+    dut.comb_inputs();
+    if (!dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid ||
+        !req.ready) {
+      std::printf("FAIL: same-master read issue mismatch addr=0x%08x "
+                  "ddr_arvalid=%d mmio_arvalid=%d ready=%d\n",
+                  addr, static_cast<int>(dut.axi_ddr_io.ar.arvalid),
+                  static_cast<int>(dut.axi_mmio_io.ar.arvalid),
+                  static_cast<int>(req.ready));
+      return false;
+    }
+    axi_id = static_cast<uint8_t>(dut.axi_ddr_io.ar.arid);
+    dut.seq();
+    ++sim_time;
+    return true;
+  };
+
+  uint8_t axi_id0 = 0;
+  uint8_t axi_id1 = 0;
+  if (!issue_read(kAddr0, kReqId0, axi_id0) ||
+      !issue_read(kAddr1, kReqId1, axi_id1)) {
+    return false;
+  }
+  if (axi_id0 == axi_id1 || dut.r_pending.size() != 2) {
+    std::printf("FAIL: same-master read setup mismatch axi_id0=%u axi_id1=%u "
+                "pending=%zu\n",
+                static_cast<unsigned>(axi_id0), static_cast<unsigned>(axi_id1),
+                dut.r_pending.size());
+    return false;
+  }
+
+  auto complete_read = [&](uint8_t axi_id, uint32_t base) {
+    clear_inputs(dut);
+    dut.comb_inputs();
+    dut.axi_ddr_io.r.rvalid = true;
+    dut.axi_ddr_io.r.rid = axi_id;
+    dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+    dut.axi_ddr_io.r.rlast = true;
+    dut.axi_ddr_io.r.rdata = ddr_read_beat(base);
+    dut.comb_outputs();
+    if (!dut.axi_ddr_io.r.rready) {
+      std::printf("FAIL: same-master read R was backpressured axi_id=%u\n",
+                  static_cast<unsigned>(axi_id));
+      return false;
+    }
+    dut.seq();
+    ++sim_time;
+    dut.axi_ddr_io.r.rvalid = false;
+    return true;
+  };
+
+  if (!complete_read(axi_id1, 0x2200u)) {
+    return false;
+  }
+
+  clear_inputs(dut);
+  dut.comb_outputs();
+  auto &resp = dut.read_ports[kMaster].resp;
+  if (!resp.valid || resp.id != kReqId1 || resp.data[0] != 0x2200u) {
+    std::printf("FAIL: later-completed read was not first response valid=%d "
+                "id=%u word0=0x%08x\n",
+                static_cast<int>(resp.valid), static_cast<unsigned>(resp.id),
+                resp.data[0]);
+    return false;
+  }
+
+  if (!complete_read(axi_id0, 0x1100u)) {
+    return false;
+  }
+
+  clear_inputs(dut);
+  dut.comb_outputs();
+  if (!resp.valid || resp.id != kReqId1 || resp.data[0] != 0x2200u) {
+    std::printf("FAIL: held response changed under upstream backpressure "
+                "valid=%d id=%u word0=0x%08x\n",
+                static_cast<int>(resp.valid), static_cast<unsigned>(resp.id),
+                resp.data[0]);
+    return false;
+  }
+
+  dut.read_ports[kMaster].resp.ready = true;
+  dut.comb_outputs();
+  if (!resp.valid || resp.id != kReqId1) {
+    std::printf("FAIL: first completed response missing before retire\n");
+    return false;
+  }
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  dut.comb_outputs();
+  if (!resp.valid || resp.id != kReqId0 || resp.data[0] != 0x1100u) {
+    std::printf("FAIL: older read did not become next response valid=%d "
+                "id=%u word0=0x%08x\n",
+                static_cast<int>(resp.valid), static_cast<unsigned>(resp.id),
+                resp.data[0]);
+    return false;
+  }
+
+  dut.read_ports[kMaster].resp.ready = true;
+  dut.comb_outputs();
+  dut.seq();
+  ++sim_time;
+  if (!dut.r_pending.empty()) {
+    std::printf("FAIL: same-master reads did not retire pending=%zu\n",
+                dut.r_pending.size());
     return false;
   }
   return true;
@@ -814,6 +1194,117 @@ bool test_same_line_write_waits_for_read_return() {
   return true;
 }
 
+bool test_same_line_write_releases_after_r_buffered() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  constexpr uint32_t kLineAddr = 0x40000600u;
+  constexpr uint8_t kReadAxiId = 9;
+  constexpr uint8_t kReadOrigId = 9;
+  constexpr uint8_t kWriteId = 10;
+  const uint8_t write_master = axi_interconnect::MASTER_DCACHE_W;
+  const uint8_t read_master = axi_interconnect::MASTER_DCACHE_R;
+
+  axi_interconnect::ReadPendingTxn pending{};
+  pending.axi_id = kReadAxiId;
+  pending.master_id = read_master;
+  pending.orig_id = kReadOrigId;
+  pending.total_beats = 2;
+  pending.beats_done = 0;
+  pending.port = axi_interconnect::DownstreamPort::DDR;
+  pending.addr = kLineAddr;
+  pending.upstream_addr = kLineAddr;
+  pending.upstream_total_size = 63;
+  pending.to_llc = false;
+  pending.data.clear();
+  dut.r_pending.push_back(pending);
+
+  auto &write_req = dut.write_ports[write_master].req;
+  write_req.valid = true;
+  write_req.addr = kLineAddr + 4u;
+  write_req.total_size = 3;
+  write_req.id = kWriteId;
+  write_req.wdata = single_word_data(0x55667788u);
+  write_req.wstrb = byte_strobe(0xFu);
+
+  dut.w_req_ready_r[write_master] = true;
+  dut.comb_inputs();
+  if (dut.axi_ddr_io.aw.awvalid || dut.axi_ddr_io.w.wvalid) {
+    std::printf("FAIL: same-line write issued before any R beat\n");
+    return false;
+  }
+
+  dut.read_ports[read_master].resp.ready = false;
+  dut.axi_ddr_io.r.rvalid = true;
+  dut.axi_ddr_io.r.rid = kReadAxiId;
+  dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+  dut.axi_ddr_io.r.rlast = false;
+  dut.axi_ddr_io.r.rdata = sim_ddr::axi_data_t{};
+  dut.comb_outputs();
+  if (!dut.axi_ddr_io.r.rready) {
+    std::printf("FAIL: DDR R was backpressured while upstream resp blocked\n");
+    return false;
+  }
+  dut.seq();
+  if (dut.r_pending.empty() || dut.r_pending[0].beats_done != 1) {
+    std::printf("FAIL: first R beat was not buffered\n");
+    return false;
+  }
+  if (!dut.has_external_pending_read_hazard(write_req.addr)) {
+    std::printf("FAIL: same-line read hazard released before R last\n");
+    return false;
+  }
+
+  dut.axi_ddr_io.r.rvalid = false;
+  dut.w_req_ready_r[write_master] = true;
+  dut.comb_inputs();
+  if (dut.axi_ddr_io.aw.awvalid || dut.axi_ddr_io.w.wvalid) {
+    std::printf("FAIL: same-line write issued after only first R beat\n");
+    return false;
+  }
+
+  dut.axi_ddr_io.r.rvalid = true;
+  dut.axi_ddr_io.r.rid = kReadAxiId;
+  dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+  dut.axi_ddr_io.r.rlast = true;
+  dut.axi_ddr_io.r.rdata = sim_ddr::axi_data_t{};
+  dut.comb_outputs();
+  if (!dut.axi_ddr_io.r.rready) {
+    std::printf("FAIL: DDR R last was backpressured by blocked upstream resp\n");
+    return false;
+  }
+  dut.seq();
+  if (dut.r_pending.empty() || dut.r_pending[0].beats_done != 2) {
+    std::printf("FAIL: final R beat was not buffered\n");
+    return false;
+  }
+  if (dut.has_external_pending_read_hazard(write_req.addr)) {
+    std::printf("FAIL: same-line read hazard stayed after R last was buffered\n");
+    return false;
+  }
+
+  dut.axi_ddr_io.r.rvalid = false;
+  dut.comb_outputs();
+  if (!dut.read_ports[read_master].resp.valid) {
+    std::printf("FAIL: buffered read response was not presented upstream\n");
+    return false;
+  }
+  dut.w_req_ready_r[write_master] = true;
+  dut.comb_inputs();
+  if (!dut.write_req_fire_c[write_master]) {
+    std::printf("FAIL: same-line write was not accepted after R last buffered\n");
+    return false;
+  }
+  dut.seq();
+  dut.comb_inputs();
+  if (!dut.axi_ddr_io.aw.awvalid) {
+    std::printf("FAIL: same-line AW did not issue after R last buffered\n");
+    return false;
+  }
+  return true;
+}
+
 bool test_same_line_read_waits_for_write_b() {
   axi_interconnect::AXI_Interconnect dut;
   init_dut(dut);
@@ -840,6 +1331,72 @@ bool test_same_line_read_waits_for_write_b() {
 
   if (dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid) {
     std::printf("FAIL: same-line AR issued before write B returned\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_same_line_read_releases_after_b_buffered() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  constexpr uint32_t kLineAddr = 0x40000700u;
+  constexpr uint8_t kWriteAxiId = 11;
+  constexpr uint8_t kReadId = 12;
+  const uint8_t write_master = axi_interconnect::MASTER_DCACHE_W;
+  const uint8_t read_master = axi_interconnect::MASTER_DCACHE_R;
+
+  axi_interconnect::WritePendingTxn pending{};
+  pending.axi_id = kWriteAxiId;
+  pending.master_id = write_master;
+  pending.orig_id = kWriteAxiId;
+  pending.port = axi_interconnect::DownstreamPort::DDR;
+  pending.addr = kLineAddr;
+  pending.total_beats = 1;
+  pending.beats_sent = 1;
+  pending.aw_done = true;
+  pending.w_done = true;
+  dut.w_pending.push_back(pending);
+
+  auto &read_req = dut.read_ports[read_master].req;
+  read_req.valid = true;
+  read_req.addr = kLineAddr + 8u;
+  read_req.total_size = 3;
+  read_req.id = kReadId;
+  dut.comb_inputs();
+  if (dut.axi_ddr_io.ar.arvalid || dut.axi_mmio_io.ar.arvalid) {
+    std::printf("FAIL: same-line read issued before B returned\n");
+    return false;
+  }
+  if (!dut.has_external_pending_write_hazard(read_req.addr)) {
+    std::printf("FAIL: same-line write hazard missing before B\n");
+    return false;
+  }
+
+  dut.write_ports[write_master].resp.ready = false;
+  dut.axi_ddr_io.b.bvalid = true;
+  dut.axi_ddr_io.b.bid = kWriteAxiId;
+  dut.axi_ddr_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  if (!dut.axi_ddr_io.b.bready) {
+    std::printf("FAIL: DDR B was backpressured while upstream resp blocked\n");
+    return false;
+  }
+  dut.seq();
+  if (!dut.w_pending.empty() || !dut.w_resp_valid[write_master]) {
+    std::printf("FAIL: B was not buffered as upstream write response\n");
+    return false;
+  }
+  if (dut.has_external_pending_write_hazard(read_req.addr)) {
+    std::printf("FAIL: same-line write hazard stayed after B was buffered\n");
+    return false;
+  }
+
+  dut.axi_ddr_io.b.bvalid = false;
+  dut.comb_inputs();
+  if (!dut.axi_ddr_io.ar.arvalid) {
+    std::printf("FAIL: same-line AR did not issue after B buffered\n");
     return false;
   }
   return true;
@@ -1129,6 +1686,238 @@ bool test_mode0_ddr_partial_write_aligns_to_256b() {
   return true;
 }
 
+bool test_mode0_ddr_partial_write_b_response_retires() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  constexpr uint32_t kAddr = 0x40000004u;
+  constexpr uint32_t kAlignedAddr = 0x40000000u;
+  constexpr uint32_t kData = 0xaabbccddu;
+  constexpr uint8_t kReqId = 0x3u;
+  constexpr uint8_t kMaster = axi_interconnect::MASTER_DCACHE_W;
+
+  if (!enqueue_non_llc_write(dut, kMaster, kAddr, 3, kData, 0xfu, kReqId)) {
+    std::printf("FAIL: mode0 DDR partial write was not accepted\n");
+    return false;
+  }
+  if (dut.w_pending.size() != 1) {
+    std::printf("FAIL: mode0 DDR write pending count mismatch pending=%zu\n",
+                dut.w_pending.size());
+    return false;
+  }
+  const uint8_t axi_id = dut.w_pending.front().axi_id;
+
+  clear_inputs(dut);
+  dut.comb_inputs();
+  if (!dut.axi_ddr_io.aw.awvalid || dut.axi_mmio_io.aw.awvalid ||
+      dut.axi_ddr_io.aw.awaddr != kAlignedAddr ||
+      dut.axi_ddr_io.aw.awlen != 0 ||
+      dut.axi_ddr_io.aw.awsize != sim_ddr::AXI_SIZE_CODE ||
+      dut.axi_ddr_io.aw.awid != axi_id) {
+    std::printf("FAIL: mode0 DDR write AW mismatch awvalid=%d "
+                "mmio_awvalid=%d awaddr=0x%08x len=%u size=%u id=%u "
+                "expected_id=%u\n",
+                static_cast<int>(dut.axi_ddr_io.aw.awvalid),
+                static_cast<int>(dut.axi_mmio_io.aw.awvalid),
+                static_cast<uint32_t>(dut.axi_ddr_io.aw.awaddr),
+                static_cast<unsigned>(dut.axi_ddr_io.aw.awlen),
+                static_cast<unsigned>(dut.axi_ddr_io.aw.awsize),
+                static_cast<unsigned>(dut.axi_ddr_io.aw.awid),
+                static_cast<unsigned>(axi_id));
+    return false;
+  }
+  if (dut.axi_ddr_io.w.wvalid || dut.axi_mmio_io.w.wvalid) {
+    std::printf("FAIL: mode0 DDR write W issued before AW retired\n");
+    return false;
+  }
+
+  dut.seq();
+  ++sim_time;
+  clear_inputs(dut);
+  dut.comb_inputs();
+  if (!dut.axi_ddr_io.w.wvalid || dut.axi_mmio_io.w.wvalid ||
+      !dut.axi_ddr_io.w.wlast ||
+      axi_compat::get_u32(dut.axi_ddr_io.w.wdata, 1) != kData) {
+    std::printf("FAIL: mode0 DDR write W mismatch wvalid=%d mmio_wvalid=%d "
+                "wlast=%d data1=0x%08x\n",
+                static_cast<int>(dut.axi_ddr_io.w.wvalid),
+                static_cast<int>(dut.axi_mmio_io.w.wvalid),
+                static_cast<int>(dut.axi_ddr_io.w.wlast),
+                axi_compat::get_u32(dut.axi_ddr_io.w.wdata, 1));
+    return false;
+  }
+  for (uint32_t byte = 0; byte < sim_ddr::AXI_DATA_BYTES; ++byte) {
+    const bool expected = byte >= 4 && byte < 8;
+    const bool got = axi_compat::test_bit(dut.axi_ddr_io.w.wstrb, byte);
+    if (got != expected) {
+      std::printf("FAIL: mode0 DDR write WSTRB mismatch byte=%u got=%d "
+                  "expected=%d\n",
+                  byte, static_cast<int>(got), static_cast<int>(expected));
+      return false;
+    }
+  }
+
+  dut.seq();
+  ++sim_time;
+  clear_inputs(dut);
+  dut.comb_inputs();
+  dut.axi_ddr_io.b.bvalid = true;
+  dut.axi_ddr_io.b.bid = axi_id;
+  dut.axi_ddr_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  if (!dut.axi_ddr_io.b.bready) {
+    std::printf("FAIL: mode0 DDR write B was backpressured\n");
+    return false;
+  }
+
+  dut.seq();
+  ++sim_time;
+  if (!dut.w_pending.empty()) {
+    std::printf("FAIL: mode0 DDR write pending did not retire pending=%zu\n",
+                dut.w_pending.size());
+    return false;
+  }
+
+  dut.axi_ddr_io.b.bvalid = false;
+  dut.write_ports[kMaster].resp.ready = true;
+  dut.comb_outputs();
+  const auto &resp = dut.write_ports[kMaster].resp;
+  if (!resp.valid || resp.id != kReqId || resp.resp != sim_ddr::AXI_RESP_OKAY) {
+    std::printf("FAIL: mode0 DDR write response mismatch valid=%d id=%u "
+                "resp=%u\n",
+                static_cast<int>(resp.valid), static_cast<unsigned>(resp.id),
+                static_cast<unsigned>(resp.resp));
+    return false;
+  }
+
+  dut.seq();
+  ++sim_time;
+  if (dut.w_resp_valid[kMaster]) {
+    std::printf("FAIL: mode0 DDR write response did not retire upstream\n");
+    return false;
+  }
+  return true;
+}
+
+bool test_mode0_ddr_cacheline_write_two_beat_b_response_retires() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  constexpr uint32_t kAddr = 0x40000000u;
+  constexpr uint8_t kReqId = 0x5u;
+  constexpr uint8_t kMaster = axi_interconnect::MASTER_DCACHE_W;
+  const auto line_data = line_write_data(0x5000u);
+  const auto line_strobe = full_line_strobe();
+
+  if (!enqueue_non_llc_write_payload(dut, kMaster, kAddr, 63, line_data,
+                                     line_strobe, kReqId)) {
+    std::printf("FAIL: mode0 DDR cacheline write was not accepted\n");
+    return false;
+  }
+  if (dut.w_pending.size() != 1 || dut.w_pending.front().total_beats != 2) {
+    std::printf("FAIL: mode0 DDR cacheline write pending mismatch pending=%zu "
+                "beats=%u\n",
+                dut.w_pending.size(),
+                dut.w_pending.empty()
+                    ? 0u
+                    : static_cast<unsigned>(dut.w_pending.front().total_beats));
+    return false;
+  }
+  const uint8_t axi_id = dut.w_pending.front().axi_id;
+
+  clear_inputs(dut);
+  dut.comb_inputs();
+  if (!dut.axi_ddr_io.aw.awvalid || dut.axi_mmio_io.aw.awvalid ||
+      dut.axi_ddr_io.aw.awaddr != kAddr ||
+      dut.axi_ddr_io.aw.awlen != 1 ||
+      dut.axi_ddr_io.aw.awsize != sim_ddr::AXI_SIZE_CODE ||
+      dut.axi_ddr_io.aw.awid != axi_id) {
+    std::printf("FAIL: mode0 DDR cacheline write AW mismatch awvalid=%d "
+                "mmio_awvalid=%d awaddr=0x%08x len=%u size=%u id=%u\n",
+                static_cast<int>(dut.axi_ddr_io.aw.awvalid),
+                static_cast<int>(dut.axi_mmio_io.aw.awvalid),
+                static_cast<uint32_t>(dut.axi_ddr_io.aw.awaddr),
+                static_cast<unsigned>(dut.axi_ddr_io.aw.awlen),
+                static_cast<unsigned>(dut.axi_ddr_io.aw.awsize),
+                static_cast<unsigned>(dut.axi_ddr_io.aw.awid));
+    return false;
+  }
+
+  dut.seq();
+  ++sim_time;
+  for (uint32_t beat = 0; beat < 2; ++beat) {
+    clear_inputs(dut);
+    dut.comb_inputs();
+    if (!dut.axi_ddr_io.w.wvalid || dut.axi_mmio_io.w.wvalid ||
+        static_cast<bool>(dut.axi_ddr_io.w.wlast) != (beat == 1)) {
+      std::printf("FAIL: mode0 DDR cacheline write W control mismatch "
+                  "beat=%u wvalid=%d mmio_wvalid=%d wlast=%d\n",
+                  beat, static_cast<int>(dut.axi_ddr_io.w.wvalid),
+                  static_cast<int>(dut.axi_mmio_io.w.wvalid),
+                  static_cast<int>(dut.axi_ddr_io.w.wlast));
+      return false;
+    }
+    for (uint32_t word = 0; word < sim_ddr::AXI_DATA_WORDS; ++word) {
+      const uint32_t expected = 0x5000u + beat * sim_ddr::AXI_DATA_WORDS + word;
+      const uint32_t got = axi_compat::get_u32(dut.axi_ddr_io.w.wdata, word);
+      if (got != expected) {
+        std::printf("FAIL: mode0 DDR cacheline write WDATA mismatch beat=%u "
+                    "word=%u got=0x%08x expected=0x%08x\n",
+                    beat, word, got, expected);
+        return false;
+      }
+    }
+    for (uint32_t byte = 0; byte < sim_ddr::AXI_DATA_BYTES; ++byte) {
+      if (!axi_compat::test_bit(dut.axi_ddr_io.w.wstrb, byte)) {
+        std::printf("FAIL: mode0 DDR cacheline write WSTRB dropped byte=%u "
+                    "beat=%u\n",
+                    byte, beat);
+        return false;
+      }
+    }
+    dut.seq();
+    ++sim_time;
+  }
+
+  clear_inputs(dut);
+  dut.comb_inputs();
+  dut.axi_ddr_io.b.bvalid = true;
+  dut.axi_ddr_io.b.bid = axi_id;
+  dut.axi_ddr_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  if (!dut.axi_ddr_io.b.bready) {
+    std::printf("FAIL: mode0 DDR cacheline write B was backpressured\n");
+    return false;
+  }
+  dut.seq();
+  ++sim_time;
+
+  dut.axi_ddr_io.b.bvalid = false;
+  dut.write_ports[kMaster].resp.ready = true;
+  dut.comb_outputs();
+  const auto &resp = dut.write_ports[kMaster].resp;
+  if (!dut.w_pending.empty() || !resp.valid || resp.id != kReqId ||
+      resp.resp != sim_ddr::AXI_RESP_OKAY) {
+    std::printf("FAIL: mode0 DDR cacheline write response mismatch "
+                "pending=%zu valid=%d id=%u resp=%u\n",
+                dut.w_pending.size(), static_cast<int>(resp.valid),
+                static_cast<unsigned>(resp.id),
+                static_cast<unsigned>(resp.resp));
+    return false;
+  }
+
+  dut.seq();
+  ++sim_time;
+  if (dut.w_resp_valid[kMaster]) {
+    std::printf("FAIL: mode0 DDR cacheline write response did not retire "
+                "upstream\n");
+    return false;
+  }
+  return true;
+}
+
 bool test_mode0_mmio_word_write_uses_mmio_port() {
   axi_interconnect::AXI_Interconnect dut;
   init_dut(dut);
@@ -1219,6 +2008,12 @@ int main() {
   };
 
   run("DDR read routes to port0", test_ddr_read_routes_to_port0);
+  run("mode0 DDR read response slices aligned beat",
+      test_mode0_ddr_read_response_slices_aligned_beat);
+  run("mode0 DDR cacheline read 2-beat response",
+      test_mode0_ddr_cacheline_read_two_beat_response);
+  run("same master read response completion order is stable",
+      test_same_master_direct_read_response_completion_order_stable);
   run("MMIO read routes to port1", test_mmio_read_routes_to_port1);
   run("MMIO cacheline read blocks", test_mmio_large_read_blocks);
   run("MMIO cacheline write blocks", test_mmio_large_write_blocks);
@@ -1245,7 +2040,11 @@ int main() {
       test_ddr_and_mmio_aw_issue_same_cycle);
   run("DDR and MMIO W issue same-cycle", test_ddr_and_mmio_w_issue_same_cycle);
   run("same-line AW waits for R", test_same_line_write_waits_for_read_return);
+  run("same-line AW releases after R buffered",
+      test_same_line_write_releases_after_r_buffered);
   run("same-line AR waits for B", test_same_line_read_waits_for_write_b);
+  run("same-line AR releases after B buffered",
+      test_same_line_read_releases_after_b_buffered);
   run("MMIO AR not blocked by DDR write",
       test_different_port_read_not_blocked_by_ddr_write);
   run("MMIO AW not blocked by DDR read",
@@ -1264,6 +2063,10 @@ int main() {
       test_write_outstanding_does_not_block_read_budget);
   run("mode0 DDR partial write aligns to 256b",
       test_mode0_ddr_partial_write_aligns_to_256b);
+  run("mode0 DDR partial write B response retires",
+      test_mode0_ddr_partial_write_b_response_retires);
+  run("mode0 DDR cacheline write 2-beat B response retires",
+      test_mode0_ddr_cacheline_write_two_beat_b_response_retires);
   run("mode0 MMIO word write uses MMIO port",
       test_mode0_mmio_word_write_uses_mmio_port);
   run("mode2 mapped write captures direct-mapped LLC",

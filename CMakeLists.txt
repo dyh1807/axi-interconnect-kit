@@ -53,6 +53,9 @@ if(AXI_KIT_BUILD_TESTS)
       MMIO_TEST_BASE=0x200000
       MMIO_TEST_SIZE=0x1000
   )
+  set(AXI_KIT_LEGACY_SINGLE_PORT_TEST_DEFS
+      AXI_KIT_DDR_BASE=0x00000000
+  )
   function(add_axi_kit_write_resp_latency_test target_name latency_value)
     add_library(${target_name}_lib STATIC
         ${AXI_KIT_AXI4_SOURCES}
@@ -61,6 +64,7 @@ if(AXI_KIT_BUILD_TESTS)
     target_compile_features(${target_name}_lib PUBLIC cxx_std_20)
     target_compile_definitions(${target_name}_lib PUBLIC
         ${AXI_KIT_AXI4_COMMON_DEFS}
+        ${AXI_KIT_LEGACY_SINGLE_PORT_TEST_DEFS}
         AXI_KIT_SIM_DDR_WRITE_RESP_LATENCY=${latency_value}
     )
     target_compile_definitions(${target_name}_lib PRIVATE
@@ -85,6 +89,7 @@ if(AXI_KIT_BUILD_TESTS)
     target_include_directories(${target_name}_lib PUBLIC ${AXI_KIT_INCLUDE_DIRS})
     target_compile_features(${target_name}_lib PUBLIC cxx_std_20)
     target_compile_definitions(${target_name}_lib PUBLIC
+        ${AXI_KIT_LEGACY_SINGLE_PORT_TEST_DEFS}
         AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
         AXI_KIT_SIM_DDR_BEAT_BYTES=${beat_bytes}
         AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH=2
@@ -121,6 +126,7 @@ if(AXI_KIT_BUILD_TESTS)
     target_include_directories(${target_name}_lib PUBLIC ${AXI_KIT_INCLUDE_DIRS})
     target_compile_features(${target_name}_lib PUBLIC cxx_std_20)
     target_compile_definitions(${target_name}_lib PUBLIC
+        ${AXI_KIT_LEGACY_SINGLE_PORT_TEST_DEFS}
         AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
         AXI_KIT_SIM_DDR_BEAT_BYTES=${beat_bytes}
         AXI_KIT_SIM_DDR_WRITE_QUEUE_DEPTH=4
@@ -157,6 +163,7 @@ if(AXI_KIT_BUILD_TESTS)
     target_include_directories(${target_name}_lib PUBLIC ${AXI_KIT_INCLUDE_DIRS})
     target_compile_features(${target_name}_lib PUBLIC cxx_std_20)
     target_compile_definitions(${target_name}_lib PUBLIC
+        ${AXI_KIT_LEGACY_SINGLE_PORT_TEST_DEFS}
         AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
         AXI_KIT_SIM_DDR_BEAT_BYTES=${beat_bytes}
         AXI_KIT_SIM_DDR_READ_LATENCY=2
@@ -198,6 +205,7 @@ if(AXI_KIT_BUILD_TESTS)
     target_compile_features(${target_name}_lib PUBLIC cxx_std_20)
     target_compile_definitions(${target_name}_lib PUBLIC
         ${AXI_KIT_AXI4_COMMON_DEFS}
+        ${AXI_KIT_LEGACY_SINGLE_PORT_TEST_DEFS}
         CONFIG_AXI_LLC_DCACHE_READ_MISS_NOALLOC=${noalloc_value}
     )
     target_compile_definitions(${target_name}_lib PRIVATE
@@ -221,6 +229,9 @@ if(AXI_KIT_BUILD_TESTS)
   target_include_directories(axi_kit_axi4_test PUBLIC ${AXI_KIT_INCLUDE_DIRS})
   target_compile_features(axi_kit_axi4_test PUBLIC cxx_std_20)
   target_compile_definitions(axi_kit_axi4_test PUBLIC ${AXI_KIT_AXI4_COMMON_DEFS})
+  target_compile_definitions(axi_kit_axi4_test PUBLIC
+      ${AXI_KIT_LEGACY_SINGLE_PORT_TEST_DEFS}
+  )
   target_compile_definitions(axi_kit_axi4_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
 
   add_library(axi_kit_axi4_test_32b STATIC
@@ -229,6 +240,7 @@ if(AXI_KIT_BUILD_TESTS)
   target_include_directories(axi_kit_axi4_test_32b PUBLIC ${AXI_KIT_INCLUDE_DIRS})
   target_compile_features(axi_kit_axi4_test_32b PUBLIC cxx_std_20)
   target_compile_definitions(axi_kit_axi4_test_32b PUBLIC
+      ${AXI_KIT_LEGACY_SINGLE_PORT_TEST_DEFS}
       AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
       AXI_KIT_SIM_DDR_BEAT_BYTES=32
   )
@@ -240,6 +252,7 @@ if(AXI_KIT_BUILD_TESTS)
   target_include_directories(axi_kit_axi4_test_32b_wstall PUBLIC ${AXI_KIT_INCLUDE_DIRS})
   target_compile_features(axi_kit_axi4_test_32b_wstall PUBLIC cxx_std_20)
   target_compile_definitions(axi_kit_axi4_test_32b_wstall PUBLIC
+      ${AXI_KIT_LEGACY_SINGLE_PORT_TEST_DEFS}
       AXI_KIT_MAX_WRITE_TRANSACTION_BYTES=${AXI_KIT_AXI4_UPSTREAM_WRITE_BYTES}
       AXI_KIT_SIM_DDR_BEAT_BYTES=32
       AXI_KIT_SIM_DDR_WRITE_ACCEPT_GAP=1
@@ -316,6 +329,30 @@ if(AXI_KIT_BUILD_TESTS)
   target_compile_definitions(axi_interconnect_dual_port_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
   target_link_libraries(axi_interconnect_dual_port_test PRIVATE axi_kit_axi4_test_dual_port)
 
+  add_executable(axi_interconnect_issue_probe_test
+      axi_interconnect/axi_interconnect_issue_probe_test.cpp
+  )
+  target_compile_definitions(axi_interconnect_issue_probe_test PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
+  target_link_libraries(axi_interconnect_issue_probe_test PRIVATE axi_kit_axi4_test_dual_port)
+
+  add_executable(axi_interconnect_dual_port_trace_vectors
+      axi_interconnect/axi_interconnect_dual_port_trace_vectors.cpp
+  )
+  target_compile_definitions(axi_interconnect_dual_port_trace_vectors PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
+  target_link_libraries(axi_interconnect_dual_port_trace_vectors PRIVATE axi_kit_axi4_test_dual_port)
+  add_test(NAME axi_interconnect_dual_port_trace_vectors
+      COMMAND axi_interconnect_dual_port_trace_vectors
+              ${CMAKE_CURRENT_BINARY_DIR}/axi_dual_cpp_trace_vectors.vh)
+
+  add_executable(axi_llc_cache_trace_vectors
+      axi_interconnect/axi_llc_cache_trace_vectors.cpp
+  )
+  target_compile_definitions(axi_llc_cache_trace_vectors PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
+  target_link_libraries(axi_llc_cache_trace_vectors PRIVATE axi_kit_axi4_test)
+  add_test(NAME axi_llc_cache_trace_vectors
+      COMMAND axi_llc_cache_trace_vectors
+              ${CMAKE_CURRENT_BINARY_DIR}/axi_llc_cache_cpp_trace_vectors.vh)
+
   add_executable(axi_llc_test
       axi_interconnect/axi_llc_test.cpp
   )
@@ -341,6 +378,7 @@ if(AXI_KIT_BUILD_TESTS)
   add_test(NAME axi_interconnect_32b_test COMMAND axi_interconnect_32b_test)
   add_test(NAME axi_interconnect_32b_wstall_test COMMAND axi_interconnect_32b_wstall_test)
   add_test(NAME axi_interconnect_dual_port_test COMMAND axi_interconnect_dual_port_test)
+  add_test(NAME axi_interconnect_issue_probe_test COMMAND axi_interconnect_issue_probe_test)
   add_test(NAME axi_llc_test COMMAND axi_llc_test)
   add_test(NAME axi_interconnect_llc_axi4_test COMMAND axi_interconnect_llc_axi4_test)
   add_test(NAME mmio_router_axi4_test COMMAND mmio_router_axi4_test)

@@ -1,0 +1,5 @@
+#define FORMAL_READ_REQ_ADDR 0x40000000u
+#define FORMAL_READ_REQ_TOTAL_SIZE 7u
+#define FORMAL_READ_RDATA 0x8877665544332211ull
+
+#include "harness.c"

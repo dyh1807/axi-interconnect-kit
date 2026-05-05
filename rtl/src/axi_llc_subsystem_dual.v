@@ -195,6 +195,8 @@ module axi_llc_subsystem_dual #(
         .WINDOW_WAYS       (WINDOW_WAYS),
         .MMIO_BASE         (MMIO_BASE),
         .MMIO_SIZE         (MMIO_SIZE),
+        .DUAL_PORT_ROUTE_ENABLE(1),
+        .DDR_BASE          (DDR_BASE),
         .RESET_MODE        (RESET_MODE),
         .RESET_OFFSET      (RESET_OFFSET),
         .USE_SMIC12_STORES (USE_SMIC12_STORES),

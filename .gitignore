@@ -21,3 +21,9 @@ AN.DB/
 *.vcd
 *.vpd
 *.fsdb
+build_*/
+local_debug/
+rtl/local_debug/
+command.log
+default.svf
+rtl/dc/runs/

@@ -287,11 +287,45 @@
 
 - lower request 层直接按地址分流，不经过单 AXI 中间口。
 - DDR cache read 与 MMIO bypass read 可以同周期都被接受，并分别发出 DDR/MMIO `AR`。
+- DDR cache write 与 MMIO bypass write 可以同周期都被接受，并分别发出 DDR/MMIO `AW`；
+  `AW` 接收后两侧 `W` 可独立推进。
 - DDR 口保持 256-bit beat / multi-beat cacheline 形状。
 - MMIO 口为 32-bit / 1 beat。
 - 大于 4B 的 MMIO 请求会被 backpressure 挡住。
+- MMIO write `B` 可先于 DDR write `B` 返回，并仍回到 bypass source；DDR write `B`
+  随后回到 cache source。
+- 同一 cache response source 同时有 DDR/MMIO read response 待回、且上游
+  `cache_resp_ready=0` 时，外部 DDR/MMIO `R` 仍必须先被各自 bridge 用 `RREADY`
+  接收并缓存；之后 response mux 再按 MMIO 优先级把缓存结果送回上游。
+- 同一 cache response source 同时有 DDR/MMIO write `B` 待回、且上游
+  `cache_resp_ready=0` 时，外部 DDR/MMIO `B` 仍必须先被各自 bridge 用 `BREADY`
+  接收并缓存；之后 response mux 再按 MMIO 优先级把缓存结果送回上游。
+- native bridge 外部 `AR/AW` 同 line hazard gate：读未返回前同 line 写不得发
+  `AW/W`，写未完成前同 line 读不得发 `AR`，不同 line 不被该 gate 串行化。
+- same-line 写已被 read hazard 挡住、且上游 read response ready 拉低时，DDR `R`
+  两个 beat 仍必须被 `RREADY` 接收；该合同防止出现“等 response mux / 上游 ready /
+  写侧完成后才接收外部 `R`”的依赖顺序。
+- same-line 读已被 write hazard 挡住、且上游 write response ready 拉低时，DDR `B`
+  仍必须被 `BREADY` 接收并缓存；bridge 层外部 `AR` issue hazard 在 `B` fire 后释放，
+  不等待上游 write response 被消费。
 
-当前该 bench 尚未覆盖全局 32-entry shared outstanding 计数和同地址 `AR/AW` hazard gate。
+当前该 bench 尚未覆盖全局 32-entry shared outstanding 计数；该预算由上游
+compat/top 层约束。
+
+### `tb_axi_llc_dual_port_hazard_scoreboard_contract.v`
+
+覆盖生产 `axi_llc_dual_port_hazard_scoreboard.v` 的状态记录/释放合同：
+
+- DDR `AR` fire 后，同 port 同 line `AW` 必须看到 pending-read hazard。
+- 错误 `RID` 不释放 entry；匹配 `RID` 的 `R` fire 后释放 read hazard。
+- DDR/MMIO read entries 可以同时占用 shared read scoreboard，并按 port/id 分别释放。
+- DDR `AW` fire 后，同 port 同 line `AR` 必须看到 pending-write hazard。
+- 错误 `BID` 不释放 entry；匹配 `BID` 的 `B` fire 后释放 write hazard。
+- DDR/MMIO write entries 可以同时占用 shared write scoreboard，并按 port/id 分别释放。
+
+该 bench 直接实例化生产 scoreboard 及其生产组合 helper
+`axi_llc_dual_port_hazard_match.v` / `axi_llc_dual_port_slot_hazard.v`，用于补足
+`hw-cbmc` 完整 scoreboard 状态 harness 暂时无法收敛的覆盖缺口。
 
 ### `tb_axi_llc_subsystem_dual_mmio_contract.v`
 
@@ -300,9 +334,34 @@
 - mode1 普通 MMIO 读写请求即使上游 `*_bypass=0`，也直接走 lower bypass 到 MMIO AXI 口。
 - MMIO 读写不得驱动 DDR AXI 口。
 - MMIO AXI 口保持 32-bit / 1 beat 形状。
+- native dual top 的 hw-cbmc smoke 已覆盖 unsupported MMIO 大 read/write 在接受面被阻断，
+  不会逃逸到 DDR/MMIO AXI。
 - MMIO read/write response 必须回到原 upstream ID。
 - DDR cache refill `AR` 被下游 backpressure 保持时，MMIO read/write 仍能在独立
   MMIO AXI 口发射和返回。
+- DDR bypass read `AR` 已发且 `R` 未返回时，同 line DDR bypass write 不得提前发出
+  `AW/W`；`R` 返回后该写事务必须继续完成并按原 upstream ID 回包。
+- upstream read response ready 被拉低时，DDR `R` 仍必须先被 `RREADY` 接收并缓存；
+  同 line 写只等待外部 `R` 接收完成，不得形成“等写 B 后才收 R”的依赖顺序。
+
+### `tb_axi_llc_subsystem_dual_outstanding_contract.v`
+
+覆盖 native dual-port subsystem top 在 `MODE_OFF` direct-bypass 场景下的 shared
+outstanding 合同：
+
+- DDR/MMIO 两个外部口共享 read outstanding 总预算 32。
+- DDR/MMIO 两个外部口共享 write outstanding 总预算 32。
+- read/write outstanding 预算相互独立，因此 read 满 32 时仍可接受 32 个 write，
+  write 满 32 时也仍可接受 32 个 read。
+- 第 33 个 read/write 必须被 backpressure 挡住。
+- DDR read 与 MMIO read 同时在途时，MMIO `R` 可先返回并只唤醒对应 read master；
+  DDR `R` 后返回时只唤醒原 DDR read master。
+- DDR write 与 MMIO write 同时在途时，MMIO `B` 可先返回并只唤醒对应 write master；
+  DDR `B` 后返回时只唤醒原 DDR write master。
+- DDR/MMIO `R` 同时返回且上游 `read_resp_ready=0` 时，外部 `RREADY` 不被
+  top/compat response stall 反压，两个 response 都能进入内部 buffer 并回到正确 master。
+- DDR/MMIO `B` 同时返回且上游 `write_resp_ready=0` 时，外部 `BREADY` 不被
+  top/compat response stall 反压，两个 response 都能进入内部 buffer 并回到正确 master。
 
 ### `tb_axi_llc_subsystem_axi_cache_refill_contract.v`
 
@@ -312,6 +371,602 @@
 - 64B refill 对应 `AR len=1 / size=5 / burst=INCR`
 - 两个 32B `R` beat 组回 1 个 64B line
 - cache refill 期间不得误触发 `AW/W/B`
+
+## Formal Smoke
+
+`hw-cbmc` 的总状态矩阵见 `formal/README_CN.md`。本节只保留 RTL 验证计划中的简要入口说明。
+
+当前稳定入口：
+
+```sh
+formal/run_passed_hw_cbmc.sh
+```
+
+该入口只包含已通过并可完成的 formal smoke。2026-05-04 当前结果为
+59 passed / 0 failed。
+
+### `formal/axi_id_shape`
+
+覆盖生产 `axi_llc_axi_id_shape.v`：
+
+- 6-bit AXI ID zero-extend 到 8-bit 时不得截断高于 bit2 的 ID
+- 3-bit AXI ID zero-extend 到 8-bit 时只保留低 3 bit
+- 8-bit AXI ID resize 到 6-bit 时只保留低 6 bit
+- 6-bit 到 6-bit 保持不变
+
+检查对象是生产 C helper `include/axi_dual_port_route_shape.h` 与生产 RTL helper
+`rtl/src/axi_llc_axi_id_shape.v`。该 RTL helper 已被生产
+`axi_llc_axi_bridge_dual.v` 用于 DDR/MMIO lower ID 与 hazard scoreboard 的 ID
+归一化边界。
+
+运行方式：
+
+```sh
+formal/axi_id_shape/run_hw_cbmc.sh
+```
+
+### `formal/axi_beat_shape`
+
+覆盖生产 `axi_llc_axi_beat_shape.v`：
+
+- 32B beat 的 `total_size -> total_beats / axi_len / axi_size`
+- 4B beat 的 `total_size -> total_beats / axi_len / axi_size`
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于驱动 `AR/AW` 的 `len/size` 和记录
+`total_beats`。
+
+运行方式：
+
+```sh
+formal/axi_beat_shape/run_hw_cbmc.sh
+```
+
+### `formal/axi_mode2_shape`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_mode2_shape.v`：
+
+- 判断 mode2 DDR-aligned 请求是否可以落在单个 AXI beat 内
+- 单 beat 请求按 AXI data bytes 对齐，issue size 为 `AXI_DATA_BYTES-1`
+- 跨 beat/line 请求按 cacheline bytes 对齐，issue size 为 `LINE_BYTES-1`
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 和 `axi_llc_axi_issue_select.v` 用于
+mode2 aligned issue addr/size 边界。
+
+运行方式：
+
+```sh
+formal/axi_mode2_shape/run_hw_cbmc.sh
+```
+
+### `formal/axi_pending_scan`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_pending_scan.v`：
+
+- pending slot 中首个空闲 entry 的优先级选择
+- 当前已占用 AXI ID mask 下首个空闲 AXI ID 的选择
+- 外部 `RID/BID` 到 pending slot 的首个匹配选择
+- read complete queue 中首个 complete slot 的选择
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于 read/write pending slot、AXI ID
+分配、response match 和 completed read dequeue 的组合扫描边界。
+
+运行方式：
+
+```sh
+formal/axi_pending_scan/run_hw_cbmc.sh
+```
+
+### `formal/axi_issue_select`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_issue_select.v`：
+
+- queue 非空、slot valid、ready-to-issue 且未 done 时才允许 `AR/AW/W` 发射
+- cache source 不允许产生 mode2 DDR aligned 地址修正
+- bypass mode2 DDR aligned 时，issue addr/size 按 32B beat 或 64B line 对齐
+- AXI ID、W beat index 和 total beats 来自当前 queue-head slot
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于 read `AR`、write `AW` 和 write
+`W` 的 queue-head issue select 边界。
+
+运行方式：
+
+```sh
+formal/axi_issue_select/run_hw_cbmc.sh
+```
+
+### `formal/axi_fifo_ptr`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_fifo_ptr.v`：
+
+- push-only 推进 tail，count 加 1
+- pop-only 推进 head，count 减 1
+- push/pop 同拍时 head/tail 同时推进，count 保持不变
+- 无 push/pop 时 head/tail/count 保持不变
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于 read issue、write AW、write W、
+cache/bypass read response、cache/bypass write response FIFO 的 head/tail/count
+更新边界。
+
+运行方式：
+
+```sh
+formal/axi_fifo_ptr/run_hw_cbmc.sh
+```
+
+### `formal/axi_queue_ctrl`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_queue_ctrl.v`：
+
+- issue queue / response queue 的 space 和 valid 判定
+- AXI `AR/AW/W` handshake 判定
+- read issue、write AW、write W queue 的 push/pop 判定
+- `W` queue 只有在 `W` handshake 且 `WLAST` 同时成立时才 pop
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于 request accept 资源反馈、issue
+queue pop、response queue valid/space 和 queue push/pop 控制。
+
+运行方式：
+
+```sh
+formal/axi_queue_ctrl/run_hw_cbmc.sh
+```
+
+### `formal/axi_write_pack`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_write_pack.v`：
+
+- 普通 cacheline write 按 beat index 从 line data/strb 切出当前 AXI beat
+- mode2 DDR-aligned write 按 `req_addr - issued_addr` 把窄写数据移入 256-bit beat
+- `WSTRB` 与 `WDATA` 使用同一 byte 映射，不允许二次地址移位
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于 AXI `W` channel data/strobe 打包。
+
+运行方式：
+
+```sh
+formal/axi_write_pack/run_hw_cbmc.sh
+```
+
+### `formal/axi_write_pack_prod_width`
+
+覆盖生产 `axi_llc_axi_write_pack.v` 在 64B line / 32B DDR beat 参数下的组合逻辑：
+
+- 普通 cacheline write 在 `beat_idx=0/1` 时分别切出低/高 32B beat
+- mode2 DDR-aligned write 在 `offset=0..28` 时生成 256-bit `WDATA` 和 32-bit `WSTRB`
+- 该入口是 helper 级生产宽度 EC，不实例化完整 bridge 状态机
+
+运行方式：
+
+```sh
+formal/axi_write_pack_prod_width/run_hw_cbmc.sh
+```
+
+### `formal/axi_read_pack`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_read_pack.v`：
+
+- 普通 read 按 beat index 把 AXI `RDATA` 合并到 read response buffer
+- 非 mode2 aligned read 的最终返回数据等于合并后的 buffer
+- mode2 DDR-aligned read 按 `req_addr - issued_addr` 从合并 buffer 中提取返回窗口
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于 AXI `R` channel beat merge 和
+mode2 aligned read extract。
+
+运行方式：
+
+```sh
+formal/axi_read_pack/run_hw_cbmc.sh
+```
+
+### `formal/axi_read_pack_prod_width`
+
+覆盖生产 `axi_llc_axi_read_pack.v` 在 64B response / 32B DDR beat 参数下的组合逻辑：
+
+- 普通 cacheline read 在 `beat_idx=0/1` 时分别合并低/高 32B beat
+- mode2 DDR-aligned read 在 `offset=0..28` 时从 merged buffer 做 64B 字节切片
+- 该入口是 helper 级生产宽度检查，不实例化完整 bridge 状态机
+
+运行方式：
+
+```sh
+formal/axi_read_pack_prod_width/run_hw_cbmc.sh
+```
+
+### `formal/bridge_prod_width_cacheline_aw_shape`
+
+直接实例化生产 `axi_llc_axi_bridge.v`，在 64B line / 32B DDR beat / 64B response
+buffer 参数下覆盖 64B cacheline write 的 `AWADDR/AWLEN/AWSIZE/AWBURST`。
+
+运行方式：
+
+```sh
+formal/bridge_prod_width_cacheline_aw_shape/run_hw_cbmc.sh
+```
+
+### `formal/bridge_prod_width_cacheline_ar_shape`
+
+直接实例化生产 `axi_llc_axi_bridge.v`，在 64B line / 32B DDR beat / 64B response
+buffer 参数下覆盖 64B cacheline read 的 `ARADDR/ARLEN/ARSIZE/ARBURST`。
+
+运行方式：
+
+```sh
+formal/bridge_prod_width_cacheline_ar_shape/run_hw_cbmc.sh
+```
+
+### `formal/bridge_prod_width_cacheline_write_shape`
+
+直接实例化生产 `axi_llc_axi_bridge.v`，在 64B line / 32B DDR beat / 64B response
+buffer 参数下覆盖 64B cacheline write 的两拍 256-bit `W` payload、`WSTRB` 和
+`WLAST`。
+
+运行方式：
+
+```sh
+formal/bridge_prod_width_cacheline_write_shape/run_hw_cbmc.sh
+```
+
+### `formal/bridge_prod_width_cacheline_read_response`
+
+直接实例化生产 `axi_llc_axi_bridge.v`，在 64B line / 32B DDR beat / 64B response
+buffer 参数下覆盖 64B cacheline read 的两拍 256-bit `R` payload、`RREADY`、`RLAST`
+前不回包和 512-bit response id/code/data 回收。
+
+运行方式：
+
+```sh
+formal/bridge_prod_width_cacheline_read_response/run_hw_cbmc.sh
+```
+
+### `formal/axi_read_resp_ctrl`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_read_resp_ctrl.v`：
+
+- 匹配读 pending slot 且 beat 计数到达事务 beat 数时声明 `rd_last_beat`
+- AXI `RLAST` 可以提前声明读事务最后一个 beat
+- 当前 `RRESP` 非 OKAY 时优先记录当前错误码，否则保留历史错误码
+- 未匹配读 pending slot 时不会声明读事务完成
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于 AXI `R` response 接收后的
+last-beat 判定和 response code 累计。
+
+运行方式：
+
+```sh
+formal/axi_read_resp_ctrl/run_hw_cbmc.sh
+```
+
+### `formal/axi_req_accept`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_req_accept.v`：
+
+- cache source 对 bypass source 的接受优先级
+- read request 只有在 read pending slot、AXI read ID 和 read issue queue 都有资源时接受
+- write request 只有在 write pending slot、AXI write ID、AW issue queue 和 W issue queue
+  都有资源时接受
+- 接受后记录的 slot、AXI ID 和 total beats 来自对应 read/write 资源与对应 source
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于 source-side request accept 边界。
+它把原先 full bridge 中较难直接形式化的接受组合逻辑拆成可快速求解的生产子模块。
+
+运行方式：
+
+```sh
+formal/axi_req_accept/run_hw_cbmc.sh
+```
+
+### `formal/axi_resp_accept`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_resp_accept.v`：
+
+- `RREADY` 只取决于是否找到匹配 read slot，不被 upstream cache/bypass response
+  ready 回压
+- `rd_resp_accept` 等价于 `RVALID && read slot match`
+- `BREADY` 需要匹配 write slot 且对应 source-local write response queue 有空间
+- `wr_resp_accept` 等价于 `BVALID && BREADY`
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于外部 AXI `R/B` 接收边界。它与
+VCS 中的 response-stall contract 共同覆盖“不允许外部 `R` 因上游 response stall
+被回压”的需求；`B` 通道仍保留 response queue 空间保护。
+
+运行方式：
+
+```sh
+formal/axi_resp_accept/run_hw_cbmc.sh
+```
+
+### `formal/axi_source_resp_mux`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_source_resp_mux.v`：
+
+- read response valid 时优先返回 read response
+- 没有 read response 且 write response valid 时返回 write response，rdata 为 0
+- `rd_pop` / `wr_pop` 只在对应 source 的 `resp_ready` 允许时产生
+- 同一拍不会同时 pop read response 和 write response
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于 cache/bypass source-local response
+返回和 response queue pop 边界。
+
+运行方式：
+
+```sh
+formal/axi_source_resp_mux/run_hw_cbmc.sh
+```
+
+### `formal/axi_resp_route`
+
+覆盖生产 C helper 与生产 `axi_llc_axi_resp_route.v`：
+
+- completed read 根据 pending slot owner 进入 cache/bypass read response queue
+- read response queue 没有空间时不得 dequeue completed read slot
+- write `B` response 根据 pending slot owner 进入 cache/bypass write response queue
+- `wr_match_rsp_space` 选择对应 owner 的 write response queue 空间，并反馈到
+  `axi_llc_axi_resp_accept.v` 的 `BREADY` 门控
+
+该 helper 已被生产 `axi_llc_axi_bridge.v` 用于 response enqueue route 和 write
+response queue 空间门控边界。
+
+运行方式：
+
+```sh
+formal/axi_resp_route/run_hw_cbmc.sh
+```
+
+### `formal/dual_port_req_steer`
+
+覆盖生产 C helper 与生产 `axi_llc_dual_port_req_steer.v`：
+
+- DDR 请求只驱动 DDR valid，并从 DDR ready 回传 upstream ready
+- supported MMIO 请求只驱动 MMIO valid，并从 MMIO ready 回传 upstream ready
+- unsupported MMIO 请求不驱动下游 valid，且 upstream ready 为 0
+- 单个请求不会同时驱动 DDR/MMIO 两个下游 valid
+
+该 helper 已被生产 `axi_llc_axi_bridge_dual.v` 用于 cache/bypass 两路 lower request
+接受面。
+
+运行方式：
+
+```sh
+formal/dual_port_req_steer/run_hw_cbmc.sh
+```
+
+### `formal/dual_port_issue_gate`
+
+覆盖生产 C helper 与生产 `axi_llc_dual_port_issue_gate.v`：
+
+- `AR` 存在 slot/pending-write hazard 时不能发出
+- `AW` 存在 slot/pending-read hazard 时不能发出
+- 同周期同 line 的 `AR/AW` 同时可发时，`AR` 优先，`AW` 被屏蔽
+- 不同 line 时，只要没有已有 hazard，`AR/AW` 可在同周期各自发出
+
+该 helper 已被生产 `axi_llc_axi_bridge_dual.v` 用于 DDR/MMIO 两个外部口的 issue
+边界。
+
+运行方式：
+
+```sh
+formal/dual_port_issue_gate/run_hw_cbmc.sh
+```
+
+### `formal/dual_port_hazard_match`
+
+覆盖生产 C helper 与生产 `axi_llc_dual_port_hazard_match.v`：
+
+- DDR line/id match 只对 DDR port entry 生效
+- MMIO line/id match 只对 MMIO port entry 生效
+- invalid entry 不产生任何 match
+
+该 helper 已被生产 `axi_llc_dual_port_hazard_scoreboard.v` 用于每个 scoreboard
+entry 的 line/id 比较，是同 line `AR/AW` hazard 状态逻辑的组合基元。
+
+运行方式：
+
+```sh
+formal/dual_port_hazard_match/run_hw_cbmc.sh
+```
+
+### `formal/dual_port_slot_hazard`
+
+覆盖生产 C helper 与生产 `axi_llc_dual_port_slot_hazard.v`：
+
+- primary port 没有第一个空槽时必须报告 slot hazard
+- secondary port 只有在没有第一个空槽，或 primary port 本周期实际 fire 且没有第二个空槽时，才报告 slot hazard
+- primary port 只是 valid 但没有 fire 时，不得因为预测占槽而阻塞 secondary port
+
+该 helper 已被生产 `axi_llc_dual_port_hazard_scoreboard.v` 用于 read/write 两组
+scoreboard 的 DDR/MMIO shared slot hazard 计算。
+
+运行方式：
+
+```sh
+formal/dual_port_slot_hazard/run_hw_cbmc.sh
+```
+
+### `formal/dual_port_resp_mux`
+
+覆盖生产 C helper 与生产 `axi_llc_dual_port_resp_mux.v`：
+
+- MMIO response valid 时优先选择 MMIO
+- MMIO 不 valid 时选择 DDR
+- selected port 才收到 upstream `resp_ready`
+- non-selected port 被 backpressure
+
+该 helper 已被生产 `axi_llc_axi_bridge_dual.v` 用于 cache/bypass 两路 response 合并。
+
+运行方式：
+
+```sh
+formal/dual_port_resp_mux/run_hw_cbmc.sh
+```
+
+### `formal/dual_port_hazard_scoreboard`
+
+目标覆盖生产 `axi_llc_dual_port_hazard_scoreboard.v`：
+
+- `AR` fire 后，同 port 同 line `AW` 看到 pending-read hazard
+- 匹配 `R last` fire 后，read hazard 释放
+- `AW` fire 后，同 port 同 line `AR` 看到 pending-write hazard
+- 匹配 `B` fire 后，write hazard 释放
+- DDR/MMIO 同拍各发一笔 `AR` 时，在小参数实例中占满 read scoreboard
+
+该 helper 已被生产 `axi_llc_axi_bridge_dual.v` 用于同 line `AR/AW` hazard 状态记录。
+scoreboard 内部 per-entry match 已抽成生产 `axi_llc_dual_port_hazard_match.v`，并由
+`formal/dual_port_hazard_match` 稳定覆盖；slot hazard 已抽成生产
+`axi_llc_dual_port_slot_hazard.v`，并由 `formal/dual_port_slot_hazard` 稳定覆盖。
+
+当前状态：
+
+- 生产 RTL 已接入，VCS 全量 RTL regression 已通过。
+- 2026-05-02 已新增并通过
+  `tb_axi_llc_dual_port_hazard_scoreboard_contract` VCS directed test，直接覆盖生产
+  scoreboard 的 `AR/AW` 记录、错误 `RID/BID` 不释放、匹配 `R/B` 释放，以及
+  DDR/MMIO shared slots 的基本占用/释放。
+- 2026-05-03 将生产 RTL 默认参数缩到
+  `READ_HAZARD_COUNT=2 / WRITE_HAZARD_COUNT=2`，用于让 hw-cbmc 的未参数化
+  generic 实例快速完成转换和求解。实际生产 bridge 实例仍在
+  `axi_llc_axi_bridge_dual.v` 中显式覆盖为 64-entry，不受默认参数变化影响。
+- 2026-05-03 该入口已在默认 `HW_CBMC_TIMEOUT_SEC=60` 内通过，并已纳入稳定
+  formal regression。
+
+运行方式：
+
+```sh
+formal/dual_port_hazard_scoreboard/run_hw_cbmc.sh
+```
+
+### `formal/dual_port_route_shape`
+
+覆盖：
+
+- `addr >= 0x4000_0000` 走 DDR port，低地址走 MMIO port
+- MMIO 只支持 4B 请求
+- DDR/MMIO helper 输出的 `axi_len/axi_size` 与生产 C helper 一致
+
+检查对象是生产 C helper `include/axi_dual_port_route_shape.h` 与生产 RTL 组合
+helper `axi_llc_dual_port_route_shape.v`，不是独立复制的 formal-only spec。
+实际 AXI channel 形状仍由直接绑定 bridge/top 的 sequential smoke 覆盖。
+
+运行方式：
+
+```sh
+formal/dual_port_route_shape/run_hw_cbmc.sh
+```
+
+当前这是 production helper smoke，用于固定 `hw-cbmc` 工具链与 harness 写法；后续
+需要把 bounded sequential bridge harness 接入同一目录结构。
+
+### `formal/dual_bridge_read_route`
+
+直接实例化生产 `axi_llc_axi_bridge_dual.v` / `axi_llc_axi_bridge.v`，目标是覆盖 reset
+后 cache read 被接受后一拍的 DDR/MMIO `AR` 归属，以及 unsupported MMIO 大 read
+不能被接受。
+
+当前状态：
+
+- 该入口已通过，并已纳入 `formal/run_passed_hw_cbmc.sh`。
+- `run_hw_cbmc.sh` 会生成覆盖小参数宏后的 preprocess RTL，module body 仍来自生产 RTL。
+- 首轮实验暴露了 `axi_llc_axi_bridge.v` 中 variable indexed part-select 对 hw-cbmc
+  前端不友好；生产 RTL 已改写为 shift/mask byte helper，VCS 全量 RTL 回归已通过。
+- 2026-04-29 使用 `HW_CBMC_TIMEOUT_SEC=60` 重新探测时，脚本已补齐 req accept /
+  resp accept / req steer / issue gate / hazard scoreboard / resp mux 生产依赖，但仍在实际
+  `axi_llc_axi_bridge` type-check/转换阶段超时，未进入求解。
+- 2026-05-02 短 timeout 探测已通过拆分生产 bridge 的组合/时序 loop index 清除
+  hw-cbmc conflicting assignment type 转换错误；当时仍在实际 bridge 转换阶段超时。
+- 2026-05-03 后续短 timeout 探测已补齐 `axi_llc_axi_pending_scan.v` 与
+  `axi_llc_axi_issue_select.v` / `axi_llc_axi_fifo_ptr.v` /
+  `axi_llc_axi_mode2_shape.v` /
+  `axi_llc_axi_queue_ctrl.v` /
+  `axi_llc_axi_write_pack.v` /
+  `axi_llc_axi_read_pack.v` /
+  `axi_llc_axi_read_resp_ctrl.v` /
+  `axi_llc_axi_resp_route.v` /
+  `axi_llc_axi_source_resp_mux.v` 依赖；当时完整 bridge 仍在实际 bridge 转换阶段超时。
+- 2026-05-03 继续把生产 bridge pending 深度改成可参数化默认值。生产默认仍为
+  32/32；该 formal top 显式缩到 1/1，并把 line/data/response 宽度缩到
+  64-bit，小参数外部 AXI ID 宽度缩到 1-bit。补齐 `axi_llc_axi_id_shape.v`、
+  `axi_llc_dual_port_hazard_match.v`、`axi_llc_dual_port_slot_hazard.v` 依赖并按
+  hw-cbmc timeframe 语义在保持 request valid 的帧采样 AR 后，该入口在默认 timeout
+  内通过。
+- 该入口只覆盖 actual bridge read-route/AR 归属；write route 已由
+  `formal/dual_bridge_write_route` 单独覆盖基础 AW/W 归属，4B write `B` response
+  基础回收已由 `formal/dual_bridge_write_b_response` 覆盖，4B read `R` response
+  基础回收已由 `formal/dual_bridge_read_r_response` 覆盖。同构 2-beat DDR
+  cacheline read/write 已由 `formal/dual_bridge_ddr_multibeat_read` 和
+  `formal/dual_bridge_ddr_multibeat_write` 覆盖；mode2 aligned data packing/slicing
+  已由 `formal/dual_bridge_mode2_aligned_write` 和
+  `formal/dual_bridge_mode2_aligned_read` 覆盖；生产宽度 write/read pack 已由
+  `formal/axi_write_pack_prod_width` 和 `formal/axi_read_pack_prod_width` 覆盖；
+  actual bridge 生产宽度 cacheline `AR/AW` 地址通道已由
+  `formal/bridge_prod_width_cacheline_ar_shape` 和
+  `formal/bridge_prod_width_cacheline_aw_shape` 覆盖，生产宽度 cacheline write 的
+  两拍 256-bit `W` payload 已由 `formal/bridge_prod_width_cacheline_write_shape`
+  覆盖，生产宽度 cacheline read 的两拍 256-bit `R` payload 和 512-bit response
+  回收已由 `formal/bridge_prod_width_cacheline_read_response` 覆盖；
+  不同 line read-read outstanding 已由 `formal/dual_bridge_multi_read_outstanding`
+  覆盖，read/write 混合多 outstanding 已由
+  `formal/dual_bridge_read_then_write_outstanding` 和
+  `formal/dual_bridge_write_then_read_outstanding` 覆盖。same-line read pending 期间
+  阻塞后续 write `AW/W` 已由 `formal/dual_bridge_same_line_read_blocks_write` 覆盖；
+  same-line write pending 期间阻塞后续 read `AR` 已由
+  `formal/dual_bridge_same_line_write_blocks_read` 覆盖。
+
+### `formal/dual_bridge_read_r_response`
+
+直接实例化生产 `axi_llc_axi_bridge_dual.v` / `axi_llc_axi_bridge.v`，目标是覆盖 4B
+cache read 的外部 `R` response 接收与 cache source response 回收。
+
+当前状态：
+
+- 该入口已通过，并已纳入 `formal/run_passed_hw_cbmc.sh`。
+- `run_hw_cbmc.sh` 会生成覆盖小参数宏后的 preprocess RTL，module body 仍来自生产 RTL。
+- 小参数实例把 DDR beat 缩到 64-bit、pending 深度缩到 1/1、外部 AXI ID 缩到 1-bit。
+- 覆盖对应 DDR/MMIO 端口 `RVALID/RID/RDATA/RRESP/RLAST` 注入后，只有正确端口
+  `RREADY` 拉高；`cache_resp_id/cache_resp_code/cache_resp_rdata` 回到原始 request id、
+  外部 `RRESP` 和单 beat `RDATA` merge 结果。
+- 该入口只覆盖单笔 4B read 的 `R` 回收；DDR 64B multi-beat read、mode2 aligned read
+  slice 和多 outstanding interleaving 由其它独立入口补充；同构 2-beat DDR cacheline read
+  已由 `formal/dual_bridge_ddr_multibeat_read` 补充，read/write mixed outstanding 已由
+  `formal/dual_bridge_read_then_write_outstanding` 和
+  `formal/dual_bridge_write_then_read_outstanding` 补充。
+
+### `formal/dual_bridge_write_route`
+
+直接实例化生产 `axi_llc_axi_bridge_dual.v` / `axi_llc_axi_bridge.v`，目标是覆盖 reset
+后 4B cache write 被接受后的 DDR/MMIO `AW/W` 归属、基础 channel 形状，以及
+unsupported MMIO 大 write 不被接受且不逃逸到下游 AXI 口。
+
+当前状态：
+
+- 该入口已通过，并已纳入 `formal/run_passed_hw_cbmc.sh`。
+- `run_hw_cbmc.sh` 会生成覆盖小参数宏后的 preprocess RTL，module body 仍来自生产 RTL。
+- 小参数实例把 DDR beat 缩到 64-bit、pending 深度缩到 1/1、外部 AXI ID 缩到 1-bit。
+- 覆盖 DDR 地址只发 DDR `AW/W`，MMIO 地址只发 MMIO `AW/W`；MMIO 侧固定
+  `AWLEN=0 / AWSIZE=2 / WSTRB=4'hf / WLAST=1`。
+- 2026-05-04 已补 unsupported MMIO 大 write：upstream ready 必须为 0，且 DDR/MMIO
+  `AW/W` 均不得发射。
+- 该入口只覆盖 4B 单 beat write route 和 unsupported MMIO 大 write 阻断；`B`
+  response 基础回收已由
+  `formal/dual_bridge_write_b_response` 覆盖，同构 2-beat DDR cacheline write 已由
+  `formal/dual_bridge_ddr_multibeat_write` 补充；生产宽度复核和多 outstanding
+  interleaving 仍需后续补充。
+
+### `formal/dual_bridge_write_b_response`
+
+直接实例化生产 `axi_llc_axi_bridge_dual.v` / `axi_llc_axi_bridge.v`，目标是覆盖 4B
+cache write 的外部 `B` response 接收与 cache source response 回收。
+
+当前状态：
+
+- 该入口已通过，并已纳入 `formal/run_passed_hw_cbmc.sh`。
+- `run_hw_cbmc.sh` 会生成覆盖小参数宏后的 preprocess RTL，module body 仍来自生产 RTL。
+- 小参数实例把 DDR beat 缩到 64-bit、pending 深度缩到 1/1、外部 AXI ID 缩到 1-bit。
+- 覆盖对应 DDR/MMIO 端口 `BVALID/BID/BRESP` 注入后，只有正确端口 `BREADY` 拉高；
+  `cache_resp_id/cache_resp_code` 回到原始 cache request id 与外部 `BRESP`。
+- 该入口只覆盖单笔 4B write 的 `B` 回收；多 beat DDR 64B write、data payload 内容和
+  多 outstanding interleaving 由其它独立入口补充；同构 2-beat DDR cacheline write 已由
+  `formal/dual_bridge_ddr_multibeat_write` 补充，read/write mixed outstanding 已由
+  `formal/dual_bridge_read_then_write_outstanding` 和
+  `formal/dual_bridge_write_then_read_outstanding` 补充。
 
 ### `tb_axi_llc_subsystem_axi_bypass_read_contract.v`
 
@@ -439,3 +1094,46 @@
   - `tb_axi_llc_subsystem_compat_invalidate_line_hazard_contract`
   - `tb_axi_llc_subsystem_read_master_timing_contract`
   - `tb_llc_smic12_store_contract`
+- 2026-04-29 在 `eda-05` 上使用当前 RTL 与 `rtl/flist/tb_*.f` 做全量 VCS regression：
+  48 passed / 0 failed。该轮覆盖 `axi_llc_axi_beat_shape.v` 接入生产
+  `axi_llc_axi_bridge.v`，以及 `axi_llc_dual_port_req_steer.v`、
+  `axi_llc_dual_port_issue_gate.v`、`axi_llc_dual_port_hazard_scoreboard.v`、
+  `axi_llc_dual_port_hazard_match.v`、`axi_llc_dual_port_slot_hazard.v`、
+  `axi_llc_dual_port_resp_mux.v` 接入生产 `axi_llc_axi_bridge_dual.v` 后的状态。
+- 2026-05-02 在 `eda-05` 上补跑 ID helper 接入后的 targeted VCS smoke：
+  `tb_axi_llc_axi_bridge_dual_contract` 和 `tb_axi_llc_subsystem_dual_mmio_contract`
+  均 passed。两份 compile log 均确认实际解析
+  `src/axi_llc_axi_id_shape.v`，覆盖生产 bridge 与 native dual top 集成路径。
+- 2026-05-02 继续扩展并复跑 `tb_axi_llc_axi_bridge_dual_contract`：新增覆盖
+  DDR cache write + MMIO bypass write 同周期接受、双口 `AW/W` 独立推进、MMIO `B`
+  先返回 bypass source、DDR `B` 后返回 cache source；随后继续补充上游 write response
+  stall 时外部 DDR `B` 仍先被接收并缓存在 bridge 内部；bridge 层的外部 `AR` issue
+  hazard 在 `B` fire 后释放；并补充同一 cache response source 的 DDR/MMIO read response
+  同时返回、上游 `cache_resp_ready=0` 时外部 `R` 不被 response mux/upstream stall
+  反压；以及同一 source 的 DDR/MMIO write `B` 同时返回时外部 `B` 不被 response
+  mux/upstream stall 反压。该轮在 `eda-05` 上 passed。
+- 2026-05-02 继续扩展并复跑 `tb_axi_llc_subsystem_dual_outstanding_contract`：新增覆盖
+  native dual top 中 DDR/MMIO read 同时在途时乱序 `R` response 归属，以及 DDR/MMIO
+  write 同时在途时乱序 `B` response 归属；随后继续补充 DDR/MMIO `R` 同时返回时
+  外部 `RREADY` 不被 top/compat response stall 反压，以及 DDR/MMIO `B` 同时返回时
+  外部 `BREADY` 不被 top/compat response stall 反压。该轮在 `eda-05` 上 passed。
+- 2026-05-02 继续扩展并复跑 `tb_axi_llc_subsystem_dual_mmio_contract`：新增覆盖
+  native dual top 的对称 write-then-read 同 line 场景。同 line read 在 write 完成前
+  不会被 top/compat 接收；上游 write response ready 拉低时，外部 DDR `B` 仍必须先被
+  `BREADY` 接收并缓存；当前 core-path 接收面会等 write response slot 被上游消费后，
+  再接收并继续该 same-line read。该轮在 `eda-05` 上 passed。
+- 2026-05-02 在 `eda-05` 上补跑 scoreboard directed VCS contract：
+  `tb_axi_llc_dual_port_hazard_scoreboard_contract` passed。compile log 确认实际解析
+  `src/axi_llc_dual_port_slot_hazard.v`、`src/axi_llc_dual_port_hazard_match.v` 和
+  `src/axi_llc_dual_port_hazard_scoreboard.v`。
+- native dual-AXI 相关 RTL contract 已增加统一入口：
+  `rtl/run_dual_axi_contracts.sh`。该脚本运行 bridge dual、native dual top MMIO、
+  native dual top outstanding/owner、hazard scoreboard 四个 VCS contract，并用
+  `PASS/FAIL` 日志标记判定结果，避免 VCS `$finish(1)` 返回码不可靠导致误判。
+  2026-05-03 在 `eda-05` 上运行结果为 4 passed / 0 failed，最新输出目录为
+  `rtl/local_debug/vcs_dual_axi_contracts_after_formal_refactor_20260503_142159`。
+- 全量 RTL directed / contract regression 已增加统一入口：
+  `rtl/run_all_contracts.sh`。该脚本按 `flist/tb_*.f` 排序编译并运行当前 49 个
+  testbench，扫描 `FAIL`，并兼容 `<test> PASS` 与旧 bench 的独立 `PASS` marker。
+  2026-05-03 在 `eda-05` 上运行结果为 49 passed / 0 failed，输出目录为
+  `rtl/local_debug/vcs_all_contracts_after_formal_refactor_20260503_142220`。

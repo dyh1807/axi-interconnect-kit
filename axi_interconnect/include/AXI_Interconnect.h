@@ -26,6 +26,35 @@ enum class DownstreamPort : uint8_t {
   MMIO = 1,
 };
 
+struct DownstreamReadIssueProbe {
+  DownstreamPort port = DownstreamPort::DDR;
+  uint32_t addr = 0;
+  uint8_t total_size = 0;
+  bool extract_from_aligned_beat = false;
+};
+
+struct DownstreamWriteIssueProbe {
+  DownstreamPort port = DownstreamPort::DDR;
+  uint32_t addr = 0;
+  uint8_t total_size = 0;
+  WideWriteData_t wdata{};
+  WideWriteStrb_t wstrb{};
+};
+
+// Verification/test hook for the same production issue-shaping logic used by
+// AXI_Interconnect comb paths. Keep these as thin wrappers; they are not a
+// separate reference model.
+DownstreamReadIssueProbe probe_downstream_read_issue(DownstreamPort port,
+                                                     uint32_t addr,
+                                                     uint8_t total_size,
+                                                     uint32_t line_bytes,
+                                                     bool force_line_aligned);
+DownstreamWriteIssueProbe
+probe_downstream_write_issue(DownstreamPort port, uint32_t addr,
+                             uint8_t total_size, const WideWriteData_t &wdata,
+                             const WideWriteStrb_t &wstrb,
+                             uint32_t line_bytes, bool force_line_aligned);
+
 // ============================================================================
 // Latched AR/AW Requests (for AXI compliance)
 // ============================================================================
@@ -90,6 +119,8 @@ struct ReadPendingTxn {
   uint32_t stall_cycles;
   uint8_t last_beats_done;
   bool timeout_warned;
+  bool completion_queued = false;
+  uint32_t completion_seq = 0;
 };
 
 struct LlcUpstreamReqLatch {
@@ -223,11 +254,12 @@ private:
   bool can_accept_read_master(uint8_t master_id) const;
   bool has_read_id_conflict(uint8_t master_id, uint8_t orig_id) const;
   uint8_t alloc_write_axi_id() const;
+  uint8_t alloc_write_axi_id(DownstreamPort port) const;
   bool can_accept_write_now() const;
   bool can_issue_external_read(uint32_t addr) const;
   bool can_issue_external_write(uint32_t addr) const;
   uint32_t count_llc_write_pending() const;
-  int find_write_pending_by_axi_id(uint8_t axi_id) const;
+  int find_write_pending_by_axi_id(DownstreamPort port, uint8_t axi_id) const;
   int find_next_aw_pending() const;
   int find_next_w_pending() const;
   int find_next_aw_pending(DownstreamPort port) const;
@@ -266,6 +298,7 @@ private:
 
   // Pending read transactions
   std::vector<ReadPendingTxn> r_pending;
+  uint32_t direct_read_completion_seq_ = 0;
 
   // Write state
   bool w_active;

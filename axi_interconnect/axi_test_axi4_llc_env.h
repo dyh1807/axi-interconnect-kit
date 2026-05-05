@@ -345,7 +345,6 @@ inline bool issue_read(Axi4LlcTestEnv &env, uint8_t master, uint32_t addr,
   int timeout = 200;
   while (timeout-- > 0) {
     cycle_outputs(env);
-    const bool ready_snapshot = env.interconnect.read_ports[master].req.ready;
 
     auto &rp = env.interconnect.read_ports[master];
     rp.req.valid = true;
@@ -355,7 +354,7 @@ inline bool issue_read(Axi4LlcTestEnv &env, uint8_t master, uint32_t addr,
     rp.req.bypass = bypass;
 
     cycle_inputs(env);
-    if (ready_snapshot || env.interconnect.read_req_accepted[master]) {
+    if (env.interconnect.read_req_accepted[master]) {
       return true;
     }
   }
@@ -369,7 +368,6 @@ inline bool issue_write(Axi4LlcTestEnv &env, uint8_t master, uint32_t addr,
   int timeout = 200;
   while (timeout-- > 0) {
     cycle_outputs(env);
-    const bool ready_snapshot = env.interconnect.write_ports[master].req.ready;
 
     auto &wp = env.interconnect.write_ports[master];
     wp.req.valid = true;
@@ -381,7 +379,7 @@ inline bool issue_write(Axi4LlcTestEnv &env, uint8_t master, uint32_t addr,
     wp.req.bypass = bypass;
 
     cycle_inputs(env);
-    if (ready_snapshot || env.interconnect.write_req_accepted[master]) {
+    if (env.interconnect.write_req_accepted[master]) {
       return true;
     }
   }
@@ -434,6 +432,7 @@ inline bool wait_write_resp(Axi4LlcTestEnv &env, uint8_t master, uint8_t id) {
   }
   std::printf("FAIL: write resp timeout master=%u id=%u\n", master, id);
   env.interconnect.debug_print();
+  env.ddr.print_state();
   return false;
 }
 

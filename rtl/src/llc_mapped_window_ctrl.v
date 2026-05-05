@@ -39,6 +39,7 @@ module llc_mapped_window_ctrl #(
     integer byte_idx;
     integer line_off;
     integer dst_idx;
+    integer way_sel_idx;
 
     always @(*) begin
         offset_aligned = (window_offset[LINE_OFFSET_BITS-1:0] == {LINE_OFFSET_BITS{1'b0}});
@@ -57,22 +58,28 @@ module llc_mapped_window_ctrl #(
         direct_set       = line_idx[SET_BITS-1:0];
         direct_way       = line_idx[SET_BITS + WAY_BITS - 1:SET_BITS];
         mapped_way_legal = (direct_way < WINDOW_WAYS);
-        line_valid_out   = mapped_way_legal ? valid_bits_in[direct_way] : 1'b0;
-
-        if (line_valid_out) begin
-            read_line_out = row_data_in[(direct_way * LINE_BITS) +: LINE_BITS];
-        end else begin
-            read_line_out = {LINE_BITS{1'b0}};
+        line_valid_out   = 1'b0;
+        read_line_out    = {LINE_BITS{1'b0}};
+        for (way_sel_idx = 0; way_sel_idx < WAY_COUNT; way_sel_idx = way_sel_idx + 1) begin
+            if (mapped_way_legal && (direct_way == way_sel_idx[WAY_BITS-1:0])) begin
+                line_valid_out = valid_bits_in[way_sel_idx];
+                if (valid_bits_in[way_sel_idx]) begin
+                    read_line_out = row_data_in[(way_sel_idx * LINE_BITS) +: LINE_BITS];
+                end
+            end
         end
 
         write_line_out    = read_line_out;
         next_valid_bit_out = 1'b1;
         line_off = local_addr[LINE_OFFSET_BITS-1:0];
 
-        for (byte_idx = 0; byte_idx < LINE_BYTES; byte_idx = byte_idx + 1) begin
-            dst_idx = line_off + byte_idx;
-            if (write_strb_in[byte_idx] && (dst_idx < LINE_BYTES)) begin
-                write_line_out[(dst_idx * 8) +: 8] = write_data_in[(byte_idx * 8) +: 8];
+        for (dst_idx = 0; dst_idx < LINE_BYTES; dst_idx = dst_idx + 1) begin
+            for (byte_idx = 0; byte_idx < LINE_BYTES; byte_idx = byte_idx + 1) begin
+                if (write_strb_in[byte_idx] &&
+                    ((line_off + byte_idx) == dst_idx)) begin
+                    write_line_out[(dst_idx * 8) +: 8] =
+                        write_data_in[(byte_idx * 8) +: 8];
+                end
             end
         end
     end

@@ -83,11 +83,14 @@ bool test_dcache_read_miss_policy() {
   clear_inputs(llc);
   llc.io.lookup_in.data_valid = true;
   llc.io.lookup_in.meta_valid = true;
+  llc.io.lookup_in.valid_valid = true;
   llc.io.lookup_in.repl_valid = true;
   llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) *
                                config.line_bytes);
   llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
                                AXI_LLC_META_ENTRY_BYTES);
+  llc.io.lookup_in.valid.resize(1);
+  llc.io.lookup_in.valid.data()[0] = 0;
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 

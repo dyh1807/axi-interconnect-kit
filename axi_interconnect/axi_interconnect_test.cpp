@@ -255,8 +255,20 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
   }
 
   bool issued[axi_interconnect::NUM_READ_MASTERS] = {};
+  auto mark_issued_from_ar_events = [&]() {
+    for (const auto &e : env.ar_events) {
+      for (const auto &r : reqs) {
+        if (!issued[r.master] && e.addr == r.addr &&
+            e.len == calc_burst_len(r.total_size)) {
+          issued[r.master] = true;
+          break;
+        }
+      }
+    }
+  };
   int issue_timeout = 200;
   while (issue_timeout-- > 0) {
+    mark_issued_from_ar_events();
     bool all = true;
     for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
       all &= issued[i];
@@ -265,11 +277,6 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
       break;
 
     cycle_outputs(env);
-    bool ready_snapshot[axi_interconnect::NUM_READ_MASTERS];
-    for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
-      ready_snapshot[i] = env.interconnect.read_ports[i].req.ready;
-    }
-
     for (const auto &r : reqs) {
       if (issued[r.master])
         continue;
@@ -284,12 +291,7 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
     }
 
     cycle_inputs(env);
-    for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
-      if (!issued[i] &&
-          (ready_snapshot[i] || env.interconnect.read_req_accepted[i])) {
-        issued[i] = true;
-      }
-    }
+    mark_issued_from_ar_events();
   }
 
   for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {

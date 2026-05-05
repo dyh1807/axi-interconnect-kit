@@ -8,6 +8,7 @@
  */
 
 #include "AXI_Interconnect.h"
+#include "axi_dual_port_route_shape.h"
 #include "axi_mmio_map.h"
 #include <algorithm>
 #include <cerrno>
@@ -29,14 +30,14 @@ namespace axi_interconnect {
 
 namespace {
 constexpr uint8_t kInvalidAxiReadId = 0xFF;
-constexpr uint8_t kAxiIdMask =
-    static_cast<uint8_t>((1u << sim_ddr::AXI_ID_WIDTH) - 1u);
+constexpr uint8_t kAxiIdMask = static_cast<uint8_t>(
+    AXI_DUAL_PORT_AXI_ID_MASK_FOR_WIDTH(sim_ddr::AXI_ID_WIDTH));
 constexpr uint8_t kDownstreamBeatBytes = sim_ddr::AXI_DATA_BYTES;
 constexpr uint8_t kDownstreamBeatWords =
     kDownstreamBeatBytes / static_cast<uint8_t>(sizeof(uint32_t));
 constexpr uint8_t kDownstreamAxiSize = sim_ddr::AXI_SIZE_CODE;
-constexpr uint8_t kMmioAxiSize = 2u; // 32-bit single-beat MMIO.
-constexpr uint8_t kMmioTransactionSize = 3u;
+constexpr uint8_t kMmioAxiSize = AXI_DUAL_PORT_AXI_SIZE_32B;
+constexpr uint8_t kMmioTransactionSize = AXI_DUAL_PORT_MMIO_TOTAL_SIZE;
 constexpr uint8_t kUpstreamStrbBytes =
     (MAX_WRITE_TRANSACTION_BYTES + 7u) / 8u;
 #ifndef AXI_KIT_DDR_BASE
@@ -127,7 +128,7 @@ bool focus_write_line(uint32_t addr) {
 }
 
 bool mmio_request_supported(uint8_t total_size) {
-  return total_size == kMmioTransactionSize;
+  return axi_dual_port_mmio_request_supported(total_size);
 }
 
 bool downstream_request_supported(DownstreamPort port, uint8_t total_size) {
@@ -273,6 +274,22 @@ void clear_downstream_master_outputs(sim_ddr::SimDDR_IO_t &io) {
   io.b.bready = true;
 }
 
+void clear_downstream_slave_inputs(sim_ddr::SimDDR_IO_t &io) {
+  io.ar.arready = false;
+  io.aw.awready = false;
+  io.w.wready = false;
+
+  io.r.rvalid = false;
+  io.r.rid = 0;
+  io.r.rdata = {};
+  io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+  io.r.rlast = false;
+
+  io.b.bvalid = false;
+  io.b.bid = 0;
+  io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+}
+
 uint8_t get_wide_read_byte(const WideReadData_t &data, uint32_t byte_idx) {
   const uint32_t word_idx = byte_idx / sizeof(uint32_t);
   const uint32_t byte_off = byte_idx % sizeof(uint32_t);
@@ -381,35 +398,14 @@ DownstreamReadIssue make_downstream_read_issue(DownstreamPort port,
                                                bool force_line_aligned) {
   DownstreamReadIssue out{};
   out.port = port;
-  out.addr = addr;
-  out.total_size = total_size;
-  out.extract_from_aligned_beat = false;
-  const uint16_t bytes = static_cast<uint16_t>(total_size) + 1u;
-  if (port == DownstreamPort::MMIO) {
-    out.total_size = kMmioTransactionSize;
-    return out;
-  }
-  if (force_line_aligned) {
-    const uint32_t beat_addr = align_downstream_addr(addr, kDownstreamBeatBytes);
-    const uint32_t beat_off = addr - beat_addr;
-    if (bytes <= kDownstreamBeatBytes &&
-        beat_off + bytes <= kDownstreamBeatBytes) {
-      out.addr = beat_addr;
-      out.total_size = static_cast<uint8_t>(kDownstreamBeatBytes - 1u);
-      out.extract_from_aligned_beat = true;
-      return out;
-    }
-    out.addr = align_downstream_addr(addr, line_bytes);
-    out.total_size = static_cast<uint8_t>(line_bytes - 1u);
-    out.extract_from_aligned_beat = out.addr != addr;
-    return out;
-  }
-  if (bytes <= kDownstreamBeatBytes) {
-    out.addr = align_downstream_addr(addr, kDownstreamBeatBytes);
-    out.total_size = static_cast<uint8_t>(kDownstreamBeatBytes - 1u);
-    out.extract_from_aligned_beat = true;
-    return out;
-  }
+  const AxiBridgeDownstreamIssueShape shape =
+      axi_bridge_downstream_read_issue_shape(
+          port == DownstreamPort::MMIO, addr, total_size,
+          static_cast<uint8_t>(line_bytes), kDownstreamBeatBytes,
+          force_line_aligned);
+  out.addr = shape.issue_addr;
+  out.total_size = shape.issue_size;
+  out.extract_from_aligned_beat = shape.extract_from_aligned_beat;
   return out;
 }
 
@@ -422,38 +418,20 @@ DownstreamWriteIssue make_downstream_write_issue(DownstreamPort port,
                                                  bool force_line_aligned) {
   DownstreamWriteIssue out{};
   out.port = port;
-  out.addr = addr;
-  out.total_size = total_size;
+  const AxiBridgeDownstreamIssueShape shape =
+      axi_bridge_downstream_write_issue_shape(
+          port == DownstreamPort::MMIO, addr, total_size,
+          static_cast<uint8_t>(line_bytes), kDownstreamBeatBytes,
+          force_line_aligned);
+  out.addr = shape.issue_addr;
+  out.total_size = shape.issue_size;
   out.wdata = wdata;
   out.wstrb = wstrb;
   const uint16_t bytes = static_cast<uint16_t>(total_size) + 1u;
-  if (port == DownstreamPort::MMIO) {
-    out.total_size = kMmioTransactionSize;
-    return out;
-  }
-  if (force_line_aligned) {
-    const uint32_t beat_addr = align_downstream_addr(addr, kDownstreamBeatBytes);
-    const uint32_t beat_off = addr - beat_addr;
-    if (bytes <= kDownstreamBeatBytes &&
-        beat_off + bytes <= kDownstreamBeatBytes) {
-      out.addr = beat_addr;
-      out.total_size = static_cast<uint8_t>(kDownstreamBeatBytes - 1u);
-      out.wdata = align_mode2_downstream_write_data(wdata, addr, out.addr);
-      out.wstrb = align_mode2_downstream_write_strobe(wstrb, addr, out.addr);
-      return out;
-    }
-    out.addr = align_downstream_addr(addr, line_bytes);
-    out.total_size = static_cast<uint8_t>(line_bytes - 1u);
+  if (port != DownstreamPort::MMIO &&
+      (force_line_aligned || bytes <= kDownstreamBeatBytes)) {
     out.wdata = align_mode2_downstream_write_data(wdata, addr, out.addr);
     out.wstrb = align_mode2_downstream_write_strobe(wstrb, addr, out.addr);
-    return out;
-  }
-  if (bytes <= kDownstreamBeatBytes) {
-    out.addr = align_downstream_addr(addr, kDownstreamBeatBytes);
-    out.total_size = static_cast<uint8_t>(kDownstreamBeatBytes - 1u);
-    out.wdata = align_mode2_downstream_write_data(wdata, addr, out.addr);
-    out.wstrb = align_mode2_downstream_write_strobe(wstrb, addr, out.addr);
-    return out;
   }
   return out;
 }
@@ -513,6 +491,37 @@ bool read_env_u64(const char *name, uint64_t &value_out) {
   return true;
 }
 } // namespace
+
+DownstreamReadIssueProbe probe_downstream_read_issue(DownstreamPort port,
+                                                     uint32_t addr,
+                                                     uint8_t total_size,
+                                                     uint32_t line_bytes,
+                                                     bool force_line_aligned) {
+  const DownstreamReadIssue issue = make_downstream_read_issue(
+      port, addr, total_size, line_bytes, force_line_aligned);
+  DownstreamReadIssueProbe out{};
+  out.port = issue.port;
+  out.addr = issue.addr;
+  out.total_size = issue.total_size;
+  out.extract_from_aligned_beat = issue.extract_from_aligned_beat;
+  return out;
+}
+
+DownstreamWriteIssueProbe
+probe_downstream_write_issue(DownstreamPort port, uint32_t addr,
+                             uint8_t total_size, const WideWriteData_t &wdata,
+                             const WideWriteStrb_t &wstrb,
+                             uint32_t line_bytes, bool force_line_aligned) {
+  const DownstreamWriteIssue issue = make_downstream_write_issue(
+      port, addr, total_size, wdata, wstrb, line_bytes, force_line_aligned);
+  DownstreamWriteIssueProbe out{};
+  out.port = issue.port;
+  out.addr = issue.addr;
+  out.total_size = issue.total_size;
+  out.wdata = issue.wdata;
+  out.wstrb = issue.wstrb;
+  return out;
+}
 
 // ============================================================================
 // Initialization
@@ -673,8 +682,9 @@ bool AXI_Interconnect::request_uses_direct_mapped_llc(uint32_t addr,
 
 DownstreamPort AXI_Interconnect::classify_downstream_port(
     uint32_t addr, uint8_t total_size) const {
-  (void)total_size;
-  if (addr >= kDdrAddressBase) {
+  const AxiDualPortRouteSupport route =
+      axi_dual_port_route_support(addr, total_size, kDdrAddressBase);
+  if (route.ddr_port) {
     return DownstreamPort::DDR;
   }
   return DownstreamPort::MMIO;
@@ -729,6 +739,7 @@ void AXI_Interconnect::init() {
   r_arb_rr_idx = 0;
   r_current_master = -1;
   r_pending.clear();
+  direct_read_completion_seq_ = 0;
   for (int i = 0; i < NUM_READ_MASTERS; ++i) {
     read_req_hold[i] = {};
     llc_upstream_req[i] = {};
@@ -822,6 +833,8 @@ void AXI_Interconnect::init() {
 
   clear_downstream_master_outputs(axi_ddr_io);
   clear_downstream_master_outputs(axi_mmio_io);
+  clear_downstream_slave_inputs(axi_ddr_io);
+  clear_downstream_slave_inputs(axi_mmio_io);
   for (uint8_t byte = 0; byte < kDownstreamBeatBytes; ++byte) {
     axi_compat::set_bit(axi_ddr_io.w.wstrb, byte, true);
     axi_compat::set_bit(axi_mmio_io.w.wstrb, byte, true);
@@ -897,6 +910,28 @@ uint8_t AXI_Interconnect::alloc_write_axi_id() const {
   return kInvalidAxiWriteId;
 }
 
+uint8_t AXI_Interconnect::alloc_write_axi_id(DownstreamPort port) const {
+  bool used[1u << sim_ddr::AXI_ID_WIDTH] = {false};
+  for (const auto &txn : w_pending) {
+    if (txn.port == port) {
+      used[txn.axi_id & ((1u << sim_ddr::AXI_ID_WIDTH) - 1u)] = true;
+    }
+  }
+  if (w_active_ref(port)) {
+    used[w_current_ref(port).axi_id &
+         ((1u << sim_ddr::AXI_ID_WIDTH) - 1u)] = true;
+  }
+  if (aw_latch(port).valid) {
+    used[aw_latch(port).id & ((1u << sim_ddr::AXI_ID_WIDTH) - 1u)] = true;
+  }
+  for (uint8_t id = 0; id < (1u << sim_ddr::AXI_ID_WIDTH); ++id) {
+    if (!used[id]) {
+      return id;
+    }
+  }
+  return kInvalidAxiWriteId;
+}
+
 bool AXI_Interconnect::can_accept_write_now() const {
   return !llc_enabled() &&
          w_pending.size() < MAX_WRITE_OUTSTANDING &&
@@ -936,16 +971,21 @@ bool AXI_Interconnect::llc_path_quiescent() const {
   if (!llc_enabled()) {
     return true;
   }
-  if ((ar_latched.valid && ar_latched.to_llc) ||
-      (ar_latched_mmio.valid && ar_latched_mmio.to_llc)) {
+  if (any_ar_latched() || !r_pending.empty()) {
     return false;
   }
   if (any_w_active() || any_aw_latched() || llc_mem_write_resp_valid_ ||
-      llc_mem_ignored_b_count_ != 0) {
+      llc_mem_ignored_b_count_ != 0 || !w_pending.empty()) {
     return false;
   }
-  for (const auto &txn : r_pending) {
-    if (txn.to_llc) {
+  for (int master = 0; master < NUM_READ_MASTERS; ++master) {
+    if (req_ready_r[master] || read_req_hold[master].valid) {
+      return false;
+    }
+  }
+  for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    if (w_req_ready_r[master] || write_ports[master].req.ready ||
+        w_resp_valid[master]) {
       return false;
     }
   }
@@ -1121,16 +1161,25 @@ bool AXI_Interconnect::has_direct_read_response(uint8_t master_id) const {
 }
 
 bool AXI_Interconnect::can_issue_external_read(uint32_t addr) const {
-  return !has_external_pending_write_hazard(addr);
+  const uint32_t line = external_hazard_line_addr(addr);
+  const AxiDualPortIssueGateResult gate = axi_dual_port_issue_gate(
+      true, true, line, false, has_external_pending_write_hazard(addr), false,
+      true, 0, false, false);
+  return gate.axi_arvalid;
 }
 
 bool AXI_Interconnect::can_issue_external_write(uint32_t addr) const {
-  return !has_external_pending_read_hazard(addr);
+  const uint32_t line = external_hazard_line_addr(addr);
+  const AxiDualPortIssueGateResult gate = axi_dual_port_issue_gate(
+      false, true, 0, false, false, true, true, line, false,
+      has_external_pending_read_hazard(addr));
+  return gate.axi_awvalid;
 }
 
-int AXI_Interconnect::find_write_pending_by_axi_id(uint8_t axi_id) const {
+int AXI_Interconnect::find_write_pending_by_axi_id(DownstreamPort port,
+                                                   uint8_t axi_id) const {
   for (size_t i = 0; i < w_pending.size(); ++i) {
-    if (w_pending[i].axi_id == axi_id) {
+    if (w_pending[i].port == port && w_pending[i].axi_id == axi_id) {
       return static_cast<int>(i);
     }
   }
@@ -1301,7 +1350,8 @@ void AXI_Interconnect::prepare_llc_inputs(bool sample_upstream_ready) {
       external_write_busy() || llc_mem_write_resp_valid_ ||
       llc_mem_ignored_b_count_ != 0;
   llc.io.ext_in.mem.invalidate_all =
-      invalidate_all_requested() && !llc_external_write_busy;
+      invalidate_all_requested() && reconfig_path_quiescent() &&
+      !llc_external_write_busy;
   const bool line_hazard =
       llc_invalidate_line_valid_ &&
       (has_same_line_write_hazard(invalidate_line_addr) ||
@@ -1576,23 +1626,24 @@ void AXI_Interconnect::comb_read_arbiter() {
   axi_mmio_io.ar.arvalid = false;
 
   bool port_busy[2] = {false, false};
-  bool comb_read_id_used[1u << sim_ddr::AXI_ID_WIDTH] = {false};
+  bool comb_read_id_used[2][1u << sim_ddr::AXI_ID_WIDTH] = {};
   uint8_t comb_master_read_count[NUM_READ_MASTERS] = {};
 
-  auto alloc_comb_read_axi_id = [&]() -> uint8_t {
+  auto alloc_comb_read_axi_id = [&](DownstreamPort port) -> uint8_t {
     bool used[1u << sim_ddr::AXI_ID_WIDTH] = {false};
     for (const auto &txn : r_pending) {
-      used[txn.axi_id & kAxiIdMask] = true;
-    }
-    for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
-      const auto &latch = ar_latch(port);
-      if (latch.valid) {
-        used[latch.id & kAxiIdMask] = true;
+      if (txn.port == port) {
+        used[txn.axi_id & kAxiIdMask] = true;
       }
     }
+    const auto &latch = ar_latch(port);
+    if (latch.valid) {
+      used[latch.id & kAxiIdMask] = true;
+    }
+    const uint8_t port_idx = port_index(port);
     for (uint8_t id = 0; id < (1u << sim_ddr::AXI_ID_WIDTH); ++id) {
-      if (!used[id] && !comb_read_id_used[id]) {
-        comb_read_id_used[id] = true;
+      if (!used[id] && !comb_read_id_used[port_idx][id]) {
+        comb_read_id_used[port_idx][id] = true;
         return id;
       }
     }
@@ -1656,7 +1707,7 @@ void AXI_Interconnect::comb_read_arbiter() {
           llc.io.ext_out.mem.read_req_addr, issue_size);
       if (!port_busy[port_index(issue_port)] &&
           downstream_request_supported(issue_port, issue_size)) {
-        const uint8_t axi_id = alloc_comb_read_axi_id();
+        const uint8_t axi_id = alloc_comb_read_axi_id(issue_port);
         if (axi_id != kInvalidAxiReadId) {
           const auto issue = make_downstream_read_issue(
               issue_port, llc.io.ext_out.mem.read_req_addr, issue_size,
@@ -1709,8 +1760,7 @@ void AXI_Interconnect::comb_read_arbiter() {
       const bool req_supported =
           downstream_request_supported(req_port, req_total_size);
       if (!request_uses_direct_mapped_llc(req_addr, req_total_size) &&
-          !req_supported &&
-          !unsupported_mmio_request(req_port, req_total_size)) {
+          !req_supported) {
         continue;
       }
       if (request_uses_mmio_port(req_addr, req_total_size) && req_supported &&
@@ -1743,7 +1793,7 @@ void AXI_Interconnect::comb_read_arbiter() {
         if (has_read_id_conflict(static_cast<uint8_t>(master), cap.id)) {
           continue;
         }
-        const uint8_t axi_id = alloc_comb_read_axi_id();
+        const uint8_t axi_id = alloc_comb_read_axi_id(DownstreamPort::MMIO);
         if (axi_id == kInvalidAxiReadId) {
           continue;
         }
@@ -1851,7 +1901,7 @@ void AXI_Interconnect::comb_read_arbiter() {
     r_current_master = i;
     ar_master_c = i;
     ar_orig_id_c = cap.id;
-    uint8_t axi_id = alloc_comb_read_axi_id();
+    uint8_t axi_id = alloc_comb_read_axi_id(cap_port);
     if (axi_id == kInvalidAxiReadId) {
       continue;
     }
@@ -1901,7 +1951,7 @@ void AXI_Interconnect::comb_read_arbiter() {
       }
 
       r_current_master = idx;
-      uint8_t axi_id = alloc_comb_read_axi_id();
+      uint8_t axi_id = alloc_comb_read_axi_id(req_port);
       if (axi_id == kInvalidAxiReadId) {
         continue;
       }
@@ -1952,27 +2002,33 @@ void AXI_Interconnect::comb_read_response() {
   axi_ddr_io.r.rready = true;
   axi_mmio_io.r.rready = true;
 
-  // Present at most one completed response per master per cycle.
-  bool master_has_resp[NUM_READ_MASTERS] = {false};
+  // Present at most one completed direct response per master per cycle. Use
+  // downstream completion order, not AR order, so a response held under
+  // upstream backpressure remains stable when an older transaction completes.
+  ReadPendingTxn *selected[NUM_READ_MASTERS] = {};
   for (auto &txn : r_pending) {
-    if (txn.beats_done == txn.total_beats) {
-      if (txn.to_llc) {
-        continue;
-      }
-      uint8_t master = txn.master_id;
-      if (!master_has_resp[master]) { // Only first complete per master
-        read_ports[master].resp.valid = true;
-        read_ports[master].resp.data = txn.resp_extract_from_aligned_beat
-                                           ? extract_aligned_downstream_read(txn)
-                                           : txn.data;
-        read_ports[master].resp.id = txn.orig_id;
-        if (!txn.to_llc &&
-            (focus_read_txn(txn) || trace_icache_read_txn(txn, sim_time))) {
-          dump_focus_read_txn("RESP-DRIVE", sim_time, txn);
-        }
-        master_has_resp[master] = true;
-        // No break - continue to find responses for other masters
-      }
+    if (txn.to_llc || txn.beats_done != txn.total_beats ||
+        txn.master_id >= NUM_READ_MASTERS) {
+      continue;
+    }
+    auto *&best = selected[txn.master_id];
+    if (best == nullptr || txn.completion_seq < best->completion_seq) {
+      best = &txn;
+    }
+  }
+  for (int master = 0; master < NUM_READ_MASTERS; ++master) {
+    auto *txn = selected[master];
+    if (txn == nullptr) {
+      continue;
+    }
+    read_ports[master].resp.valid = true;
+    read_ports[master].resp.data =
+        txn->resp_extract_from_aligned_beat
+            ? extract_aligned_downstream_read(*txn)
+            : txn->data;
+    read_ports[master].resp.id = txn->orig_id;
+    if (focus_read_txn(*txn) || trace_icache_read_txn(*txn, sim_time)) {
+      dump_focus_read_txn("RESP-DRIVE", sim_time, *txn);
     }
   }
 }
@@ -2067,7 +2123,7 @@ void AXI_Interconnect::comb_write_request() {
                               ? kMmioAxiSize
                               : kDownstreamAxiSize;
         aw_io.aw.awburst = sim_ddr::AXI_BURST_INCR;
-        aw_io.aw.awid = llc.io.ext_out.mem.write_req_id & 0x7;
+        aw_io.aw.awid = llc.io.ext_out.mem.write_req_id & kAxiIdMask;
       }
     }
 
@@ -2135,8 +2191,7 @@ void AXI_Interconnect::comb_write_request() {
         const bool req_supported =
             downstream_request_supported(req_port, req_total_size);
         if (!request_uses_direct_mapped_llc(req_addr, req_total_size) &&
-            !req_supported &&
-            !unsupported_mmio_request(req_port, req_total_size)) {
+            !req_supported) {
           continue;
         }
         if (w_req_ready_curr[idx]) {
@@ -2228,30 +2283,72 @@ void AXI_Interconnect::comb_write_request() {
 
 void AXI_Interconnect::comb_write_response() {
   if (llc_enabled()) {
-    bool any_direct_resp_valid = false;
-    for (int i = 0; i < NUM_WRITE_MASTERS; ++i) {
-      any_direct_resp_valid = any_direct_resp_valid || w_resp_valid[i];
-    }
-    const bool ready =
-        !any_direct_resp_valid &&
-        ((llc_mem_ignored_b_count_ > 0) || !llc_mem_write_resp_valid_);
-    axi_ddr_io.b.bready = ready;
-    axi_mmio_io.b.bready = ready;
+    auto bready_for_port = [&](DownstreamPort port,
+                               const sim_ddr::SimDDR_IO_t &io) {
+      const auto &current = w_current_ref(port);
+      const bool active = w_active_ref(port);
+      const bool current_matches =
+          active && current.w_done &&
+          current.axi_id == static_cast<uint8_t>(io.b.bid & kAxiIdMask);
+      if (current_matches) {
+        if (current.to_llc_mem) {
+          return !llc_mem_write_resp_valid_;
+        }
+        return current.master_id < NUM_WRITE_MASTERS &&
+               !w_resp_valid[current.master_id];
+      }
+      const bool can_ignore_victim_b =
+          !active && llc_mem_ignored_b_count_ > 0;
+      return can_ignore_victim_b;
+    };
+    axi_ddr_io.b.bready =
+        bready_for_port(DownstreamPort::DDR, axi_ddr_io);
+    axi_mmio_io.b.bready =
+        bready_for_port(DownstreamPort::MMIO, axi_mmio_io);
     return;
   }
 
-  bool any_w_resp_valid = false;
   for (int i = 0; i < NUM_WRITE_MASTERS; i++) {
     write_ports[i].req.accepted = write_req_accepted[i];
     write_ports[i].resp.valid = w_resp_valid[i];
     write_ports[i].resp.id = w_resp_id[i];
     write_ports[i].resp.resp = w_resp_resp[i];
-    any_w_resp_valid = any_w_resp_valid || w_resp_valid[i];
   }
 
-  // Backpressure DDR if upstream hasn't consumed the response yet.
-  axi_ddr_io.b.bready = !any_w_resp_valid;
-  axi_mmio_io.b.bready = !any_w_resp_valid;
+  auto b_target_master = [&](DownstreamPort port,
+                             const sim_ddr::SimDDR_IO_t &io) -> int {
+    if (!io.b.bvalid) {
+      return -2;
+    }
+    const uint8_t bid = static_cast<uint8_t>(io.b.bid & kAxiIdMask);
+    for (const auto &txn : w_pending) {
+      if (txn.port == port && txn.axi_id == bid && txn.w_done &&
+          txn.master_id < NUM_WRITE_MASTERS) {
+        return txn.master_id;
+      }
+    }
+    return -1;
+  };
+  auto can_accept_b_for_master = [&](int master) -> bool {
+    if (master == -2) {
+      return true;
+    }
+    if (master < 0 || master >= NUM_WRITE_MASTERS) {
+      return false;
+    }
+    return !w_resp_valid[master];
+  };
+
+  const int ddr_b_master = b_target_master(DownstreamPort::DDR, axi_ddr_io);
+  const int mmio_b_master = b_target_master(DownstreamPort::MMIO, axi_mmio_io);
+  bool ddr_bready = can_accept_b_for_master(ddr_b_master);
+  bool mmio_bready = can_accept_b_for_master(mmio_b_master);
+  if (ddr_b_master >= 0 && ddr_b_master == mmio_b_master &&
+      ddr_bready && mmio_bready) {
+    mmio_bready = false;
+  }
+  axi_ddr_io.b.bready = ddr_bready;
+  axi_mmio_io.b.bready = mmio_bready;
 }
 
 // ============================================================================
@@ -2353,6 +2450,8 @@ void AXI_Interconnect::seq() {
     txn.stall_cycles = 0;
     txn.last_beats_done = 0;
     txn.timeout_warned = false;
+    txn.completion_queued = false;
+    txn.completion_seq = 0;
     r_pending.push_back(txn);
     if ((sim_time < 400 || focus_read_txn(txn) ||
          trace_icache_read_txn(txn, sim_time)) &&
@@ -2646,6 +2745,11 @@ void AXI_Interconnect::seq() {
           txn.beats_done < txn.total_beats) {
         unpack_downstream_read_beat(txn, io.r.rdata);
         txn.beats_done++;
+        if (!txn.to_llc && txn.beats_done == txn.total_beats &&
+            !txn.completion_queued) {
+          txn.completion_queued = true;
+          txn.completion_seq = direct_read_completion_seq_++;
+        }
         if (focus_read_txn(txn) || trace_icache_read_txn(txn, sim_time)) {
           const std::string beat_hex =
               axi_compat::hex_string(io.r.rdata, kDownstreamBeatBytes);
@@ -2793,7 +2897,7 @@ void AXI_Interconnect::seq() {
           !can_issue_external_write(req_addr)) {
         continue;
       }
-      const uint8_t axi_id = alloc_write_axi_id();
+      const uint8_t axi_id = alloc_write_axi_id(req_port);
       if (axi_id == kInvalidAxiWriteId) {
         break;
       }
@@ -2894,14 +2998,6 @@ void AXI_Interconnect::seq() {
         current.beats_sent++;
         if (llc_w_io.w.wlast) {
           current.w_done = true;
-          if (current.llc_victim_write) {
-            llc_mem_write_resp_valid_ = true;
-            llc_mem_write_resp_ = sim_ddr::AXI_RESP_OKAY;
-            llc_mem_ignored_b_count_++;
-            active = false;
-            current = {};
-            w_current_master_ref(port) = -1;
-          }
         }
       }
     }
@@ -3014,10 +3110,6 @@ void AXI_Interconnect::seq() {
       continue;
     }
     WritePendingTxn txn{};
-    txn.axi_id = alloc_write_axi_id();
-    if (txn.axi_id == kInvalidAxiWriteId) {
-      break;
-    }
     txn.master_id = idx;
     txn.orig_id = write_ports[idx].req.id;
     const uint32_t req_addr = static_cast<uint32_t>(write_ports[idx].req.addr);
@@ -3027,6 +3119,10 @@ void AXI_Interconnect::seq() {
         classify_downstream_port(req_addr, req_total_size);
     if (!downstream_request_supported(req_port, req_total_size)) {
       continue;
+    }
+    txn.axi_id = alloc_write_axi_id(req_port);
+    if (txn.axi_id == kInvalidAxiWriteId) {
+      break;
     }
     const auto issue = make_downstream_write_issue(
         req_port, req_addr, req_total_size, write_ports[idx].req.wdata,
@@ -3071,7 +3167,7 @@ void AXI_Interconnect::seq() {
     auto &latch = aw_latch(port);
     if (seq_aw_io.aw.awvalid && seq_aw_io.aw.awready) {
       const uint8_t axi_id = latch.valid ? latch.id : seq_aw_io.aw.awid;
-      const int pending_idx = find_write_pending_by_axi_id(axi_id);
+      const int pending_idx = find_write_pending_by_axi_id(port, axi_id);
       if (pending_idx >= 0) {
         w_pending[static_cast<size_t>(pending_idx)].aw_done = true;
         const auto &txn = w_pending[static_cast<size_t>(pending_idx)];
@@ -3091,7 +3187,8 @@ void AXI_Interconnect::seq() {
     auto &current = w_current_ref(port);
     bool &active = w_active_ref(port);
     if (active && seq_w_io.w.wvalid && seq_w_io.w.wready) {
-      const int pending_idx = find_write_pending_by_axi_id(current.axi_id);
+      const int pending_idx =
+          find_write_pending_by_axi_id(port, current.axi_id);
       if (pending_idx >= 0) {
         auto &txn = w_pending[static_cast<size_t>(pending_idx)];
         if (focus_write_line(txn.addr)) {
@@ -3116,7 +3213,8 @@ void AXI_Interconnect::seq() {
         current.beats_sent = txn.beats_sent;
       }
       if (seq_w_io.w.wlast) {
-        if (const int idx = find_write_pending_by_axi_id(current.axi_id);
+        if (const int idx =
+                find_write_pending_by_axi_id(port, current.axi_id);
             idx >= 0) {
           w_pending[static_cast<size_t>(idx)].w_done = true;
           const auto &txn = w_pending[static_cast<size_t>(idx)];
@@ -3136,11 +3234,12 @@ void AXI_Interconnect::seq() {
   }
 
   // B handshake
-  auto handle_b_handshake = [&](sim_ddr::SimDDR_IO_t &io) {
+  auto handle_b_handshake = [&](DownstreamPort port, sim_ddr::SimDDR_IO_t &io) {
     if (!io.b.bvalid || !io.b.bready) {
       return;
     }
-    const int pending_idx = find_write_pending_by_axi_id(io.b.bid);
+    const int pending_idx = find_write_pending_by_axi_id(
+        port, static_cast<uint8_t>(io.b.bid & kAxiIdMask));
     if (pending_idx >= 0) {
       const auto txn = w_pending[static_cast<size_t>(pending_idx)];
       if (focus_write_line(txn.addr)) {
@@ -3159,8 +3258,8 @@ void AXI_Interconnect::seq() {
       w_pending.erase(w_pending.begin() + pending_idx);
     }
   };
-  handle_b_handshake(axi_ddr_io);
-  handle_b_handshake(axi_mmio_io);
+  handle_b_handshake(DownstreamPort::DDR, axi_ddr_io);
+  handle_b_handshake(DownstreamPort::MMIO, axi_mmio_io);
 
   // Upstream response handshake.
   for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
@@ -3286,6 +3385,32 @@ void AXI_Interconnect::debug_print() {
            static_cast<unsigned>(llc_mem_write_resp_),
            static_cast<int>(w_active), w_current_master,
            static_cast<int>(aw_latched.valid));
+    printf("    ddr_b: valid=%d ready=%d bid=%u resp=%u ignored_b=%u\n",
+           static_cast<int>(axi_ddr_io.b.bvalid),
+           static_cast<int>(axi_ddr_io.b.bready),
+           static_cast<unsigned>(axi_ddr_io.b.bid & kAxiIdMask),
+           static_cast<unsigned>(axi_ddr_io.b.bresp),
+           static_cast<unsigned>(llc_mem_ignored_b_count_));
+    printf("    mmio_b: valid=%d ready=%d bid=%u resp=%u\n",
+           static_cast<int>(axi_mmio_io.b.bvalid),
+           static_cast<int>(axi_mmio_io.b.bready),
+           static_cast<unsigned>(axi_mmio_io.b.bid & kAxiIdMask),
+           static_cast<unsigned>(axi_mmio_io.b.bresp));
+    printf("    ddr_w_current: active=%d aw_done=%d w_done=%d beats=%u/%u addr=0x%08x id=%u to_llc=%d\n",
+           static_cast<int>(w_active), static_cast<int>(w_current.aw_done),
+           static_cast<int>(w_current.w_done),
+           static_cast<unsigned>(w_current.beats_sent),
+           static_cast<unsigned>(w_current.total_beats), w_current.addr,
+           static_cast<unsigned>(w_current.axi_id),
+           static_cast<int>(w_current.to_llc_mem));
+    printf("    mmio_w_current: active=%d aw_done=%d w_done=%d beats=%u/%u addr=0x%08x id=%u to_llc=%d\n",
+           static_cast<int>(w_active_mmio),
+           static_cast<int>(w_current_mmio.aw_done),
+           static_cast<int>(w_current_mmio.w_done),
+           static_cast<unsigned>(w_current_mmio.beats_sent),
+           static_cast<unsigned>(w_current_mmio.total_beats),
+           w_current_mmio.addr, static_cast<unsigned>(w_current_mmio.axi_id),
+           static_cast<int>(w_current_mmio.to_llc_mem));
     llc.debug_print();
   }
 }
@@ -3294,9 +3419,7 @@ void AXI_Interconnect::debug_print() {
 // Helpers
 // ============================================================================
 uint8_t AXI_Interconnect::calc_burst_len(uint8_t total_size) {
-  uint16_t bytes = static_cast<uint16_t>(total_size) + 1u;
-  uint16_t beats = (bytes + kDownstreamBeatBytes - 1u) / kDownstreamBeatBytes;
-  return beats > 0 ? static_cast<uint8_t>(beats - 1u) : 0;
+  return axi_dual_port_axi_len_for_beat_bytes(total_size, kDownstreamBeatBytes);
 }
 
 } // namespace axi_interconnect

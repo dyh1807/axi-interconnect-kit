@@ -35,6 +35,8 @@ module axi_llc_subsystem_compat #(
     parameter WINDOW_WAYS       = `AXI_LLC_WINDOW_WAYS,
     parameter MMIO_BASE         = `AXI_LLC_MMIO_BASE,
     parameter MMIO_SIZE         = `AXI_LLC_MMIO_SIZE,
+    parameter DUAL_PORT_ROUTE_ENABLE = 0,
+    parameter DDR_BASE          = 32'h4000_0000,
     parameter RESET_MODE        = {{(`AXI_LLC_MODE_BITS-2){1'b0}}, 2'b01},
     parameter RESET_OFFSET      = {`AXI_LLC_ADDR_BITS{1'b0}},
     parameter USE_SMIC12_STORES = 1,
@@ -394,6 +396,16 @@ module axi_llc_subsystem_compat #(
         end
     endfunction
 
+    function request_starts_in_mmio;
+        input [ADDR_BITS-1:0] addr_value;
+        reg [ADDR_BITS:0]     mmio_limit_value;
+        begin
+            mmio_limit_value = {1'b0, MMIO_BASE} + {1'b0, MMIO_SIZE};
+            request_starts_in_mmio = ({1'b0, addr_value} >= {1'b0, MMIO_BASE}) &&
+                                     ({1'b0, addr_value} < mmio_limit_value);
+        end
+    endfunction
+
     function request_in_mapped_window;
         input [ADDR_BITS-1:0] offset_value;
         input [ADDR_BITS-1:0] addr_value;
@@ -439,6 +451,56 @@ module axi_llc_subsystem_compat #(
         end
     endfunction
 
+    function direct_bypass_request_supported;
+        input [ADDR_BITS-1:0] addr_value;
+        input [7:0]           total_size_value;
+        begin
+            if (!DUAL_PORT_ROUTE_ENABLE) begin
+                direct_bypass_request_supported = 1'b1;
+            end else if (addr_value >= DDR_BASE[ADDR_BITS-1:0]) begin
+                direct_bypass_request_supported = 1'b1;
+            end else begin
+                direct_bypass_request_supported = (total_size_value == 8'd3);
+            end
+        end
+    endfunction
+
+    function request_accept_supported;
+        input [MODE_BITS-1:0] mode_value;
+        input [ADDR_BITS-1:0] offset_value;
+        input [ADDR_BITS-1:0] addr_value;
+        input [7:0]           total_size_value;
+        input                 bypass_value;
+        begin
+            request_accept_supported =
+                !request_uses_direct_bypass(mode_value,
+                                            offset_value,
+                                            addr_value,
+                                            total_size_value,
+                                            bypass_value) ||
+                direct_bypass_request_supported(addr_value,
+                                                total_size_value);
+        end
+    endfunction
+
+    function request_uses_supported_direct_bypass;
+        input [MODE_BITS-1:0] mode_value;
+        input [ADDR_BITS-1:0] offset_value;
+        input [ADDR_BITS-1:0] addr_value;
+        input [7:0]           total_size_value;
+        input                 bypass_value;
+        begin
+            request_uses_supported_direct_bypass =
+                request_uses_direct_bypass(mode_value,
+                                           offset_value,
+                                           addr_value,
+                                           total_size_value,
+                                           bypass_value) &&
+                direct_bypass_request_supported(addr_value,
+                                                total_size_value);
+        end
+    endfunction
+
     function request_needs_mode2_ddr_aligned;
         input [MODE_BITS-1:0] mode_value;
         input [ADDR_BITS-1:0] offset_value;
@@ -446,12 +508,12 @@ module axi_llc_subsystem_compat #(
         input [7:0]           total_size_value;
         begin
             request_needs_mode2_ddr_aligned =
-                (mode_value == MODE_MAPPED) &&
-                !request_in_mapped_window(offset_value,
-                                          addr_value,
-                                          total_size_value) &&
-                !((addr_value >= MMIO_BASE) &&
-                  (addr_value < (MMIO_BASE + MMIO_SIZE)));
+                request_uses_direct_bypass(mode_value,
+                                           offset_value,
+                                           addr_value,
+                                           total_size_value,
+                                           1'b1) &&
+                !request_starts_in_mmio(addr_value);
         end
     endfunction
 
@@ -926,6 +988,11 @@ module axi_llc_subsystem_compat #(
                     read_req_valid[next_port] &&
                     (rd_q_count[next_port] < READ_FIFO_DEPTH) &&
                     (total_read_outstanding_w < MAX_OUTSTANDING) &&
+                    request_accept_supported(active_mode,
+                                             active_offset,
+                                             read_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS],
+                                             read_req_total_size[(next_port * 8) +: 8],
+                                             read_req_bypass[next_port]) &&
                     (request_uses_direct_bypass(active_mode,
                                                active_offset,
                                                read_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS],
@@ -954,6 +1021,11 @@ module axi_llc_subsystem_compat #(
                     write_req_valid[next_port] &&
                     (wr_q_count[next_port] < WRITE_FIFO_DEPTH) &&
                     (total_write_outstanding_w < MAX_WRITE_OUTSTANDING) &&
+                    request_accept_supported(active_mode,
+                                             active_offset,
+                                             write_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS],
+                                             write_req_total_size[(next_port * 8) +: 8],
+                                             write_req_bypass[next_port]) &&
                     (request_uses_direct_bypass(active_mode,
                                                active_offset,
                                                write_req_addr[(next_port * ADDR_BITS) +: ADDR_BITS],
@@ -1064,11 +1136,12 @@ module axi_llc_subsystem_compat #(
                         if (rd_q_count[next_port] != 0) begin
                             direct_dispatch_fifo_slot_w =
                                 rd_slot_index(next_port, rd_q_head[next_port]);
-                            if (request_uses_direct_bypass(active_mode,
-                                                           active_offset,
-                                                           rd_q_addr[direct_dispatch_fifo_slot_w],
-                                                           rd_q_size[direct_dispatch_fifo_slot_w],
-                                                           rd_q_bypass[direct_dispatch_fifo_slot_w])) begin
+                            if (request_uses_supported_direct_bypass(
+                                    active_mode,
+                                    active_offset,
+                                    rd_q_addr[direct_dispatch_fifo_slot_w],
+                                    rd_q_size[direct_dispatch_fifo_slot_w],
+                                    rd_q_bypass[direct_dispatch_fifo_slot_w])) begin
                                 direct_dispatch_found_w = 1'b1;
                                 direct_dispatch_is_write_w = 1'b0;
                                 direct_dispatch_master_w = next_port[7:0];
@@ -1088,11 +1161,12 @@ module axi_llc_subsystem_compat #(
                         if (wr_q_count[flat_idx] != 0) begin
                             direct_dispatch_fifo_slot_w =
                                 wr_slot_index(flat_idx, wr_q_head[flat_idx]);
-                            if (request_uses_direct_bypass(active_mode,
-                                                           active_offset,
-                                                           wr_q_addr[direct_dispatch_fifo_slot_w],
-                                                           wr_q_size[direct_dispatch_fifo_slot_w],
-                                                           wr_q_bypass[direct_dispatch_fifo_slot_w])) begin
+                            if (request_uses_supported_direct_bypass(
+                                    active_mode,
+                                    active_offset,
+                                    wr_q_addr[direct_dispatch_fifo_slot_w],
+                                    wr_q_size[direct_dispatch_fifo_slot_w],
+                                    wr_q_bypass[direct_dispatch_fifo_slot_w])) begin
                                 direct_dispatch_found_w = 1'b1;
                                 direct_dispatch_is_write_w = 1'b1;
                                 direct_dispatch_master_w = flat_idx[7:0];
@@ -1169,6 +1243,11 @@ module axi_llc_subsystem_compat #(
                                        !accept_blocked_w &&
                                        (rd_q_count[flat_idx] < READ_FIFO_DEPTH) &&
                                        (total_read_outstanding_w < MAX_OUTSTANDING) &&
+                                       request_accept_supported(active_mode,
+                                                                  active_offset,
+                                                                  read_req_addr[(flat_idx * ADDR_BITS) +: ADDR_BITS],
+                                                                  read_req_total_size[(flat_idx * 8) +: 8],
+                                                                  read_req_bypass[flat_idx]) &&
                                        !(core_req_stage_pop_w &&
                                          !core_req_stage_is_write_r &&
                                          (core_req_stage_master_r == flat_idx[7:0])) &&
@@ -1201,6 +1280,11 @@ module axi_llc_subsystem_compat #(
                                         !accept_blocked_w &&
                                         (wr_q_count[flat_idx] < WRITE_FIFO_DEPTH) &&
                                         (total_write_outstanding_w < MAX_WRITE_OUTSTANDING) &&
+                                        request_accept_supported(active_mode,
+                                                                 active_offset,
+                                                                 write_req_addr[(flat_idx * ADDR_BITS) +: ADDR_BITS],
+                                                                 write_req_total_size[(flat_idx * 8) +: 8],
+                                                                 write_req_bypass[flat_idx]) &&
                                         !(core_req_stage_pop_w &&
                                           core_req_stage_is_write_r &&
                                           (core_req_stage_master_r == flat_idx[7:0])) &&
@@ -1239,7 +1323,10 @@ module axi_llc_subsystem_compat #(
                              direct_slot_size_r[direct_issue_slot_w] :
                              direct_dispatch_size_w;
     assign bypass_req_mode2_ddr_aligned = direct_issue_found_w ?
-                                          1'b0 :
+                                          request_needs_mode2_ddr_aligned(active_mode,
+                                                                          active_offset,
+                                                                          direct_slot_addr_r[direct_issue_slot_w],
+                                                                          direct_slot_size_r[direct_issue_slot_w]) :
                                           request_needs_mode2_ddr_aligned(active_mode,
                                                                           active_offset,
                                                                           direct_dispatch_addr_w,

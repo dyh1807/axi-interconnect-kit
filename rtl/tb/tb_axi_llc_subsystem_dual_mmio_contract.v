@@ -30,6 +30,8 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
     localparam [ADDR_BITS-1:0] MMIO_READ_ADDR = `AXI_LLC_MMIO_BASE + 32'h0000_000C;
     localparam [ADDR_BITS-1:0] MMIO_WRITE_ADDR = `AXI_LLC_MMIO_BASE + 32'h0000_0008;
     localparam [ADDR_BITS-1:0] DDR_READ_ADDR = 32'h4000_0100;
+    localparam [ADDR_BITS-1:0] DDR_HAZARD_READ_ADDR = 32'h4000_0200;
+    localparam [ADDR_BITS-1:0] DDR_HAZARD_WRITE_ADDR = 32'h4000_0220;
     localparam [ID_BITS-1:0] READ_ID = 4'h9;
     localparam [ID_BITS-1:0] WRITE_ID = 4'hA;
     localparam [ID_BITS-1:0] DDR_READ_ID = 4'h6;
@@ -142,6 +144,8 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
 
     reg [AXI_ID_BITS-1:0]            seen_mmio_arid;
     reg [AXI_ID_BITS-1:0]            seen_mmio_awid;
+    reg [AXI_ID_BITS-1:0]            seen_ddr_arid;
+    reg [AXI_ID_BITS-1:0]            seen_ddr_awid;
     wire [ID_BITS-1:0]               read_resp_id_w;
     wire [ID_BITS-1:0]               write_resp_id_w;
     wire [1:0]                       write_resp_code_w;
@@ -271,6 +275,501 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
             if (mmio_axi_arvalid || mmio_axi_awvalid || mmio_axi_wvalid) begin
                 fail_now("MMIO port active before MMIO overlap request");
             end
+        end
+    endtask
+
+    task issue_ddr_bypass_read_hazard;
+        integer timeout;
+        begin
+            read_req_addr[ADDR_BITS-1:0] = DDR_HAZARD_READ_ADDR;
+            read_req_total_size[7:0] = 8'd3;
+            read_req_id[ID_BITS-1:0] = READ_ID;
+            read_req_bypass[0] = 1'b1;
+            read_req_valid[0] = 1'b1;
+            timeout = 80;
+            while (timeout > 0) begin
+                @(posedge clk);
+                if (read_req_valid[0] && read_req_ready[0]) begin
+                    timeout = 0;
+                end else begin
+                    timeout = timeout - 1;
+                end
+            end
+            if (!(read_req_valid[0] && read_req_ready[0])) begin
+                fail_now("DDR bypass read request handshake timeout");
+            end
+            #1;
+            if (!read_req_accepted[0] || read_req_accepted_id[ID_BITS-1:0] != READ_ID) begin
+                fail_now("DDR bypass read accepted metadata mismatch");
+            end
+            @(negedge clk);
+            read_req_valid[0] = 1'b0;
+            read_req_bypass[0] = 1'b0;
+        end
+    endtask
+
+    task wait_ddr_bypass_ar;
+        integer timeout;
+        begin
+            timeout = 120;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("DDR bypass AR timeout");
+            end
+            if (ddr_axi_araddr != DDR_HAZARD_READ_ADDR ||
+                ddr_axi_arlen != 8'd0 ||
+                ddr_axi_arsize != AXI_SIZE_256 ||
+                ddr_axi_arburst != AXI_BURST_INCR) begin
+                fail_now("DDR bypass AR shape mismatch");
+            end
+            seen_ddr_arid = ddr_axi_arid;
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            ddr_axi_arready = 1'b0;
+            @(negedge clk);
+        end
+    endtask
+
+    task issue_same_line_ddr_bypass_write_before_read_done;
+        integer timeout;
+        integer idx;
+        begin
+            @(negedge clk);
+            write_req_addr[ADDR_BITS-1:0] = DDR_HAZARD_WRITE_ADDR;
+            write_req_total_size[7:0] = 8'd3;
+            write_req_id[ID_BITS-1:0] = WRITE_ID;
+            write_req_bypass[0] = 1'b1;
+            write_req_wdata = {(NUM_WRITE_MASTERS*LINE_BITS){1'b0}};
+            write_req_wdata[31:0] = 32'hBEEF_0200;
+            write_req_wstrb = {(NUM_WRITE_MASTERS*LINE_BYTES){1'b0}};
+            write_req_wstrb[3:0] = 4'hF;
+            write_req_valid[0] = 1'b1;
+            timeout = 80;
+            while (timeout > 0) begin
+                #1;
+                if (ddr_axi_awvalid || ddr_axi_wvalid) begin
+                    fail_now("same-line DDR AW/W escaped before bypass read completed");
+                end
+                @(posedge clk);
+                if (write_req_valid[0] && write_req_ready[0]) begin
+                    timeout = 0;
+                end else begin
+                    timeout = timeout - 1;
+                end
+            end
+            if (timeout == 0) begin
+                #1;
+                if (!write_req_accepted[0]) begin
+                    fail_now("same-line DDR bypass write did not accept before read completion");
+                end
+                if (ddr_axi_awvalid || ddr_axi_wvalid) begin
+                    fail_now("same-line DDR AW/W escaped on write accept");
+                end
+            end else begin
+                fail_now("same-line DDR bypass write wait loop exited unexpectedly");
+            end
+            @(negedge clk);
+            write_req_valid[0] = 1'b0;
+            write_req_bypass[0] = 1'b0;
+
+            for (idx = 0; idx < 8; idx = idx + 1) begin
+                #1;
+                if (ddr_axi_awvalid || ddr_axi_wvalid) begin
+                    fail_now("same-line DDR AW/W escaped while read response pending");
+                end
+                @(negedge clk);
+            end
+        end
+    endtask
+
+    task drive_ddr_bypass_read_resp;
+        integer timeout;
+        begin
+            @(negedge clk);
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = {DDR_DATA_BITS{1'b0}};
+            ddr_axi_rdata[31:0] = 32'hCAFE_0200;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            ddr_axi_rvalid = 1'b1;
+            timeout = 40;
+            while (!ddr_axi_rready && (timeout > 0)) begin
+                @(negedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("DDR bypass R handshake timeout");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+        end
+    endtask
+
+    task wait_ddr_bypass_read_resp;
+        integer timeout;
+        begin
+            timeout = 120;
+            while (!read_resp_valid[0] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("DDR bypass read response timeout");
+            end
+            if (read_resp_id_w != READ_ID ||
+                read_resp_data[31:0] != 32'hCAFE_0200) begin
+                fail_now("DDR bypass read response mismatch");
+            end
+            @(posedge clk);
+        end
+    endtask
+
+    task check_ddr_bypass_read_resp_buffered;
+        integer timeout;
+        begin
+            timeout = 120;
+            while (!read_resp_valid[0] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("DDR bypass read response was not buffered");
+            end
+            if (read_resp_id_w != READ_ID ||
+                read_resp_data[31:0] != 32'hCAFE_0200) begin
+                fail_now("buffered DDR bypass read response mismatch");
+            end
+        end
+    endtask
+
+    task finish_same_line_ddr_bypass_write;
+        integer timeout;
+        begin
+            timeout = 120;
+            while (!ddr_axi_awvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("same-line DDR AW did not issue after read response");
+            end
+            if (ddr_axi_awaddr != DDR_HAZARD_WRITE_ADDR ||
+                ddr_axi_awlen != 8'd0 ||
+                ddr_axi_awsize != AXI_SIZE_256 ||
+                ddr_axi_awburst != AXI_BURST_INCR) begin
+                fail_now("same-line DDR AW shape mismatch");
+            end
+            seen_ddr_awid = ddr_axi_awid;
+            ddr_axi_awready = 1'b1;
+            @(posedge clk);
+            ddr_axi_awready = 1'b0;
+
+            timeout = 120;
+            while (!ddr_axi_wvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("same-line DDR W did not issue after AW");
+            end
+            if (!ddr_axi_wlast || ddr_axi_wstrb[3:0] != 4'hF ||
+                ddr_axi_wdata[31:0] != 32'hBEEF_0200) begin
+                fail_now("same-line DDR W shape mismatch");
+            end
+            ddr_axi_wready = 1'b1;
+            @(posedge clk);
+            ddr_axi_wready = 1'b0;
+
+            @(negedge clk);
+            ddr_axi_bid = seen_ddr_awid;
+            ddr_axi_bresp = AXI_RESP_OKAY;
+            ddr_axi_bvalid = 1'b1;
+            timeout = 40;
+            while (!ddr_axi_bready && (timeout > 0)) begin
+                @(negedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("same-line DDR B handshake timeout");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b0;
+
+            timeout = 120;
+            while (!write_resp_valid[0] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("same-line DDR write response timeout");
+            end
+            if (write_resp_id_w != WRITE_ID || write_resp_code_w != AXI_RESP_OKAY) begin
+                fail_now("same-line DDR write response mismatch");
+            end
+            @(posedge clk);
+        end
+    endtask
+
+    task test_same_line_ddr_write_waits_for_read;
+        begin
+            issue_ddr_bypass_read_hazard();
+            wait_ddr_bypass_ar();
+            issue_same_line_ddr_bypass_write_before_read_done();
+            ddr_axi_awready = 1'b0;
+            ddr_axi_wready = 1'b0;
+            read_resp_ready[0] = 1'b0;
+            drive_ddr_bypass_read_resp();
+            check_ddr_bypass_read_resp_buffered();
+            finish_same_line_ddr_bypass_write();
+            read_resp_ready[0] = 1'b1;
+            wait_ddr_bypass_read_resp();
+        end
+    endtask
+
+    task issue_ddr_bypass_write_hazard;
+        integer timeout;
+        begin
+            @(negedge clk);
+            write_req_addr[ADDR_BITS-1:0] = DDR_HAZARD_WRITE_ADDR;
+            write_req_total_size[7:0] = 8'd3;
+            write_req_id[ID_BITS-1:0] = WRITE_ID;
+            write_req_bypass[0] = 1'b1;
+            write_req_wdata = {(NUM_WRITE_MASTERS*LINE_BITS){1'b0}};
+            write_req_wdata[31:0] = 32'hBEEF_0220;
+            write_req_wstrb = {(NUM_WRITE_MASTERS*LINE_BYTES){1'b0}};
+            write_req_wstrb[3:0] = 4'hF;
+            write_req_valid[0] = 1'b1;
+            timeout = 80;
+            while (timeout > 0) begin
+                @(posedge clk);
+                if (write_req_valid[0] && write_req_ready[0]) begin
+                    timeout = 0;
+                end else begin
+                    timeout = timeout - 1;
+                end
+            end
+            if (!(write_req_valid[0] && write_req_ready[0])) begin
+                fail_now("DDR bypass write hazard request handshake timeout");
+            end
+            #1;
+            if (!write_req_accepted[0]) begin
+                fail_now("DDR bypass write hazard accepted pulse missing");
+            end
+            @(negedge clk);
+            write_req_valid[0] = 1'b0;
+            write_req_bypass[0] = 1'b0;
+        end
+    endtask
+
+    task wait_ddr_bypass_aw_w_hazard;
+        integer timeout;
+        begin
+            timeout = 120;
+            while (!ddr_axi_awvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("DDR bypass hazard AW timeout");
+            end
+            if (ddr_axi_awaddr != DDR_HAZARD_WRITE_ADDR ||
+                ddr_axi_awlen != 8'd0 ||
+                ddr_axi_awsize != AXI_SIZE_256 ||
+                ddr_axi_awburst != AXI_BURST_INCR) begin
+                fail_now("DDR bypass hazard AW shape mismatch");
+            end
+            seen_ddr_awid = ddr_axi_awid;
+            ddr_axi_awready = 1'b1;
+            @(posedge clk);
+            ddr_axi_awready = 1'b0;
+
+            timeout = 120;
+            while (!ddr_axi_wvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("DDR bypass hazard W timeout");
+            end
+            if (!ddr_axi_wlast || ddr_axi_wstrb[3:0] != 4'hF ||
+                ddr_axi_wdata[31:0] != 32'hBEEF_0220) begin
+                fail_now("DDR bypass hazard W shape mismatch");
+            end
+            ddr_axi_wready = 1'b1;
+            @(posedge clk);
+            ddr_axi_wready = 1'b0;
+            @(negedge clk);
+        end
+    endtask
+
+    task hold_same_line_ddr_bypass_read_before_write_done;
+        integer idx;
+        begin
+            @(negedge clk);
+            read_req_addr[ADDR_BITS-1:0] = DDR_HAZARD_READ_ADDR;
+            read_req_total_size[7:0] = 8'd3;
+            read_req_id[ID_BITS-1:0] = READ_ID;
+            read_req_bypass[0] = 1'b1;
+            read_req_valid[0] = 1'b1;
+
+            for (idx = 0; idx < 8; idx = idx + 1) begin
+                #1;
+                if (read_req_ready[0] || read_req_accepted[0]) begin
+                    fail_now("same-line DDR bypass read accepted before write completed");
+                end
+                if (ddr_axi_arvalid) begin
+                    fail_now("same-line DDR AR escaped before bypass write completed");
+                end
+                @(posedge clk);
+            end
+            @(negedge clk);
+        end
+    endtask
+
+    task drive_ddr_bypass_write_resp_stalled;
+        integer timeout;
+        begin
+            @(negedge clk);
+            ddr_axi_bid = seen_ddr_awid;
+            ddr_axi_bresp = AXI_RESP_OKAY;
+            ddr_axi_bvalid = 1'b1;
+            timeout = 40;
+            while (!ddr_axi_bready && (timeout > 0)) begin
+                @(negedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("DDR bypass B handshake timeout while upstream stalled");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b0;
+
+            timeout = 120;
+            while (!write_resp_valid[0] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("buffered DDR bypass write response timeout");
+            end
+            if (write_resp_id_w != WRITE_ID || write_resp_code_w != AXI_RESP_OKAY) begin
+                fail_now("buffered DDR bypass write response mismatch");
+            end
+            #1;
+            if (read_req_ready[0] || read_req_accepted[0]) begin
+                fail_now("same-line DDR read accepted before write response was consumed");
+            end
+            if (ddr_axi_arvalid) begin
+                fail_now("same-line DDR AR escaped while write response was buffered");
+            end
+        end
+    endtask
+
+    task finish_same_line_ddr_bypass_read;
+        integer timeout;
+        begin
+            @(negedge clk);
+            write_resp_ready[0] = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            write_resp_ready[0] = 1'b0;
+
+            timeout = 120;
+            while (timeout > 0) begin
+                #1;
+                if (ddr_axi_arvalid) begin
+                    fail_now("same-line DDR AR escaped before read request was accepted");
+                end
+                @(posedge clk);
+                if (read_req_valid[0] && read_req_ready[0]) begin
+                    timeout = 0;
+                end else begin
+                    timeout = timeout - 1;
+                end
+            end
+            if (!(read_req_valid[0] && read_req_ready[0])) begin
+                fail_now("same-line DDR read request did not accept after write response");
+            end
+            #1;
+            if (!read_req_accepted[0] || read_req_accepted_id[ID_BITS-1:0] != READ_ID) begin
+                fail_now("same-line DDR read accepted metadata mismatch after write");
+            end
+            @(negedge clk);
+            read_req_valid[0] = 1'b0;
+            read_req_bypass[0] = 1'b0;
+
+            timeout = 120;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("same-line DDR AR did not issue after write response");
+            end
+            if (ddr_axi_araddr != DDR_HAZARD_READ_ADDR ||
+                ddr_axi_arlen != 8'd0 ||
+                ddr_axi_arsize != AXI_SIZE_256 ||
+                ddr_axi_arburst != AXI_BURST_INCR) begin
+                fail_now("same-line DDR AR after write shape mismatch");
+            end
+            seen_ddr_arid = ddr_axi_arid;
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            ddr_axi_arready = 1'b0;
+
+            @(negedge clk);
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = {DDR_DATA_BITS{1'b0}};
+            ddr_axi_rdata[31:0] = 32'hCAFE_0220;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            ddr_axi_rvalid = 1'b1;
+            timeout = 40;
+            while (!ddr_axi_rready && (timeout > 0)) begin
+                @(negedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("same-line DDR read R handshake timeout after write");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 120;
+            while (!read_resp_valid[0] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("same-line DDR read response timeout after write");
+            end
+            if (read_resp_id_w != READ_ID ||
+                read_resp_data[31:0] != 32'hCAFE_0220) begin
+                fail_now("same-line DDR read response mismatch after write");
+            end
+            @(posedge clk);
+        end
+    endtask
+
+    task test_same_line_ddr_read_waits_for_write;
+        begin
+            issue_ddr_bypass_write_hazard();
+            wait_ddr_bypass_aw_w_hazard();
+            hold_same_line_ddr_bypass_read_before_write_done();
+            ddr_axi_arready = 1'b0;
+            write_resp_ready[0] = 1'b0;
+            drive_ddr_bypass_write_resp_stalled();
+            finish_same_line_ddr_bypass_read();
+            read_resp_ready[0] = 1'b1;
         end
     endtask
 
@@ -704,6 +1203,10 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
         invalidate_line_valid = 1'b0;
         invalidate_line_addr = {ADDR_BITS{1'b0}};
         invalidate_all_valid = 1'b0;
+        seen_mmio_arid = {AXI_ID_BITS{1'b0}};
+        seen_mmio_awid = {AXI_ID_BITS{1'b0}};
+        seen_ddr_arid = {AXI_ID_BITS{1'b0}};
+        seen_ddr_awid = {AXI_ID_BITS{1'b0}};
 
         wait_cycles(5);
         rst_n = 1'b1;
@@ -718,6 +1221,9 @@ module tb_axi_llc_subsystem_dual_mmio_contract;
         wait_mmio_aw_w();
         drive_mmio_b();
         wait_mmio_write_resp();
+
+        test_same_line_ddr_write_waits_for_read();
+        test_same_line_ddr_read_waits_for_write();
 
         ddr_axi_arready = 1'b0;
         issue_ddr_cache_read();

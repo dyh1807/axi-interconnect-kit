@@ -106,6 +106,7 @@ module tb_axi_llc_axi_bridge_dual_contract;
     reg                           mmio_axi_rlast;
 
     reg [AXI_ID_BITS-1:0]         captured_ddr_arid;
+    reg [AXI_ID_BITS-1:0]         captured_ddr_awid;
     reg [AXI_ID_BITS-1:0]         captured_mmio_arid;
     reg [AXI_ID_BITS-1:0]         captured_mmio_awid;
 
@@ -264,6 +265,133 @@ module tb_axi_llc_axi_bridge_dual_contract;
         end
     endtask
 
+    task send_ddr_bypass_write_resp;
+        input [AXI_ID_BITS-1:0] id;
+        input [ID_BITS-1:0] expected_id;
+        integer timeout;
+        begin
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b1;
+            ddr_axi_bid = id;
+            ddr_axi_bresp = 2'b00;
+            #1;
+            if (!ddr_axi_bready) begin
+                fail_now("DDR B was not accepted");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b0;
+            timeout = 0;
+            while (!bypass_resp_valid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!bypass_resp_valid || bypass_resp_id != expected_id ||
+                bypass_resp_code != 2'b00) begin
+                fail_now("DDR write response did not return to bypass source");
+            end
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
+    task issue_ddr_cache_read;
+        input [ADDR_BITS-1:0] addr;
+        input [ID_BITS-1:0] id;
+        begin
+            @(negedge clk);
+            cache_req_valid = 1'b1;
+            cache_req_write = 1'b0;
+            cache_req_addr = addr;
+            cache_req_id = id;
+            cache_req_size = 8'd63;
+            #1;
+            if (!cache_req_ready) begin
+                fail_now("DDR cache read request was not accepted");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            cache_req_valid = 1'b0;
+        end
+    endtask
+
+    task issue_ddr_bypass_word_write;
+        input [ADDR_BITS-1:0] addr;
+        input [ID_BITS-1:0] id;
+        input [31:0] data_word;
+        begin
+            @(negedge clk);
+            bypass_req_valid = 1'b1;
+            bypass_req_write = 1'b1;
+            bypass_req_addr = addr;
+            bypass_req_id = id;
+            bypass_req_size = 8'd3;
+            bypass_req_wdata = {LINE_BITS{1'b0}};
+            bypass_req_wdata[31:0] = data_word;
+            bypass_req_wstrb = {LINE_BYTES{1'b0}};
+            bypass_req_wstrb[3:0] = 4'hF;
+            #1;
+            if (!bypass_req_ready) begin
+                fail_now("DDR bypass write request was not accepted");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            bypass_req_valid = 1'b0;
+        end
+    endtask
+
+    task wait_ddr_ar;
+        input [ADDR_BITS-1:0] expected_addr;
+        integer timeout;
+        begin
+            timeout = 0;
+            while (!ddr_axi_arvalid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!ddr_axi_arvalid) begin
+                fail_now("DDR AR did not become valid");
+            end
+            if (ddr_axi_araddr != expected_addr) begin
+                fail_now("DDR AR address mismatch");
+            end
+            captured_ddr_arid = ddr_axi_arid;
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
+    task wait_ddr_aw_and_w;
+        input [ADDR_BITS-1:0] expected_addr;
+        integer timeout;
+        begin
+            timeout = 0;
+            while (!ddr_axi_awvalid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!ddr_axi_awvalid) begin
+                fail_now("DDR AW did not become valid");
+            end
+            if (ddr_axi_awaddr != expected_addr) begin
+                fail_now("DDR AW address mismatch");
+            end
+            captured_ddr_awid = ddr_axi_awid;
+            @(posedge clk);
+            @(negedge clk);
+            timeout = 0;
+            while (!ddr_axi_wvalid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!ddr_axi_wvalid || !ddr_axi_wlast) begin
+                fail_now("DDR W did not become valid as one beat");
+            end
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
     task test_mixed_read_concurrent_issue;
         begin
             @(negedge clk);
@@ -300,6 +428,456 @@ module tb_axi_llc_axi_bridge_dual_contract;
             @(negedge clk);
             send_mmio_read_resp(captured_mmio_arid, 32'hA5A5_0009);
             send_ddr_read_resp(captured_ddr_arid, 32'hD00D_0003);
+        end
+    endtask
+
+    task issue_mmio_cache_word_read;
+        input [ADDR_BITS-1:0] addr;
+        input [ID_BITS-1:0] id;
+        begin
+            @(negedge clk);
+            cache_req_valid = 1'b1;
+            cache_req_write = 1'b0;
+            cache_req_addr = addr;
+            cache_req_id = id;
+            cache_req_size = 8'd3;
+            #1;
+            if (!cache_req_ready) begin
+                fail_now("MMIO cache read request was not accepted");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            cache_req_valid = 1'b0;
+        end
+    endtask
+
+    task wait_mmio_ar;
+        input [ADDR_BITS-1:0] expected_addr;
+        integer timeout;
+        begin
+            timeout = 0;
+            while (!mmio_axi_arvalid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!mmio_axi_arvalid) begin
+                fail_now("MMIO AR did not become valid");
+            end
+            if (mmio_axi_araddr != expected_addr ||
+                mmio_axi_arlen != 8'd0 ||
+                mmio_axi_arsize != 3'd2) begin
+                fail_now("MMIO AR shape mismatch");
+            end
+            captured_mmio_arid = mmio_axi_arid;
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
+    task test_cache_resp_mux_does_not_backpressure_external_r;
+        integer timeout;
+        reg [AXI_ID_BITS-1:0] ddr_id;
+        reg [AXI_ID_BITS-1:0] mmio_id;
+        begin
+            cache_resp_ready = 1'b0;
+
+            issue_ddr_cache_read(DDR_BASE + 32'h0000_0B00, 4'h4);
+            wait_ddr_ar(DDR_BASE + 32'h0000_0B00);
+            ddr_id = captured_ddr_arid;
+
+            issue_mmio_cache_word_read(32'h1000_0030, 4'h6);
+            wait_mmio_ar(32'h1000_0030);
+            mmio_id = captured_mmio_arid;
+
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b1;
+            ddr_axi_rid = ddr_id;
+            ddr_axi_rdata = {DDR_DATA_BITS{1'b0}};
+            ddr_axi_rdata[31:0] = 32'h1111_0B00;
+            ddr_axi_rresp = 2'b00;
+            ddr_axi_rlast = 1'b0;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now("DDR first R was backpressured before mux conflict");
+            end
+            @(posedge clk);
+            @(negedge clk);
+
+            ddr_axi_rdata = {DDR_DATA_BITS{1'b0}};
+            ddr_axi_rdata[31:0] = 32'h2222_0B00;
+            ddr_axi_rlast = 1'b1;
+            mmio_axi_rvalid = 1'b1;
+            mmio_axi_rid = mmio_id;
+            mmio_axi_rdata = 32'hA5A5_0B00;
+            mmio_axi_rresp = 2'b00;
+            mmio_axi_rlast = 1'b1;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now("DDR last R was backpressured by cache resp mux stall");
+            end
+            if (!mmio_axi_rready) begin
+                fail_now("MMIO R was backpressured by cache resp mux stall");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+            mmio_axi_rvalid = 1'b0;
+            mmio_axi_rlast = 1'b0;
+
+            timeout = 0;
+            while (!cache_resp_valid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!cache_resp_valid ||
+                cache_resp_id != 4'h6 ||
+                cache_resp_rdata[31:0] != 32'hA5A5_0B00) begin
+                fail_now("MMIO cache response was not buffered first");
+            end
+
+            cache_resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            cache_resp_ready = 1'b0;
+
+            timeout = 0;
+            while ((!cache_resp_valid || cache_resp_id != 4'h4) && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!cache_resp_valid ||
+                cache_resp_id != 4'h4 ||
+                cache_resp_rdata[31:0] != 32'h1111_0B00) begin
+                fail_now("DDR cache response was not buffered behind MMIO response");
+            end
+            cache_resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
+    task issue_mmio_cache_word_write;
+        input [ADDR_BITS-1:0] addr;
+        input [ID_BITS-1:0] id;
+        input [31:0] data_word;
+        begin
+            @(negedge clk);
+            cache_req_valid = 1'b1;
+            cache_req_write = 1'b1;
+            cache_req_addr = addr;
+            cache_req_id = id;
+            cache_req_size = 8'd3;
+            cache_req_wdata = {LINE_BITS{1'b0}};
+            cache_req_wdata[31:0] = data_word;
+            cache_req_wstrb = {LINE_BYTES{1'b0}};
+            cache_req_wstrb[3:0] = 4'hF;
+            #1;
+            if (!cache_req_ready) begin
+                fail_now("MMIO cache write request was not accepted");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            cache_req_valid = 1'b0;
+        end
+    endtask
+
+    task test_cache_resp_mux_does_not_backpressure_external_b;
+        integer timeout;
+        reg [AXI_ID_BITS-1:0] ddr_id;
+        reg [AXI_ID_BITS-1:0] mmio_id;
+        begin
+            cache_resp_ready = 1'b0;
+            ddr_axi_awready = 1'b0;
+            ddr_axi_wready = 1'b0;
+            mmio_axi_awready = 1'b0;
+            mmio_axi_wready = 1'b0;
+
+            @(negedge clk);
+            cache_req_valid = 1'b1;
+            cache_req_write = 1'b1;
+            cache_req_addr = DDR_BASE + 32'h0000_0C00;
+            cache_req_id = 4'h7;
+            cache_req_size = 8'd63;
+            cache_req_wdata = {LINE_BITS{1'b0}};
+            cache_req_wdata[63:0] = 64'h1122_3344_5566_7788;
+            cache_req_wstrb = {LINE_BYTES{1'b1}};
+            #1;
+            if (!cache_req_ready) begin
+                fail_now("DDR cache write request was not accepted");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            cache_req_valid = 1'b0;
+
+            timeout = 0;
+            while (!ddr_axi_awvalid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!ddr_axi_awvalid ||
+                ddr_axi_awaddr != DDR_BASE + 32'h0000_0C00 ||
+                ddr_axi_awlen != 8'd1 ||
+                ddr_axi_awsize != 3'd5) begin
+                fail_now("DDR cache write AW shape mismatch in B mux test");
+            end
+            ddr_id = ddr_axi_awid;
+            ddr_axi_awready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_awready = 1'b0;
+
+            timeout = 0;
+            while (!ddr_axi_wvalid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!ddr_axi_wvalid || ddr_axi_wlast) begin
+                fail_now("DDR cache write first W shape mismatch in B mux test");
+            end
+            ddr_axi_wready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+
+            timeout = 0;
+            while (!ddr_axi_wvalid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!ddr_axi_wvalid || !ddr_axi_wlast) begin
+                fail_now("DDR cache write last W shape mismatch in B mux test");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_wready = 1'b0;
+
+            issue_mmio_cache_word_write(32'h1000_0040, 4'h8, 32'hCAFE_0C00);
+
+            timeout = 0;
+            while (!mmio_axi_awvalid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!mmio_axi_awvalid ||
+                mmio_axi_awaddr != 32'h1000_0040 ||
+                mmio_axi_awlen != 8'd0 ||
+                mmio_axi_awsize != 3'd2) begin
+                fail_now("MMIO cache write AW shape mismatch in B mux test");
+            end
+            mmio_id = mmio_axi_awid;
+            mmio_axi_awready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_awready = 1'b0;
+
+            timeout = 0;
+            while (!mmio_axi_wvalid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!mmio_axi_wvalid ||
+                mmio_axi_wdata != 32'hCAFE_0C00 ||
+                mmio_axi_wstrb != 4'hF ||
+                !mmio_axi_wlast) begin
+                fail_now("MMIO cache write W shape mismatch in B mux test");
+            end
+            mmio_axi_wready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_wready = 1'b0;
+
+            ddr_axi_bvalid = 1'b1;
+            ddr_axi_bid = ddr_id;
+            ddr_axi_bresp = 2'b00;
+            mmio_axi_bvalid = 1'b1;
+            mmio_axi_bid = mmio_id;
+            mmio_axi_bresp = 2'b01;
+            #1;
+            if (!ddr_axi_bready) begin
+                fail_now("DDR B was backpressured by cache resp mux stall");
+            end
+            if (!mmio_axi_bready) begin
+                fail_now("MMIO B was backpressured by cache resp mux stall");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b0;
+            mmio_axi_bvalid = 1'b0;
+
+            timeout = 0;
+            while (!cache_resp_valid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!cache_resp_valid ||
+                cache_resp_id != 4'h8 ||
+                cache_resp_code != 2'b01) begin
+                fail_now("MMIO cache write response was not buffered first");
+            end
+            cache_resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            cache_resp_ready = 1'b0;
+
+            timeout = 0;
+            while ((!cache_resp_valid || cache_resp_id != 4'h7) && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!cache_resp_valid ||
+                cache_resp_id != 4'h7 ||
+                cache_resp_code != 2'b00) begin
+                fail_now("DDR cache write response was not buffered behind MMIO response");
+            end
+            cache_resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
+    task test_mixed_write_concurrent_issue;
+        integer timeout;
+        begin
+            ddr_axi_awready = 1'b0;
+            ddr_axi_wready = 1'b0;
+            mmio_axi_awready = 1'b0;
+            mmio_axi_wready = 1'b0;
+
+            @(negedge clk);
+            cache_req_valid = 1'b1;
+            cache_req_write = 1'b1;
+            cache_req_addr = DDR_BASE + 32'h0000_0200;
+            cache_req_id = 4'h5;
+            cache_req_size = 8'd63;
+            cache_req_wdata = {LINE_BITS{1'b0}};
+            cache_req_wdata[63:0] = 64'h5566_7788_1122_3344;
+            cache_req_wstrb = {LINE_BYTES{1'b1}};
+            bypass_req_valid = 1'b1;
+            bypass_req_write = 1'b1;
+            bypass_req_addr = 32'h1000_0024;
+            bypass_req_id = 4'hA;
+            bypass_req_size = 8'd3;
+            bypass_req_wdata = {LINE_BITS{1'b0}};
+            bypass_req_wdata[31:0] = 32'hCAFE_0204;
+            bypass_req_wstrb = {LINE_BYTES{1'b0}};
+            bypass_req_wstrb[3:0] = 4'hF;
+            #1;
+            if (!cache_req_ready || !bypass_req_ready) begin
+                fail_now("DDR cache and MMIO bypass writes were not both accepted");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            cache_req_valid = 1'b0;
+            bypass_req_valid = 1'b0;
+
+            timeout = 0;
+            while (!(ddr_axi_awvalid && mmio_axi_awvalid) && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!(ddr_axi_awvalid && mmio_axi_awvalid)) begin
+                fail_now("DDR/MMIO AW did not become concurrently valid");
+            end
+            if (ddr_axi_awaddr != DDR_BASE + 32'h0000_0200 ||
+                ddr_axi_awlen != 8'd1 || ddr_axi_awsize != 3'd5) begin
+                fail_now("DDR write AW shape mismatch");
+            end
+            if (mmio_axi_awaddr != 32'h1000_0024 ||
+                mmio_axi_awlen != 8'd0 || mmio_axi_awsize != 3'd2) begin
+                fail_now("MMIO write AW shape mismatch in mixed write");
+            end
+            captured_ddr_awid = ddr_axi_awid;
+            captured_mmio_awid = mmio_axi_awid;
+
+            ddr_axi_awready = 1'b1;
+            mmio_axi_awready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+
+            timeout = 0;
+            while (!(ddr_axi_wvalid && mmio_axi_wvalid) && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!(ddr_axi_wvalid && mmio_axi_wvalid)) begin
+                fail_now("DDR/MMIO W did not become concurrently valid after AW");
+            end
+            if (ddr_axi_wlast) begin
+                fail_now("DDR first write beat should not be last");
+            end
+            if (ddr_axi_wdata[63:0] != 64'h5566_7788_1122_3344 ||
+                ddr_axi_wstrb != {DDR_STRB_BITS{1'b1}}) begin
+                fail_now("DDR first write beat data/strobe mismatch");
+            end
+            if (mmio_axi_wdata != 32'hCAFE_0204 || mmio_axi_wstrb != 4'hF ||
+                !mmio_axi_wlast) begin
+                fail_now("MMIO write W shape mismatch in mixed write");
+            end
+
+            ddr_axi_wready = 1'b1;
+            mmio_axi_wready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+
+            timeout = 0;
+            while (!ddr_axi_wvalid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!ddr_axi_wvalid || !ddr_axi_wlast) begin
+                fail_now("DDR second write beat did not become last");
+            end
+            @(posedge clk);
+            @(negedge clk);
+
+            mmio_axi_bvalid = 1'b1;
+            mmio_axi_bid = captured_mmio_awid;
+            mmio_axi_bresp = 2'b01;
+            #1;
+            if (!mmio_axi_bready) begin
+                fail_now("MMIO B was not accepted in mixed write");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_bvalid = 1'b0;
+
+            timeout = 0;
+            while (!bypass_resp_valid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!bypass_resp_valid || bypass_resp_id != 4'hA ||
+                bypass_resp_code != 2'b01) begin
+                fail_now("MMIO mixed write response did not return to bypass source");
+            end
+            if (cache_resp_valid) begin
+                fail_now("DDR cache write response appeared before DDR B");
+            end
+            @(posedge clk);
+            @(negedge clk);
+
+            ddr_axi_bvalid = 1'b1;
+            ddr_axi_bid = captured_ddr_awid;
+            ddr_axi_bresp = 2'b00;
+            #1;
+            if (!ddr_axi_bready) begin
+                fail_now("DDR B was not accepted in mixed write");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b0;
+
+            timeout = 0;
+            while (!cache_resp_valid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!cache_resp_valid || cache_resp_id != 4'h5 ||
+                cache_resp_code != 2'b00) begin
+                fail_now("DDR mixed write response did not return to cache source");
+            end
+            @(posedge clk);
+            @(negedge clk);
         end
     endtask
 
@@ -396,6 +974,181 @@ module tb_axi_llc_axi_bridge_dual_contract;
             end
             @(negedge clk);
             cache_req_valid = 1'b0;
+        end
+    endtask
+
+    task test_read_blocks_same_line_write;
+        integer timeout;
+        begin
+            issue_ddr_cache_read(DDR_BASE + 32'h0000_0300, 4'h3);
+            wait_ddr_ar(DDR_BASE + 32'h0000_0300);
+
+            issue_ddr_bypass_word_write(DDR_BASE + 32'h0000_0320, 4'hB,
+                                        32'hB10C_0001);
+            for (timeout = 0; timeout < 5; timeout = timeout + 1) begin
+                #1;
+                if (ddr_axi_awvalid || ddr_axi_wvalid) begin
+                    fail_now("same-line AW/W escaped before read completed");
+                end
+                @(negedge clk);
+            end
+
+            ddr_axi_awready = 1'b0;
+            ddr_axi_wready = 1'b0;
+            send_ddr_read_resp(captured_ddr_arid, 32'hD00D_0300);
+            ddr_axi_awready = 1'b1;
+            ddr_axi_wready = 1'b1;
+            wait_ddr_aw_and_w(DDR_BASE + 32'h0000_0320);
+            send_ddr_bypass_write_resp(captured_ddr_awid, 4'hB);
+        end
+    endtask
+
+    task test_rready_ignores_response_backpressure;
+        integer timeout;
+        begin
+            issue_ddr_cache_read(DDR_BASE + 32'h0000_0900, 4'h3);
+            wait_ddr_ar(DDR_BASE + 32'h0000_0900);
+
+            issue_ddr_bypass_word_write(DDR_BASE + 32'h0000_0920, 4'hE,
+                                        32'hB10C_0004);
+            repeat (3) begin
+                #1;
+                if (ddr_axi_awvalid || ddr_axi_wvalid) begin
+                    fail_now("same-line write escaped before R was accepted");
+                end
+                @(negedge clk);
+            end
+
+            cache_resp_ready = 1'b0;
+            ddr_axi_awready = 1'b0;
+            ddr_axi_wready = 1'b0;
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b1;
+            ddr_axi_rid = captured_ddr_arid;
+            ddr_axi_rdata = {DDR_DATA_BITS{1'b0}};
+            ddr_axi_rdata[31:0] = 32'h1111_0900;
+            ddr_axi_rresp = 2'b00;
+            ddr_axi_rlast = 1'b0;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now("DDR first R was backpressured by upstream resp stall");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rdata[31:0] = 32'h2222_0900;
+            ddr_axi_rlast = 1'b1;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now("DDR last R was backpressured by upstream resp stall");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 0;
+            while (!cache_resp_valid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!cache_resp_valid || cache_resp_id != 4'h3 ||
+                cache_resp_rdata[31:0] != 32'h1111_0900) begin
+                fail_now("read response was not buffered while upstream stalled");
+            end
+
+            ddr_axi_awready = 1'b1;
+            ddr_axi_wready = 1'b1;
+            wait_ddr_aw_and_w(DDR_BASE + 32'h0000_0920);
+            cache_resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            send_ddr_bypass_write_resp(captured_ddr_awid, 4'hE);
+        end
+    endtask
+
+    task test_write_blocks_same_line_read;
+        integer timeout;
+        begin
+            issue_ddr_bypass_word_write(DDR_BASE + 32'h0000_0400, 4'hC,
+                                        32'hB10C_0002);
+            wait_ddr_aw_and_w(DDR_BASE + 32'h0000_0400);
+
+            issue_ddr_cache_read(DDR_BASE + 32'h0000_0420, 4'h3);
+            for (timeout = 0; timeout < 5; timeout = timeout + 1) begin
+                #1;
+                if (ddr_axi_arvalid) begin
+                    fail_now("same-line AR escaped before write completed");
+                end
+                @(negedge clk);
+            end
+
+            ddr_axi_arready = 1'b0;
+            send_ddr_bypass_write_resp(captured_ddr_awid, 4'hC);
+            ddr_axi_arready = 1'b1;
+            wait_ddr_ar(DDR_BASE + 32'h0000_0420);
+            send_ddr_read_resp(captured_ddr_arid, 32'hD00D_0400);
+        end
+    endtask
+
+    task test_bready_ignores_response_backpressure;
+        integer timeout;
+        begin
+            issue_ddr_bypass_word_write(DDR_BASE + 32'h0000_0A00, 4'hF,
+                                        32'hB10C_0005);
+            wait_ddr_aw_and_w(DDR_BASE + 32'h0000_0A00);
+
+            issue_ddr_cache_read(DDR_BASE + 32'h0000_0A20, 4'h3);
+            repeat (3) begin
+                #1;
+                if (ddr_axi_arvalid) begin
+                    fail_now("same-line read escaped before B was accepted");
+                end
+                @(negedge clk);
+            end
+
+            bypass_resp_ready = 1'b0;
+            ddr_axi_arready = 1'b0;
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b1;
+            ddr_axi_bid = captured_ddr_awid;
+            ddr_axi_bresp = 2'b00;
+            #1;
+            if (!ddr_axi_bready) begin
+                fail_now("DDR B was backpressured by upstream write resp stall");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b0;
+
+            timeout = 0;
+            while (!bypass_resp_valid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!bypass_resp_valid || bypass_resp_id != 4'hF ||
+                bypass_resp_code != 2'b00) begin
+                fail_now("write response was not buffered while upstream stalled");
+            end
+
+            ddr_axi_arready = 1'b1;
+            wait_ddr_ar(DDR_BASE + 32'h0000_0A20);
+            bypass_resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            send_ddr_read_resp(captured_ddr_arid, 32'hD00D_0A00);
+        end
+    endtask
+
+    task test_different_line_write_not_blocked_by_read;
+        begin
+            issue_ddr_cache_read(DDR_BASE + 32'h0000_0700, 4'h3);
+            wait_ddr_ar(DDR_BASE + 32'h0000_0700);
+
+            issue_ddr_bypass_word_write(DDR_BASE + 32'h0000_0780, 4'hD,
+                                        32'hB10C_0003);
+            wait_ddr_aw_and_w(DDR_BASE + 32'h0000_0780);
+            send_ddr_bypass_write_resp(captured_ddr_awid, 4'hD);
+            send_ddr_read_resp(captured_ddr_arid, 32'hD00D_0700);
         end
     endtask
 
@@ -505,8 +1258,16 @@ module tb_axi_llc_axi_bridge_dual_contract;
     initial begin
         reset_dut();
         test_mixed_read_concurrent_issue();
+        test_cache_resp_mux_does_not_backpressure_external_r();
+        test_cache_resp_mux_does_not_backpressure_external_b();
+        test_mixed_write_concurrent_issue();
         test_mmio_write_shape();
         test_unsupported_mmio_line_blocks();
+        test_read_blocks_same_line_write();
+        test_rready_ignores_response_backpressure();
+        test_write_blocks_same_line_read();
+        test_bready_ignores_response_backpressure();
+        test_different_line_write_not_blocked_by_read();
         $display("tb_axi_llc_axi_bridge_dual_contract PASS");
         $finish;
     end
