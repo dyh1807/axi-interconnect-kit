@@ -440,6 +440,12 @@ core 内部 hazard 遮掉。
   maintenance hazard：DDR refill R beat 在途时外部 `RREADY` 不能被维护请求反压，
   upstream read response 被 hold 时 `invalidate_line` 仍不能 accepted，response
   被消费后才允许 accepted
+- 覆盖 MODE_CACHE 下 cacheable read miss/refill、MMIO read direct-bypass 与
+  `invalidate_all` 同时存在的 drain/recovery：MMIO `R` 先返回并被 upstream hold 时，
+  DDR refill `RREADY` 仍不能被 held response 或 maintenance pending 反压；MMIO/cache
+  两类 response 均 retire 前 `invalidate_all_accepted` 必须为 0，retire 后等待
+  RTL valid-sweep 完成并最终 accepted。该项还显式检查首个 DDR refill `AR`
+  handshake 后不会重复发同地址 refill `AR`
 - 对比 upstream 请求、DDR/MMIO `AR/AW/W/R/B` 形状、DDR 256-bit beat
   payload/strobe、MMIO 32-bit payload/strobe、response ID/data/code，并检查 DDR/MMIO
   trace 不误走对侧 AXI 口；unsupported MMIO trace 还要求 ready=0、不 accepted、不发出

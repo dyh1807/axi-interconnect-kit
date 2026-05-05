@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=173 / open=12。本轮新增 MODE_MAPPED local-window actual C++ trace
+当前计数：done=174 / open=12。本轮新增 MODE_MAPPED local-window actual C++ trace
 到实际 RTL subsystem 的 write/read 一致性检查，并补齐 mapped-window 上/下边界外
 MMIO read/write 双向路由检查，以及 mapped-window 跨界 8B unsupported blocked
 检查；继续补齐 MODE_CACHE `invalidate_all` 挂起时新 read/write blocked，以及
@@ -49,7 +49,11 @@ miss/refill 与随后同 line read hit，确认 miss 只发一笔 DDR `ARLEN=1` 
 继续长 `full_dc`，本轮再补跑 C++ 24/24、bridge dual response mux targeted VCS 和
 全量 RTL contract 53/53；并补齐 dual bridge response stall 后 request issue 恢复
 smoke，覆盖上游 read/write response stall 被释放后，相同 upstream ID 的新 DDR 请求
-仍可重新 accepted、发出 AXI 并完成回包。
+仍可重新 accepted、发出 AXI 并完成回包；并补齐 MODE_CACHE 下 cacheable read
+miss/refill、MMIO read response held 与 `invalidate_all` 同时存在时的 drain/recovery
+actual C++ trace 到实际 RTL subsystem 一致性检查，要求 MMIO/DDR `RREADY` 不因
+maintenance pending 被回压，且 maintenance 只能在 MMIO/cache response 均 retire
+后最终 accepted。
 剩余 open 项主要集中在端到端 hw-cbmc 形式 EC、更完整 production-width cacheable
 subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
 
@@ -121,6 +125,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   cacheable read 先经实际 C++/RTL LLC lookup 发出 DDR 64B refill `ARLEN=1`，
   MMIO `R` 先返回且 upstream response stall 时，MMIO/DDR `RREADY` 均不被上游回压；
   DDR 两拍 `R` 回填后，cache response ID/data 与实际 C++ trace 一致。本轮继续新增
+  同一 read 并发下拉起 `invalidate_all` 的 drain/recovery trace：MMIO read response
+  被 upstream hold 时，DDR refill `RREADY` 仍不能被 maintenance 或 held MMIO response
+  反压；MMIO response 与 cache response 均 retire 前，实际 RTL `invalidate_all_accepted`
+  必须保持为 0，retire 后等待 RTL valid-sweep 完成并最终 accepted。该场景同时修复了
+  C++ production trace/model 在两阶段 comb 顺序下可能重复发出同一 LLC refill `AR`
+  的 stale request 问题，RTL contract 显式检查第一笔 DDR refill `AR` handshake 后
+  下一拍不会重复发同地址 refill `AR`。本轮继续新增
   MODE_CACHE 下 partial cache write miss/refill 与 MMIO write direct-bypass
   同时在途：partial cache write miss 先经实际 C++/RTL LLC lookup 发出 DDR 64B refill
   `ARLEN=1`，refill 未返回时 MMIO 4B write 仍直接走独立 MMIO `AW/W/B`；MMIO `B`
@@ -160,7 +171,7 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   一致，log 为 `local_debug/cpp_ec_sanity_20260505_194045_stderr_trace`；同时把
   `AXI_Interconnect` runtime config 诊断改为 stderr，避免污染后续 trace header 生成。
   最新 targeted VCS 目录：
-  `rtl/local_debug/vcs_dual_cpp_trace_inval_all_blocked_20260504_164631`。该项是
+  `rtl/local_debug/vcs_dual_cpp_trace_invalidate_all_cache_mmio_20260505_211212`。该项是
   trace-based 功能 EC，不等同于 hw-cbmc 端到端形式 EC。
 - [x] actual C++ LLC cache trace -> actual RTL cache-control functional EC：
   `axi_llc_cache_trace_vectors` 从实际 `AXI_LLC` comb/seq 路径生成
@@ -216,7 +227,7 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `local_debug/hw_cbmc_dual_bridge_prod_width_bypass_cacheline_read_response_20260505_154112.log`，
   并已纳入 manifest；`formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `rtl/local_debug/vcs_all_contracts_20260505_193402_prod_cacheable`。本轮新增
+  `rtl/local_debug/vcs_all_contracts_20260505_211305`。本轮新增
   `tb_axi_llc_subsystem_core_startup_idle_contract`，直接实例化实际
   `axi_llc_subsystem_core.v`，小参数/generic store 下验证 reset startup sweep 结束后
   `active_mode=MODE_CACHE`、`reconfig_state=IDLE`、`config_error=0`，且无意外
@@ -742,6 +753,17 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   VCS 目录：
   `rtl/local_debug/vcs_dual_cpp_trace_pending_inval_mmio_write_20260505_141827`。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE `invalidate_all`
+  cache-refill + held MMIO read drain 第一组：已补 cacheable read miss/refill 已发
+  DDR 64B refill `ARLEN=1`、另一 read master 的 MMIO 4B read 先返回并被 upstream
+  response slot hold 时拉起 `invalidate_all` 的场景；actual C++ 与实际 RTL subsystem
+  均要求 MMIO/DDR `RREADY` 不被 maintenance pending 回压，MMIO response held 与
+  cache response held 两个阶段 `invalidate_all_accepted=0`，两类 response 均 retire
+  后才允许 RTL 完成 valid-sweep 并最终 accepted。该项同时修复 C++ production
+  两阶段 comb 下 stale LLC read request 可能重复发同一 DDR refill `AR` 的问题，并在
+  RTL contract 中显式检查首个 refill `AR` handshake 后无同地址重复发射。最新
+  targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_invalidate_all_cache_mmio_20260505_211212`。
+- [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE `invalidate_all`
   pre-handshake external MMIO drain 第一组：已补外部 MMIO read `ARVALID` 已拉起
   但 `ARREADY=0`、外部 MMIO write `AWVALID/WVALID` 已拉起但 `AWREADY/WREADY=0`
   时拉起 `invalidate_all` 的场景；actual C++ 与实际 RTL subsystem 均要求
@@ -864,7 +886,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   全量 RTL contract 53/53 通过，log 为
   `local_debug/short_ec_gate_20260505_195710/run_all_contracts.log`；新增 bridge
   recovery smoke 后再次复跑全量 RTL contract 53/53，log 为
-  `local_debug/vcs_all_contracts_20260505_200356_bridge_recovery/run_all_contracts.log`。
+  `local_debug/vcs_all_contracts_20260505_200356_bridge_recovery/run_all_contracts.log`；
+  新增 `invalidate_all` + cache refill + held MMIO read trace 后再次复跑全量
+  RTL contract 53/53，wrapper log 为
+  `local_debug/vcs_all_contracts_20260505_211304_invall_cache_mmio/run_all_contracts.log`，
+  VCS out_dir 为 `rtl/local_debug/vcs_all_contracts_20260505_211305`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
@@ -930,6 +956,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `build_dual_axi_ec_20260505_large_bpu_998c008` 并复跑同一 Linux 5M gate，log 为
   `../local_logs/dual_axi_ec_20260505/linux_large_bpu_5m_998c008_20260505_194456.log`，
   结果仍为退出码 0、5000005 commit、2078844 cycles、IPC 2.405185、墙钟 6:10.23；
+  与上一条 5M 基线 cycle/IPC 完全一致。新增 `invalidate_all` + cache refill +
+  held MMIO read trace 以及 C++ stale LLC read issue 修复后，又用
+  `build_dual_axi_ec_20260505_large_bpu_inval_cache_mmio` 复跑同一 Linux 5M gate，
+  log 为
+  `../local_logs/dual_axi_ec_20260505/linux_large_bpu_5m_inval_cache_mmio_20260505_212056.log`，
+  结果为退出码 0、5000005 commit、2078844 cycles、IPC 2.405185、墙钟 6:12.53；
   与上一条 5M 基线 cycle/IPC 完全一致。
 
 ## Multi-Agent 并行推进边界

@@ -763,6 +763,10 @@ void AXI_Interconnect::init() {
   llc_synth_read_resp_valid_ = false;
   llc_synth_read_resp_id_ = 0;
   llc_synth_read_resp_data_.clear();
+  llc_mem_read_issue_seen_valid_ = false;
+  llc_mem_read_issue_seen_id_ = 0;
+  llc_mem_read_issue_seen_addr_ = 0;
+  llc_mem_read_issue_seen_size_ = 0;
 
   auto clear_ar_latch = [](ARLatch_t &latch, DownstreamPort port) {
     latch.valid = false;
@@ -1702,7 +1706,17 @@ void AXI_Interconnect::comb_read_arbiter() {
   }
 
   if (llc_enabled()) {
-    if (llc.io.ext_out.mem.read_req_valid && can_issue_llc_read_req() &&
+    const uint8_t llc_read_req_id = llc.io.ext_out.mem.read_req_id;
+    const uint32_t llc_read_req_addr = llc.io.ext_out.mem.read_req_addr;
+    const uint8_t llc_read_req_size =
+        static_cast<uint8_t>(llc.io.ext_out.mem.read_req_size);
+    const bool stale_llc_read_req_seen =
+        llc_mem_read_issue_seen_valid_ &&
+        llc_mem_read_issue_seen_id_ == llc_read_req_id &&
+        llc_mem_read_issue_seen_addr_ == llc_read_req_addr &&
+        llc_mem_read_issue_seen_size_ == llc_read_req_size;
+    if (llc.io.ext_out.mem.read_req_valid && !stale_llc_read_req_seen &&
+        can_issue_llc_read_req() &&
         can_issue_external_read(llc.io.ext_out.mem.read_req_addr)) {
       const uint8_t issue_size =
           static_cast<uint8_t>(llc.io.ext_out.mem.read_req_size);
@@ -1738,6 +1752,10 @@ void AXI_Interconnect::comb_read_arbiter() {
           meta.master_id = 0;
           meta.orig_id = llc.io.ext_out.mem.read_req_id;
           drive_ar(issue, axi_id, meta);
+          llc_mem_read_issue_seen_valid_ = true;
+          llc_mem_read_issue_seen_id_ = llc_read_req_id;
+          llc_mem_read_issue_seen_addr_ = llc_read_req_addr;
+          llc_mem_read_issue_seen_size_ = llc_read_req_size;
         }
       }
     }
@@ -3085,6 +3103,12 @@ void AXI_Interconnect::seq() {
     }
 
     llc.seq();
+    if (!llc.io.ext_out.mem.read_req_valid) {
+      llc_mem_read_issue_seen_valid_ = false;
+      llc_mem_read_issue_seen_id_ = 0;
+      llc_mem_read_issue_seen_addr_ = 0;
+      llc_mem_read_issue_seen_size_ = 0;
+    }
     if (requested_diff) {
       reconfig_pending_ = true;
       reconfig_target_mode_ = req_mode;
@@ -3297,6 +3321,12 @@ void AXI_Interconnect::seq() {
   refresh_non_llc_w_active(DownstreamPort::MMIO);
 
   llc.seq();
+  if (!llc.io.ext_out.mem.read_req_valid) {
+    llc_mem_read_issue_seen_valid_ = false;
+    llc_mem_read_issue_seen_id_ = 0;
+    llc_mem_read_issue_seen_addr_ = 0;
+    llc_mem_read_issue_seen_size_ = 0;
+  }
   if (requested_diff) {
     reconfig_pending_ = true;
     reconfig_target_mode_ = req_mode;
@@ -3328,8 +3358,11 @@ void AXI_Interconnect::debug_print() {
   }
   if (!r_pending.empty()) {
     for (const auto &txn : r_pending) {
-      printf("    r_pending: master=%u beats=%u/%u\n", txn.master_id,
-             txn.beats_done, txn.total_beats);
+      printf("    r_pending: port=%u to_llc=%d master=%u orig_id=%u axi_id=%u "
+             "addr=0x%08x beats=%u/%u\n",
+             static_cast<unsigned>(port_index(txn.port)),
+             static_cast<int>(txn.to_llc), txn.master_id, txn.orig_id,
+             txn.axi_id, txn.addr, txn.beats_done, txn.total_beats);
     }
   }
   if (llc_enabled()) {

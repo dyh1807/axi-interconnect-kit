@@ -371,6 +371,10 @@ private:
   bool llc_synth_read_resp_valid_ = false;
   uint8_t llc_synth_read_resp_id_ = 0;
   WideReadData_t llc_synth_read_resp_data_{};
+  bool llc_mem_read_issue_seen_valid_ = false;
+  uint8_t llc_mem_read_issue_seen_id_ = 0;
+  uint32_t llc_mem_read_issue_seen_addr_ = 0;
+  uint8_t llc_mem_read_issue_seen_size_ = 0;
   bool ar_from_llc_c = false;
   uint8_t ar_llc_mem_id_c = 0;
   DownstreamPort ar_port_c = DownstreamPort::DDR;
