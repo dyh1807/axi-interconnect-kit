@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=164 / open=15。本轮新增 MODE_MAPPED local-window actual C++ trace
+当前计数：done=166 / open=16。本轮新增 MODE_MAPPED local-window actual C++ trace
 到实际 RTL subsystem 的 write/read 一致性检查，并补齐 mapped-window 上/下边界外
 MMIO read/write 双向路由检查，以及 mapped-window 跨界 8B unsupported blocked
 检查；继续补齐 MODE_CACHE `invalidate_all` 挂起时新 read/write blocked，以及
@@ -41,7 +41,11 @@ RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
 - [x] C++ regression：`ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`
   当前通过 24/24。
 - [x] C++ dual-port state-machine directed smoke：`axi_interconnect_dual_port_test`
-  内部当前通过 37/37。
+  内部当前通过 38/38。
+- [x] actual C++ LLC DCache read accepted/id parent-facing pulse smoke：
+  `axi_interconnect_dual_port_test` 已补实际 `AXI_Interconnect` comb/seq 路径下
+  `MASTER_DCACHE_R` cacheable read 被 LLC capture 后，下一拍 `req.accepted=1`
+  且 `req.accepted_id` 等于原始 MSHR slot ID，并检查该 pulse 再下一拍清零。
 - [x] actual C++ issue-shape wrapper regression：`axi_interconnect_issue_probe_test`
   已纳入 C++ regression；该测试通过 `AXI_Interconnect.cpp` 中实际 production probe
   wrapper 调用 comb 路径共用的 `make_downstream_read_issue` /
@@ -819,9 +823,19 @@ RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
   `rtl/local_debug/vcs_dual_axi_contracts_20260505_143514`。
 - [x] C++ 模块功能回归：实际 C++ 改动后需重跑
   `ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`；本轮已复跑并通过
-  24/24，其中 `axi_interconnect_dual_port_test` 内部通过 37/37。
+  24/24，其中 `axi_interconnect_dual_port_test` 内部通过 38/38。最新 targeted log：
+  `local_debug/axi_interconnect_dual_port_test_accepted_id_20260505.log`；最新 ctest log：
+  `local_debug/ctest_after_accepted_id_20260505.log`。
 - [ ] Linux/image 级功能与性能回归：后续关键语义合并后至少跑 large + `CONFIG_BPU`
   的 300k 快速 smoke、5M difftest/IPC 回归；稳定后再跑 10M 或更长，确认无显著性能衰退。
+  当前父仓库集成 sanity 已暴露一项非 submodule 形式 EC 问题：large + `CONFIG_BPU`
+  使用 `../img/linux.bin` 时约 58,695 commit 后 MSHR 试图以 cacheline read 请求
+  `0x00000040`，而新双口合同下非 DDR/MMIO 只支持 32-bit/1-beat，导致 interconnect
+  合理保持 `ready=0/accepted=0` 并触发 ROB deadlock。失败 log：
+  `../local_logs/dual_axi_ec_20260505/linux_large_bpu_5m_after_ec_push_imgroot_20260505_160533.log`；
+  对照旧 binary 300k 通过 log：
+  `../local_logs/dual_axi_ec_20260505/linux_300k_old_binary_semantics_20260502_20260505_160931.log`。
+  下一步需在父仓库临时适配 cacheability/MMIO 分类或 boot/MMIO backing，再补跑 300k/5M。
 
 ## Multi-Agent 并行推进边界
 

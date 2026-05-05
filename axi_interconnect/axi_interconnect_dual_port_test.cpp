@@ -820,6 +820,58 @@ bool test_llc_unsupported_mmio_upstream_read_blocks() {
   return true;
 }
 
+bool test_llc_dcache_read_capture_pulses_accepted_id() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_llc_dut(dut);
+  clear_inputs(dut);
+
+  constexpr uint8_t kReqId = 7;
+  auto &req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  req.valid = true;
+  req.addr = 0x80001000u;
+  req.total_size = 63;
+  req.id = kReqId;
+  req.bypass = false;
+  dut.comb_inputs();
+
+  const auto &cap = dut.llc_upstream_capture_c[axi_interconnect::MASTER_DCACHE_R];
+  if (!req.ready || !cap.valid || cap.id != kReqId || cap.addr != req.addr) {
+    std::printf("FAIL: LLC DCache read capture mismatch ready=%d cap_valid=%d "
+                "cap_id=%u cap_addr=0x%08x\n",
+                static_cast<int>(req.ready), static_cast<int>(cap.valid),
+                static_cast<unsigned>(cap.id), cap.addr);
+    return false;
+  }
+  if (req.accepted) {
+    std::printf("FAIL: accepted pulse was exposed before seq\n");
+    return false;
+  }
+
+  dut.seq();
+  ++sim_time;
+  clear_inputs(dut);
+  dut.comb_outputs();
+  const auto &accepted =
+      dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  if (!accepted.accepted || accepted.accepted_id != kReqId) {
+    std::printf("FAIL: accepted/id pulse missing accepted=%d id=%u\n",
+                static_cast<int>(accepted.accepted),
+                static_cast<unsigned>(accepted.accepted_id));
+    return false;
+  }
+
+  dut.comb_inputs();
+  dut.seq();
+  ++sim_time;
+  clear_inputs(dut);
+  dut.comb_outputs();
+  if (dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req.accepted) {
+    std::printf("FAIL: accepted pulse did not clear after one cycle\n");
+    return false;
+  }
+  return true;
+}
+
 bool test_llc_mmio_word_read_bypasses_llc_core() {
   axi_interconnect::AXI_Interconnect dut;
   init_llc_dut(dut);
@@ -2022,6 +2074,8 @@ int main() {
       test_llc_unsupported_mmio_write_synthesizes_response);
   run("LLC unsupported MMIO upstream read blocks",
       test_llc_unsupported_mmio_upstream_read_blocks);
+  run("LLC DCache read capture pulses accepted/id",
+      test_llc_dcache_read_capture_pulses_accepted_id);
   run("LLC MMIO word read bypasses LLC core",
       test_llc_mmio_word_read_bypasses_llc_core);
   run("LLC direct MMIO read resp blocks LLC resp ready",
