@@ -906,6 +906,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `../local_logs/dual_axi_ec_20260505/linux_large_bpu_5m_mmio_contract_20260505.log`，
   结果为 5000005 commit、2078844 cycles、IPC 2.405185，`Success!!!!`。稳定后仍需
   在最终父仓库集成点补 10M 或更长 difftest/perf 回归。
+  submodule 推到 `998c008` 后又用当前代码重建
+  `build_dual_axi_ec_20260505_large_bpu_998c008` 并复跑同一 Linux 5M gate，log 为
+  `../local_logs/dual_axi_ec_20260505/linux_large_bpu_5m_998c008_20260505_194456.log`，
+  结果仍为退出码 0、5000005 commit、2078844 cycles、IPC 2.405185、墙钟 6:10.23；
+  与上一条 5M 基线 cycle/IPC 完全一致。
 
 ## Multi-Agent 并行推进边界
 
