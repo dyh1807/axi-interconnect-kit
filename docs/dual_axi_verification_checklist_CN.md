@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=172 / open=13。本轮新增 MODE_MAPPED local-window actual C++ trace
+当前计数：done=173 / open=12。本轮新增 MODE_MAPPED local-window actual C++ trace
 到实际 RTL subsystem 的 write/read 一致性检查，并补齐 mapped-window 上/下边界外
 MMIO read/write 双向路由检查，以及 mapped-window 跨界 8B unsupported blocked
 检查；继续补齐 MODE_CACHE `invalidate_all` 挂起时新 read/write blocked，以及
@@ -47,7 +47,9 @@ upstream response 回收；继续扩展该 bench 在 MODE_CACHE 下覆盖 64B ca
 miss/refill 与随后同 line read hit，确认 miss 只发一笔 DDR `ARLEN=1` refill，hit
 不再逃逸到 DDR/MMIO；并复核短门槛顺序：submodule 已在非 `main` 分支 push 备份后
 继续长 `full_dc`，本轮再补跑 C++ 24/24、bridge dual response mux targeted VCS 和
-全量 RTL contract 53/53。
+全量 RTL contract 53/53；并补齐 dual bridge response stall 后 request issue 恢复
+smoke，覆盖上游 read/write response stall 被释放后，相同 upstream ID 的新 DDR 请求
+仍可重新 accepted、发出 AXI 并完成回包。
 剩余 open 项主要集中在端到端 hw-cbmc 形式 EC、更完整 production-width cacheable
 subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
 
@@ -832,14 +834,19 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   DDR/MMIO `B` 同拍返回且上游 `cache_resp_ready=0` 时，外部 DDR/MMIO `BREADY`
   仍拉高，并按 MMIO 优先、DDR 后续保留的顺序回收 response。最近一次 targeted
   VCS 目录：`local_debug/short_ec_gate_20260505_195710`。
-- [ ] production-width dual bridge 组合流：当前 production-width single bridge 的
+- [x] production-width dual bridge 组合流与 recovery smoke：当前 production-width single bridge 的
   AR/AW/W/R payload 已覆盖，dual bridge production-width DDR read `AR` shape、cacheline
   read `R` response、cacheline write `AW/W` payload、mode2 write `AW/W/B` 已覆盖；
   DDR 64B read + MMIO 32-bit read、DDR 64B read + MMIO 32-bit write、DDR 64B write
   + MMIO 32-bit read、DDR 64B write + MMIO 32-bit write 的生产宽度 independent
   smoke 已覆盖；production-width same-line read-before-write / write-before-read safety
-  smoke 也已覆盖；response mux 竞争已由上一个 smoke 覆盖。dual bridge 后续仍需继续
-  拆更完整的 recovery/forward-progress witness，避免一次性证明更大 native top。
+  smoke 也已覆盖；response mux 竞争已由上一个 smoke 覆盖。本轮新增 response stall
+  后 request issue 恢复 smoke：read response 被上游 stall 并缓存后释放，随后相同
+  upstream read ID 的新 DDR cache read 仍可 accepted/发 `AR`/完成 `R`；write response
+  被上游 stall 并缓存后释放，随后相同 upstream write ID 的新 DDR bypass write 仍可
+  accepted/发 `AW/W`/完成 `B`。targeted VCS 目录：
+  `local_debug/vcs_bridge_dual_recovery_20260505_200333`；全量 RTL contract 复跑目录：
+  `local_debug/vcs_all_contracts_20260505_200356_bridge_recovery`。
 - [x] Native dual top 在更完整生产参数下的 smoke：已新增
   `tb_axi_llc_subsystem_dual_mapped_window_prod_contract`，直接实例化实际
   `axi_llc_subsystem_dual.v`，参数为 8192 set / 16 way / 64B line / 4MB mapped
@@ -855,7 +862,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_prod_cacheable_20260505_193342`，全量 RTL contract 目录为
   `rtl/local_debug/vcs_all_contracts_20260505_193402_prod_cacheable`。本轮短门槛复跑
   全量 RTL contract 53/53 通过，log 为
-  `local_debug/short_ec_gate_20260505_195710/run_all_contracts.log`。
+  `local_debug/short_ec_gate_20260505_195710/run_all_contracts.log`；新增 bridge
+  recovery smoke 后再次复跑全量 RTL contract 53/53，log 为
+  `local_debug/vcs_all_contracts_20260505_200356_bridge_recovery/run_all_contracts.log`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被

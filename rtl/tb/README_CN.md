@@ -366,6 +366,9 @@ core 内部 hazard 遮掉。
 - 验证 same-line 读已被 write hazard 挡住、且上游 write response ready 拉低时，
   DDR `B` 仍必须被 `BREADY` 接收；bridge 层外部 `AR` issue hazard 在 `B` fire 后
   释放，不等待上游 write response 被消费
+- 验证 response 被上游 ready stall 并缓存后，释放 response 不会留下卡死状态：
+  相同 upstream read ID 的新 DDR cache read 仍可重新 accepted/发 `AR`/完成 `R`；
+  相同 upstream write ID 的新 DDR bypass write 仍可重新 accepted/发 `AW/W`/完成 `B`
 
 当前该 bench 仍不验证全局 shared outstanding 计数；该预算由上游 compat/top 层约束。
 

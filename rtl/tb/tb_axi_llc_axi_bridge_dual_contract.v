@@ -1139,6 +1139,103 @@ module tb_axi_llc_axi_bridge_dual_contract;
         end
     endtask
 
+    task test_response_stall_recovers_request_issue;
+        integer timeout;
+        reg [AXI_ID_BITS-1:0] first_read_axi_id;
+        reg [AXI_ID_BITS-1:0] first_write_axi_id;
+        begin
+            reset_dut();
+
+            cache_resp_ready = 1'b0;
+            issue_ddr_cache_read(DDR_BASE + 32'h0000_0D00, 4'h3);
+            wait_ddr_ar(DDR_BASE + 32'h0000_0D00);
+            first_read_axi_id = captured_ddr_arid;
+
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b1;
+            ddr_axi_rid = first_read_axi_id;
+            ddr_axi_rdata = {DDR_DATA_BITS{1'b0}};
+            ddr_axi_rdata[31:0] = 32'h1111_0D00;
+            ddr_axi_rresp = 2'b00;
+            ddr_axi_rlast = 1'b0;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now("held response recovery read first beat was backpressured");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rdata[31:0] = 32'h2222_0D00;
+            ddr_axi_rlast = 1'b1;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now("held response recovery read last beat was backpressured");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 0;
+            while (!cache_resp_valid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!cache_resp_valid || cache_resp_id != 4'h3 ||
+                cache_resp_rdata[31:0] != 32'h1111_0D00) begin
+                fail_now("held read response was not buffered before recovery");
+            end
+            cache_resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            if (cache_resp_valid) begin
+                fail_now("held read response did not drain after ready");
+            end
+
+            issue_ddr_cache_read(DDR_BASE + 32'h0000_0D80, 4'h3);
+            wait_ddr_ar(DDR_BASE + 32'h0000_0D80);
+            send_ddr_read_resp(captured_ddr_arid, 32'hD00D_0D80);
+
+            bypass_resp_ready = 1'b0;
+            issue_ddr_bypass_word_write(DDR_BASE + 32'h0000_0E00, 4'hE,
+                                        32'hB10C_0E00);
+            wait_ddr_aw_and_w(DDR_BASE + 32'h0000_0E00);
+            first_write_axi_id = captured_ddr_awid;
+
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b1;
+            ddr_axi_bid = first_write_axi_id;
+            ddr_axi_bresp = 2'b00;
+            #1;
+            if (!ddr_axi_bready) begin
+                fail_now("held response recovery B was backpressured");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b0;
+
+            timeout = 0;
+            while (!bypass_resp_valid && timeout < 20) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+            if (!bypass_resp_valid || bypass_resp_id != 4'hE ||
+                bypass_resp_code != 2'b00) begin
+                fail_now("held write response was not buffered before recovery");
+            end
+            bypass_resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            if (bypass_resp_valid) begin
+                fail_now("held write response did not drain after ready");
+            end
+
+            issue_ddr_bypass_word_write(DDR_BASE + 32'h0000_0E80, 4'hE,
+                                        32'hB10C_0E80);
+            wait_ddr_aw_and_w(DDR_BASE + 32'h0000_0E80);
+            send_ddr_bypass_write_resp(captured_ddr_awid, 4'hE);
+        end
+    endtask
+
     task test_different_line_write_not_blocked_by_read;
         begin
             issue_ddr_cache_read(DDR_BASE + 32'h0000_0700, 4'h3);
@@ -1267,6 +1364,7 @@ module tb_axi_llc_axi_bridge_dual_contract;
         test_rready_ignores_response_backpressure();
         test_write_blocks_same_line_read();
         test_bready_ignores_response_backpressure();
+        test_response_stall_recovers_request_issue();
         test_different_line_write_not_blocked_by_read();
         $display("tb_axi_llc_axi_bridge_dual_contract PASS");
         $finish;
