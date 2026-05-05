@@ -484,7 +484,7 @@ bool read_env_u64(const char *name, uint64_t &value_out) {
   char *end = nullptr;
   const unsigned long long parsed = std::strtoull(raw, &end, 0);
   if (errno != 0 || end == raw || (end != nullptr && *end != '\0')) {
-    std::printf("[AXI-SUBMODULE][WARN] ignore invalid %s=%s\n", name, raw);
+    std::fprintf(stderr, "[AXI-SUBMODULE][WARN] ignore invalid %s=%s\n", name, raw);
     return false;
   }
   value_out = static_cast<uint64_t>(parsed);
@@ -610,20 +610,23 @@ void AXI_Interconnect::sample_runtime_controls() {
   reconfig_target_offset_ = llc_mapped_offset_;
 
   if ((runtime_mode_ == 1u || runtime_mode_ == 2u) && !llc_config.enable) {
-    std::printf(
+    std::fprintf(
+        stderr,
         "[AXI-SUBMODULE][WARN] mode=%u requests LLC runtime, but "
         "llc_config.enable=0\n",
         static_cast<unsigned>(runtime_mode_));
   }
   if (runtime_mode_ == 2u && llc_config.size_bytes < kMappedLlcWindowBytes) {
-    std::printf(
+    std::fprintf(
+        stderr,
         "[AXI-SUBMODULE][WARN] mode=2 maps 0x%08x bytes, but LLC size is only "
         "0x%llx bytes\n",
         static_cast<unsigned>(kMappedLlcWindowBytes),
         static_cast<unsigned long long>(llc_config.size_bytes));
   }
 
-  std::printf(
+  std::fprintf(
+      stderr,
       "[AXI-SUBMODULE] mode=%u mapped_offset=0x%08x mapped_size=0x%08x "
       "llc_enable=%u llc_size=0x%llx\n",
       static_cast<unsigned>(runtime_mode_),

@@ -43,7 +43,9 @@ write/read 写后读且不逃逸到 DDR/MMIO；并完成两个未纳入 stable m
 hw-cbmc 入口分流：均保留为 experimental/non-stable，不作为当前生产 RTL 失败结论；
 并扩展同一个 production-size native dual top RTL contract，在 MODE_OFF 下覆盖 64B
 DDR direct read 的 `ARLEN=1`、两拍 256-bit `R` merge、`RLAST` 前不回包和 512-bit
-upstream response 回收。
+upstream response 回收；继续扩展该 bench 在 MODE_CACHE 下覆盖 64B cacheable read
+miss/refill 与随后同 line read hit，确认 miss 只发一笔 DDR `ARLEN=1` refill，hit
+不再逃逸到 DDR/MMIO。
 剩余 open 项主要集中在端到端 hw-cbmc 形式 EC、更完整 production-width cacheable
 subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
 
@@ -148,6 +150,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   2-way 小缓存，使 `TAG_BITS <= META_BITS-1`，dirty victim 地址可完整重建为外部 DDR 地址。
   trace generator 使用 thin table adapter 只响应实际 C++ `AXI_Interconnect::get_llc_table_out()` 的表读，
   期望值仍来自 production C++ comb/seq，不重写 cache 行为 reference。
+  2026-05-05 复核 trace 生成链路：`axi_interconnect_dual_port_trace_vectors` 重新生成的
+  stdout Verilog include 与仓库 `rtl/include/axi_dual_cpp_trace_vectors.vh` byte-level
+  一致，log 为 `local_debug/cpp_ec_sanity_20260505_194045_stderr_trace`；同时把
+  `AXI_Interconnect` runtime config 诊断改为 stderr，避免污染后续 trace header 生成。
   最新 targeted VCS 目录：
   `rtl/local_debug/vcs_dual_cpp_trace_inval_all_blocked_20260504_164631`。该项是
   trace-based 功能 EC，不等同于 hw-cbmc 端到端形式 EC。
@@ -205,7 +211,7 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `local_debug/hw_cbmc_dual_bridge_prod_width_bypass_cacheline_read_response_20260505_154112.log`，
   并已纳入 manifest；`formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `rtl/local_debug/vcs_all_contracts_20260505_175032_with_prod_read64`。本轮新增
+  `rtl/local_debug/vcs_all_contracts_20260505_193402_prod_cacheable`。本轮新增
   `tb_axi_llc_subsystem_core_startup_idle_contract`，直接实例化实际
   `axi_llc_subsystem_core.v`，小参数/generic store 下验证 reset startup sweep 结束后
   `active_mode=MODE_CACHE`、`reconfig_state=IDLE`、`config_error=0`，且无意外
@@ -214,7 +220,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `axi_llc_subsystem_dual.v` 的 8192 set / 16 way / 4MB mapped-window 参数，
   验证窗口末端 4B local write/read 写后读且不逃逸到 DDR/MMIO；该 bench 继续扩展
   MODE_OFF direct DDR 64B read，检查 `ARLEN=1`、两拍 `R` 合并、`RLAST` 前不回包和
-  upstream 512-bit response 数据/ID。
+  upstream 512-bit response 数据/ID；本轮继续扩展 MODE_CACHE 64B cacheable read
+  miss/refill 与同 line hit，检查 refill 只向 DDR 发一笔 `ARLEN=1` 请求、两拍 `R`
+  合并为 512-bit upstream response，随后 hit 不再向 DDR/MMIO 发 `AR/AW/W`。
 - [x] native dual-AXI RTL contract：`rtl/run_dual_axi_contracts.sh` 当前通过 4/4，最新目录
   `rtl/local_debug/vcs_dual_axi_contracts_20260504_235450`。
 - [x] `axi_llc_axi_bridge_dual` 子模块 DC link sanity：`AXI_LLC_DC_TOP=axi_llc_axi_bridge_dual`
@@ -830,9 +838,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   mapped-window local write/read 写后读，且不得向 DDR/MMIO `AR/AW/W` 逃逸；并在
   reconfig 到 MODE_OFF 后覆盖 64B DDR direct read 的两拍 256-bit `R` merge 和
   upstream response 回收，用 VCS actual RTL 补充 formal monolithic native-top
-  timeout 无法稳定覆盖的路径。
+  timeout 无法稳定覆盖的路径。本轮继续 reconfig 到 MODE_CACHE，覆盖同一 actual
+  production 参数下 64B cacheable read miss/refill 与随后同 line read hit：miss 检查
+  DDR `ARADDR/ARLEN/ARSIZE/ARBURST/ARID`、两拍 `R` merge、`RLAST` 前不回包和 upstream
+  512-bit 数据/ID；hit 检查不再出现新的 DDR/MMIO `AR/AW/W`。
   targeted VCS 目录为
-  `rtl/local_debug/vcs_dual_prod_window_mode0_read64_20260505_175013`。
+  `rtl/local_debug/vcs_dual_prod_cacheable_20260505_193342`，全量 RTL contract 目录为
+  `rtl/local_debug/vcs_all_contracts_20260505_193402_prod_cacheable`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
