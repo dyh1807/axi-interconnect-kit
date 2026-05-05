@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=168 / open=15。本轮新增 MODE_MAPPED local-window actual C++ trace
+当前计数：done=169 / open=14。本轮新增 MODE_MAPPED local-window actual C++ trace
 到实际 RTL subsystem 的 write/read 一致性检查，并补齐 mapped-window 上/下边界外
 MMIO read/write 双向路由检查，以及 mapped-window 跨界 8B unsupported blocked
 检查；继续补齐 MODE_CACHE `invalidate_all` 挂起时新 read/write blocked，以及
@@ -36,9 +36,12 @@ production-width same-line read-before-write / write-before-read 的 bridge-leve
 并在父仓库临时适配 cacheability/MMIO 分类后，补跑 large + `CONFIG_BPU`
 Linux 300k/5M commit sanity，确认不再触发低地址 cacheline read deadlock 且 300k
 周期数未出现可见回退；并新增实际 `axi_llc_subsystem_core.v` startup idle RTL
-contract，验证 reset 后 valid sweep 收敛到 MODE_CACHE idle 且无伪请求/响应。
-剩余 open 项主要集中在端到端 hw-cbmc 形式 EC、production-width core/subsystem 组合覆盖、
-RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
+contract，验证 reset 后 valid sweep 收敛到 MODE_CACHE idle 且无伪请求/响应；
+并新增实际 `axi_llc_subsystem_dual.v` 在 8192 set / 16 way / 4MB mapped window
+参数下的 production-size RTL contract，覆盖 `0x303ffffc` 窗口末端 4B local
+write/read 写后读且不逃逸到 DDR/MMIO。
+剩余 open 项主要集中在端到端 hw-cbmc 形式 EC、更完整 production-width cacheable
+subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
 
 ## 当前稳定回归
 
@@ -197,12 +200,15 @@ RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
   log 为
   `local_debug/hw_cbmc_dual_bridge_prod_width_bypass_cacheline_read_response_20260505_154112.log`，
   并已纳入 manifest；`formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
-- [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 52/52，最新目录
-  `rtl/local_debug/vcs_all_contracts_20260505_171141_with_startup`。本轮新增
+- [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
+  `rtl/local_debug/vcs_all_contracts_20260505_173010_with_prod_window`。本轮新增
   `tb_axi_llc_subsystem_core_startup_idle_contract`，直接实例化实际
   `axi_llc_subsystem_core.v`，小参数/generic store 下验证 reset startup sweep 结束后
   `active_mode=MODE_CACHE`、`reconfig_state=IDLE`、`config_error=0`，且无意外
-  upstream response、cache/bypass lower request 或 victim-line 输出。
+  upstream response、cache/bypass lower request 或 victim-line 输出；并新增
+  `tb_axi_llc_subsystem_dual_mapped_window_prod_contract`，直接实例化实际
+  `axi_llc_subsystem_dual.v` 的 8192 set / 16 way / 4MB mapped-window 参数，
+  验证窗口末端 4B local write/read 写后读且不逃逸到 DDR/MMIO。
 - [x] native dual-AXI RTL contract：`rtl/run_dual_axi_contracts.sh` 当前通过 4/4，最新目录
   `rtl/local_debug/vcs_dual_axi_contracts_20260504_235450`。
 - [x] `axi_llc_axi_bridge_dual` 子模块 DC link sanity：`AXI_LLC_DC_TOP=axi_llc_axi_bridge_dual`
@@ -749,8 +755,8 @@ RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
   read/write size sweep 已补；本轮补齐当前 RTL contract 窗口内 mapped local-window
   起点与末端 line 写后读边界；本轮继续补齐 pending direct MMIO write drain
   与 external MMIO `AR/AW/W` pre-handshake drain；
-  后续主要剩更长随机 trace、生产 4MB mapped-window subsystem/top-width 覆盖与
-  multi-master/multi-outstanding maintenance/recovery 并发组合。
+  后续主要剩更长随机 trace，以及 multi-master/multi-outstanding
+  maintenance/recovery 并发组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
   已补 DDR/MMIO read/write 同时在途、MMIO `R/B` 先返回、上游 response stall 下外部
   `RREADY/BREADY` 不被回压，并按实际 C++ trace 检查原 upstream ID/data/code 回收。
@@ -783,8 +789,7 @@ RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
   full-budget release、MODE_CACHE read refill/MMIO read direct-bypass、MODE_CACHE
   partial write miss/refill/MMIO write direct-bypass、MODE_CACHE dirty victim/MMIO
   write direct-bypass 已由 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 覆盖；后续如继续
-  扩展，应优先做随机 trace、生产 4MB mapped-window subsystem/top-width 覆盖和
-  更复杂 maintenance/recovery 与并发请求组合。
+  扩展，应优先做随机 trace 和更复杂 maintenance/recovery 与并发请求组合。
 - [ ] 实际 C++ request/response 状态机 vs RTL bridge/subsystem 的 hw-cbmc 同 harness
   bounded EC：当前已有 trace-based 功能 EC，但还没有把实际 C++ 对象和实际 RTL top
   放进同一个 hw-cbmc harness；后续需要解决 C++ 标准库/frontend 接入或建立可复用的
@@ -809,9 +814,13 @@ RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
   smoke 已覆盖；production-width same-line read-before-write / write-before-read safety
   smoke 也已覆盖。dual bridge 后续仍需继续拆双端口 response mux 竞争，以及更完整的
   recovery/forward-progress witness，避免一次性证明更大 native top。
-- [ ] Native dual top 在更完整生产参数下的 smoke：当前 top formal 多为 8B line/8B beat
-  小参数，后续应补 64B line/32B DDR beat 的有限入口，优先只观测 `AR/AW/W/R/B`
-  shape，避免直接证明完整 cache 状态空间。
+- [x] Native dual top 在更完整生产参数下的 smoke：已新增
+  `tb_axi_llc_subsystem_dual_mapped_window_prod_contract`，直接实例化实际
+  `axi_llc_subsystem_dual.v`，参数为 8192 set / 16 way / 64B line / 4MB mapped
+  window / 32B DDR beat，覆盖 reset startup sweep 后 `0x303ffffc` 末端 4B
+  mapped-window local write/read 写后读，且不得向 DDR/MMIO `AR/AW/W` 逃逸。
+  targeted VCS 目录为
+  `rtl/local_debug/vcs_dual_mapped_window_prod_20260505_172932`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
@@ -826,9 +835,9 @@ RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
   gate，且 bridge 报告中的大宽度寄存器/多处 2048-bit mux、LINT-1/LINT-52、高 fanout
   和 signedness warning 仍需继续清理或在 DC 时序报告中审视。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
-  `rtl/run_dual_axi_contracts.sh`；当前通过 52/52 与 4/4，其中全量 RTL contract 最新
-  52/52 目录为
-  `rtl/local_debug/vcs_all_contracts_20260505_171141_with_startup`，dual-only 4/4 目录为
+  `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4，其中全量 RTL contract 最新
+  53/53 目录为
+  `rtl/local_debug/vcs_all_contracts_20260505_173010_with_prod_window`，dual-only 4/4 目录为
   `rtl/local_debug/vcs_dual_axi_contracts_20260505_143514`。
 - [x] C++ 模块功能回归：实际 C++ 改动后需重跑
   `ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`；本轮已复跑并通过

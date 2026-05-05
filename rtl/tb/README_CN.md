@@ -60,6 +60,7 @@
 - `tb_axi_llc_subsystem_dual_mmio_contract.v`
 - `tb_axi_llc_subsystem_dual_outstanding_contract.v`
 - `tb_axi_llc_subsystem_dual_cpp_trace_contract.v`
+- `tb_axi_llc_subsystem_dual_mapped_window_prod_contract.v`
 - `tb_axi_llc_subsystem_core_startup_idle_contract.v`
 - `tb_axi_llc_subsystem_read_master_timing_contract.v`
 - `tb_llc_smic12_store_contract.v`
@@ -439,6 +440,17 @@ core 内部 hazard 遮掉。
 - 该 bench 是 trace-based 功能 EC；它用于缩小实际 C++/RTL 语义差距，但不替代
   后续 hw-cbmc 同 harness 端到端形式 EC
 
+### `tb_axi_llc_subsystem_dual_mapped_window_prod_contract.v`
+
+- 直接实例化实际 `axi_llc_subsystem_dual.v`
+- 参数使用 8192 set / 16 way / 64B line / 4MB mapped window / 32B DDR beat，
+  `USE_SMIC12_STORES=0`，用于在 VCS 中快速覆盖 production-size mapped-window decode
+- reset 后等待 8192-set valid sweep 收敛到 `MODE_MAPPED + 0x30000000`
+- 在窗口最后 4B 地址 `0x303ffffc` 发 local write，再 read back，要求数据一致、
+  response ID/code 正确，且整个过程中不得向 DDR/MMIO `AR/AW/W` 逃逸
+- 该 bench 覆盖 production-size native dual top 的 mapped-window 边界 smoke；它不替代
+  后续 production-width cacheable miss/refill 或 full DC 时序检查
+
 ### `tb_llc_cache_ctrl_cpp_trace_contract.v`
 
 - 直接面向实际 `llc_cache_ctrl.v`
@@ -510,7 +522,7 @@ vvp simv_reconfig
 ./run_all_contracts.sh
 ```
 
-该脚本按 `flist/tb_*.f` 排序编译并运行当前 52 个 testbench，扫描 `FAIL`，并兼容
+该脚本按 `flist/tb_*.f` 排序编译并运行当前 53 个 testbench，扫描 `FAIL`，并兼容
 `<test> PASS` 与旧 bench 的独立 `PASS` marker。2026-05-05 在 `eda-05` 上通过
-`bash_eda05 + VCS` 跑通，结果为 52 passed / 0 failed。最新输出目录为
-`rtl/local_debug/vcs_all_contracts_20260505_171141_with_startup`。
+`bash_eda05 + VCS` 跑通，结果为 53 passed / 0 failed。最新输出目录为
+`rtl/local_debug/vcs_all_contracts_20260505_173010_with_prod_window`。
