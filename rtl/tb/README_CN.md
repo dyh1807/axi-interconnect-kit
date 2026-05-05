@@ -417,7 +417,7 @@ core 内部 hazard 遮掉。
 
 - 直接面向实际 `axi_llc_subsystem_dual.v`
 - 期望值不是手写 RTL reference，而是由
-  `axi_interconnect/axi_interconnect_dual_port_trace_vectors.cpp` 调用实际
+  `axi_interconnect/axi_interconnect_dual_port_trace_vectors_test.cpp` 调用实际
   `AXI_Interconnect` comb/seq 路径生成到 `rtl/include/axi_dual_cpp_trace_vectors.vh`
 - 覆盖 MODE_OFF 下 DDR direct 4B 未对齐 read、8B read、64B cacheline 2-beat read、
   4B 未对齐 write、64B cacheline 2-beat write、MMIO direct 4B read/write，以及
@@ -441,7 +441,7 @@ core 内部 hazard 遮掉。
 ### `tb_llc_cache_ctrl_cpp_trace_contract.v`
 
 - 直接面向实际 `llc_cache_ctrl.v`
-- 期望值由 `axi_interconnect/axi_llc_cache_trace_vectors.cpp` 调用实际 `AXI_LLC`
+- 期望值由 `axi_interconnect/axi_llc_cache_trace_vectors_test.cpp` 调用实际 `AXI_LLC`
   comb/seq 路径生成到 `rtl/include/axi_llc_cache_cpp_trace_vectors.vh`
 - 当前覆盖 8B line/2-way 小参数下的 partial write hit merge、read miss refill、
   partial write miss refill、dirty victim full-line writeback、dirty victim + partial-write
