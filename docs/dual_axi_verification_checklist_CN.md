@@ -4,12 +4,16 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=178 / open=11。本轮新增 MODE_CACHE cacheable read miss 的 DDR
+当前计数：done=180 / open=9。本轮新增 MODE_CACHE cacheable read miss 的 DDR
 refill `AR` 已发且 `R` 未返回时，同 line cacheable write 必须 `ready=0`、
 不 accepted、且不向 DDR/MMIO 外部 `AW/W/AR` 逃逸的 actual C++ trace 到实际
 RTL subsystem 一致性检查；本轮继续新增 MODE_OFF DDR direct-bypass write 的
 `AW/W` 已发且 `B` 未返回时，同 line read 必须 `ready=0`、不 accepted、且不向
 DDR/MMIO 外部 `AR/AW/W` 逃逸的 actual C++ trace 到实际 RTL subsystem 一致性检查；
+本轮继续新增 actual native dual subsystem 下 DDR direct write `AW/W` 已发且
+`B` 未返回时，MMIO read 仍可独立 accepted 并发出 MMIO `AR` 的 bounded formal；
+并继续新增同条件下 MMIO write 仍可独立 accepted 并发出 MMIO `AW/W` 的 bounded
+formal；
 本轮新增 MODE_MAPPED local-window actual C++ trace
 到实际 RTL subsystem 的 write/read 一致性检查，并补齐 mapped-window 上/下边界外
 MMIO read/write 双向路由检查，以及 mapped-window 跨界 8B unsupported blocked
@@ -216,8 +220,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   最新 targeted VCS 目录：`rtl/local_debug/vcs_llc_cache_cpp_trace_dvpw_20260504_081121`。
   该项是 trace-based 功能 EC，meta/valid/repl 只做 C++ 抽象表项到 RTL row encoding
   的接口适配。
-- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 74 项；
-  `formal/*/run_hw_cbmc.sh` 当前共有 76 个入口，其中 2 个实验/未收敛入口暂未纳入
+- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 76 项；
+  `formal/*/run_hw_cbmc.sh` 当前共有 78 个入口，其中 2 个实验/未收敛入口暂未纳入
   稳定 manifest。原 68/68 已有 split-run 通过证据。前 20 项见
   `local_debug/run_passed_hw_cbmc_after_ddr_write_mmio_read_20260504_202454.log`；
   该 log 在 `dual_bridge_prod_width_ddr_read_mmio_write_independent` 处因默认 240s
@@ -265,7 +269,17 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `local_debug/hw_cbmc_dual_bridge_prod_helper_write_issue_shape_20260505_220230.log`，
   覆盖 production C helper `axi_bridge_downstream_write_issue_shape()` 与实际
   `axi_llc_axi_bridge_dual.v` 的 bypass write `AW` issue shape 一致性，并已纳入
-  manifest；`formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
+  manifest；本轮新增并通过
+  `formal/subsystem_dual_ddr_write_mmio_read_independent/run_hw_cbmc.sh`，targeted log 为
+  `local_debug/hw_cbmc_subsystem_dual_ddr_write_mmio_read_independent_20260506_012742.log`，
+  覆盖 native dual top 中 DDR direct write 已发 `AW/W` 且 `B` 未返回时，MMIO read
+  仍可独立 accepted 并发出 MMIO `AR`，并已纳入 manifest；
+  本轮新增并通过
+  `formal/subsystem_dual_ddr_write_mmio_write_independent/run_hw_cbmc.sh`，targeted log 为
+  `local_debug/hw_cbmc_subsystem_dual_ddr_write_mmio_write_independent_20260506_013416.log`，
+  覆盖 native dual top 中 DDR direct write 已发 `AW/W` 且 `B` 未返回时，MMIO write
+  仍可独立 accepted 并发出 MMIO `AW/W`，并已纳入 manifest；
+  `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
   `rtl/local_debug/vcs_all_contracts_after_same_line_20260506_005229_eda10`。本轮新增
   `tb_axi_llc_subsystem_core_startup_idle_contract`，直接实例化实际
@@ -456,6 +470,16 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `formal/subsystem_dual_ddr_read_mmio_write_independent/run_hw_cbmc.sh` 当前通过；直接
   实例化实际 `axi_llc_subsystem_dual.v`，覆盖 DDR 4B read 未返回 `R`、MMIO 4B write
   未返回 `B` 时，两笔 direct-bypass 请求仍可被接受并分别发向 DDR `AR` 与 MMIO `AW/W`。
+- [x] actual native dual subsystem DDR-write/MMIO-read independent bounded formal：
+  `formal/subsystem_dual_ddr_write_mmio_read_independent/run_hw_cbmc.sh` 当前通过；直接
+  实例化实际 `axi_llc_subsystem_dual.v`，覆盖 DDR 4B write 已经发出 `AW/W` 且未返回
+  `B` 时，MMIO 4B read 仍可被接受并发向 MMIO `AR`，不得误发 DDR `AR` 或 MMIO
+  `AW/W`。
+- [x] actual native dual subsystem DDR-write/MMIO-write independent bounded formal：
+  `formal/subsystem_dual_ddr_write_mmio_write_independent/run_hw_cbmc.sh` 当前通过；直接
+  实例化实际 `axi_llc_subsystem_dual.v`，覆盖 DDR 4B write 已经发出 `AW/W` 且未返回
+  `B` 时，MMIO 4B write 仍可被接受并发向 MMIO `AW/W`，不得误发 DDR `AR` 或 MMIO
+  `AR`。
 - [x] actual native dual subsystem cache-refill/MMIO-read independent bounded formal：
   `formal/subsystem_dual_cache_refill_mmio_read_independent/run_hw_cbmc.sh` 当前通过；直接
   实例化实际 `axi_llc_subsystem_dual.v`，覆盖 MODE_CACHE 下 DDR cache miss/refill
@@ -633,12 +657,20 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] `formal/subsystem_dual_cache_dirty_evict_post_b_hit`：actual native dual top 小参数
   bounded smoke，覆盖 dirty victim writeback 的 DDR `AW/W/B` 完成后，B 后 read 必须命中
   新安装的 dirty line，不得再发 DDR `AR` 或 MMIO 访问，且 read `id/data` 正确。
+- [x] `formal/subsystem_dual_ddr_write_mmio_read_independent`：actual native dual top
+  小参数 bounded smoke，覆盖 MODE_OFF/direct-bypass 下 DDR write `AW/W` 已发且
+  `B` 未返回时，MMIO read 仍可 accepted 并发出 MMIO `AR`，不被 DDR write outstanding
+  串行化。
+- [x] `formal/subsystem_dual_ddr_write_mmio_write_independent`：actual native dual top
+  小参数 bounded smoke，覆盖 MODE_OFF/direct-bypass 下 DDR write `AW/W` 已发且
+  `B` 未返回时，MMIO write 仍可 accepted 并发出 MMIO `AW/W`，不被 DDR write
+  outstanding 串行化。
 
 ## 待继续收敛的生产边界
 
 - [x] 未纳入稳定 manifest 的 formal 入口已按优先级分流：
-  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 74 个稳定入口，`formal/*/run_hw_cbmc.sh`
-  当前共有 76 个入口，剩余未纳入入口为
+  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 76 个稳定入口，`formal/*/run_hw_cbmc.sh`
+  当前共有 78 个入口，剩余未纳入入口为
   `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response` 和
   `formal/subsystem_core_dirty_evict_writeback` 两项；二者均已明确归类为
   experimental/non-stable，不计入稳定回归缺口。dual bridge production-width
