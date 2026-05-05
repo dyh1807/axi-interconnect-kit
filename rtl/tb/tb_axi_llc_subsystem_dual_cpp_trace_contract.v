@@ -4022,6 +4022,220 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_same_master_write_issue_one;
+        input integer master;
+        input [31:0] req_addr;
+        input [7:0] req_size;
+        input [3:0] req_id;
+        input [511:0] req_wdata;
+        input [63:0] req_wstrb;
+        input [31:0] exp_awaddr;
+        input [7:0] exp_awlen;
+        input [2:0] exp_awsize;
+        input [1:0] exp_awburst;
+        input [5:0] exp_awid;
+        input [255:0] exp_wbeat0;
+        input [31:0] exp_wstrb0;
+        input exp_wlast0;
+        output [AXI_ID_BITS-1:0] seen_awid_out;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            @(negedge clk);
+            ddr_axi_awready = 1'b0;
+            ddr_axi_wready = 1'b0;
+            write_req_addr[(master * ADDR_BITS) +: ADDR_BITS] = req_addr;
+            write_req_total_size[(master * 8) +: 8] = req_size;
+            write_req_id[(master * ID_BITS) +: ID_BITS] = req_id;
+            write_req_wdata[(master * LINE_BITS) +: LINE_BITS] = req_wdata;
+            write_req_wstrb[(master * LINE_BYTES) +: LINE_BYTES] = req_wstrb[LINE_BYTES-1:0];
+            write_req_bypass[master] = 1'b0;
+            write_req_valid[master] = 1'b1;
+            timeout = 80;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (write_req_accepted[master]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (!accepted_seen) begin
+                fail_now("C++ trace same-master write accept timeout");
+            end
+            write_req_valid[master] = 1'b0;
+            write_req_bypass[master] = 1'b0;
+
+            @(negedge clk);
+            timeout = 80;
+            while (!ddr_axi_awvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace same-master write AW timeout");
+            end
+            #1;
+            if (ddr_axi_awaddr != exp_awaddr ||
+                ddr_axi_awlen != exp_awlen ||
+                ddr_axi_awsize != exp_awsize ||
+                ddr_axi_awburst != exp_awburst ||
+                ddr_axi_awid != exp_awid ||
+                mmio_axi_awvalid) begin
+                fail_now("C++ trace same-master write AW mismatch");
+            end
+            seen_awid_out = ddr_axi_awid;
+            ddr_axi_awready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_awready = 1'b0;
+
+            timeout = 80;
+            while (!ddr_axi_wvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace same-master write W timeout");
+            end
+            #1;
+            if (ddr_axi_wdata != exp_wbeat0 ||
+                ddr_axi_wstrb != exp_wstrb0 ||
+                ddr_axi_wlast != exp_wlast0 ||
+                mmio_axi_wvalid) begin
+                fail_now("C++ trace same-master write W mismatch");
+            end
+            ddr_axi_wready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_wready = 1'b0;
+        end
+    endtask
+
+    task issue_same_master_write_order_and_check;
+        integer timeout;
+        reg [AXI_ID_BITS-1:0] older_awid;
+        reg [AXI_ID_BITS-1:0] newer_awid;
+        begin
+            reset_dut();
+            write_resp_ready = {NUM_WRITE_MASTERS{1'b0}};
+            issue_same_master_write_issue_one(
+                CPP_MODE0_SAME_MASTER_WRITE0_MASTER,
+                CPP_MODE0_SAME_MASTER_WRITE0_REQ_ADDR,
+                CPP_MODE0_SAME_MASTER_WRITE0_REQ_SIZE,
+                CPP_MODE0_SAME_MASTER_WRITE0_REQ_ID,
+                CPP_MODE0_SAME_MASTER_WRITE0_REQ_WDATA,
+                CPP_MODE0_SAME_MASTER_WRITE0_REQ_WSTRB,
+                CPP_MODE0_SAME_MASTER_WRITE0_AWADDR,
+                CPP_MODE0_SAME_MASTER_WRITE0_AWLEN,
+                CPP_MODE0_SAME_MASTER_WRITE0_AWSIZE,
+                CPP_MODE0_SAME_MASTER_WRITE0_AWBURST,
+                CPP_MODE0_SAME_MASTER_WRITE0_AWID,
+                CPP_MODE0_SAME_MASTER_WRITE0_WBEAT0,
+                CPP_MODE0_SAME_MASTER_WRITE0_WSTRB0,
+                CPP_MODE0_SAME_MASTER_WRITE0_WLAST0,
+                older_awid);
+            issue_same_master_write_issue_one(
+                CPP_MODE0_SAME_MASTER_WRITE1_MASTER,
+                CPP_MODE0_SAME_MASTER_WRITE1_REQ_ADDR,
+                CPP_MODE0_SAME_MASTER_WRITE1_REQ_SIZE,
+                CPP_MODE0_SAME_MASTER_WRITE1_REQ_ID,
+                CPP_MODE0_SAME_MASTER_WRITE1_REQ_WDATA,
+                CPP_MODE0_SAME_MASTER_WRITE1_REQ_WSTRB,
+                CPP_MODE0_SAME_MASTER_WRITE1_AWADDR,
+                CPP_MODE0_SAME_MASTER_WRITE1_AWLEN,
+                CPP_MODE0_SAME_MASTER_WRITE1_AWSIZE,
+                CPP_MODE0_SAME_MASTER_WRITE1_AWBURST,
+                CPP_MODE0_SAME_MASTER_WRITE1_AWID,
+                CPP_MODE0_SAME_MASTER_WRITE1_WBEAT0,
+                CPP_MODE0_SAME_MASTER_WRITE1_WSTRB0,
+                CPP_MODE0_SAME_MASTER_WRITE1_WLAST0,
+                newer_awid);
+            if (older_awid == newer_awid) begin
+                fail_now("C++ trace same-master writes reused AXI ID");
+            end
+
+            ddr_axi_bid = newer_awid;
+            ddr_axi_bresp = AXI_RESP_OKAY;
+            ddr_axi_bvalid = 1'b1;
+            #1;
+            if (ddr_axi_bready !== CPP_MODE0_SAME_MASTER_WRITE1_BREADY_STALLED) begin
+                fail_now("C++ trace same-master newer BREADY stalled mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b0;
+
+            timeout = 80;
+            while (!write_resp_valid[CPP_MODE0_SAME_MASTER_WRITE1_MASTER] &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace same-master newer write response timeout");
+            end
+            #1;
+            if (write_resp_id[(CPP_MODE0_SAME_MASTER_WRITE1_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE0_SAME_MASTER_WRITE1_RESP_ID ||
+                write_resp_code[(CPP_MODE0_SAME_MASTER_WRITE1_MASTER * 2) +: 2] !=
+                    CPP_MODE0_SAME_MASTER_WRITE1_RESP_CODE) begin
+                fail_now("C++ trace same-master newer write response payload mismatch");
+            end
+
+            ddr_axi_bid = older_awid;
+            ddr_axi_bresp = AXI_RESP_OKAY;
+            ddr_axi_bvalid = 1'b1;
+            #1;
+            if (ddr_axi_bready !== CPP_MODE0_SAME_MASTER_WRITE0_BREADY_STALLED) begin
+                fail_now("C++ trace same-master older BREADY stalled mismatch");
+            end
+            if (write_resp_id[(CPP_MODE0_SAME_MASTER_WRITE1_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE0_SAME_MASTER_WRITE1_RESP_ID ||
+                write_resp_code[(CPP_MODE0_SAME_MASTER_WRITE1_MASTER * 2) +: 2] !=
+                    CPP_MODE0_SAME_MASTER_WRITE1_RESP_CODE) begin
+                fail_now("C++ trace same-master held write response changed before older B edge");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_bvalid = 1'b0;
+
+            #1;
+            if (write_resp_id[(CPP_MODE0_SAME_MASTER_WRITE1_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE0_SAME_MASTER_WRITE1_RESP_ID ||
+                write_resp_code[(CPP_MODE0_SAME_MASTER_WRITE1_MASTER * 2) +: 2] !=
+                    CPP_MODE0_SAME_MASTER_WRITE1_RESP_CODE) begin
+                fail_now("C++ trace same-master held write response changed after older B");
+            end
+            write_resp_ready[CPP_MODE0_SAME_MASTER_WRITE1_MASTER] = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            write_resp_ready[CPP_MODE0_SAME_MASTER_WRITE1_MASTER] = 1'b0;
+
+            timeout = 120;
+            while (!write_resp_valid[CPP_MODE0_SAME_MASTER_WRITE0_MASTER] &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace same-master older write response timeout");
+            end
+            #1;
+            if (write_resp_id[(CPP_MODE0_SAME_MASTER_WRITE0_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE0_SAME_MASTER_WRITE0_RESP_ID ||
+                write_resp_code[(CPP_MODE0_SAME_MASTER_WRITE0_MASTER * 2) +: 2] !=
+                    CPP_MODE0_SAME_MASTER_WRITE0_RESP_CODE) begin
+                fail_now("C++ trace same-master older write response payload mismatch");
+            end
+            write_resp_ready[CPP_MODE0_SAME_MASTER_WRITE0_MASTER] = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            write_resp_ready[CPP_MODE0_SAME_MASTER_WRITE0_MASTER] = 1'b0;
+        end
+    endtask
+
     task issue_read_reuse_and_check;
         integer timeout;
         reg accepted_seen;
@@ -5651,6 +5865,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         issue_overlapped_read_and_check();
         issue_overlapped_read64_and_check();
         issue_same_master_read_order_and_check();
+        issue_same_master_write_order_and_check();
         issue_read_reuse_and_check();
         issue_read_budget_release_and_check();
         issue_overlapped_write_and_check();

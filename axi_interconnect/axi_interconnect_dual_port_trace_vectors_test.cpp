@@ -557,6 +557,14 @@ struct SameMasterReadTrace {
   bool older_rready_while_resp_stalled = false;
 };
 
+struct SameMasterWriteTrace {
+  WriteTrace older;
+  WriteTrace newer;
+  uint8_t master = 0;
+  bool newer_bready_while_resp_stalled = false;
+  bool older_bready_while_resp_stalled = false;
+};
+
 struct ReadReuseTrace {
   ReadTrace first;
   ReadTrace second;
@@ -2938,6 +2946,82 @@ SameMasterReadTrace run_same_master_read_order_trace() {
   return trace;
 }
 
+SameMasterWriteTrace run_same_master_write_order_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  SameMasterWriteTrace trace{};
+  trace.master = axi_interconnect::MASTER_DCACHE_W;
+  trace.older.prefix = "CPP_MODE0_SAME_MASTER_WRITE0";
+  trace.older.req_addr = 0x40002400u;
+  trace.older.req_size = 3;
+  trace.older.req_id = 0x6u;
+  const auto older_data = single_word_data(0x66002400u);
+  const auto older_strobe = byte_strobe(0xfu);
+  trace.older.req_wdata = wide_write_words(older_data);
+  trace.older.req_wstrb = write_strobe_mask(older_strobe);
+  trace.newer.prefix = "CPP_MODE0_SAME_MASTER_WRITE1";
+  trace.newer.req_addr = 0x40002420u;
+  trace.newer.req_size = 3;
+  trace.newer.req_id = 0x7u;
+  const auto newer_data = single_word_data(0x77002420u);
+  const auto newer_strobe = byte_strobe(0xfu);
+  trace.newer.req_wdata = wide_write_words(newer_data);
+  trace.newer.req_wstrb = write_strobe_mask(newer_strobe);
+
+  issue_write_and_capture_axi(dut, trace.older, trace.master,
+                              axi_interconnect::DownstreamPort::DDR,
+                              older_data, older_strobe);
+  issue_write_and_capture_axi(dut, trace.newer, trace.master,
+                              axi_interconnect::DownstreamPort::DDR,
+                              newer_data, newer_strobe);
+  require(trace.older.awid != trace.newer.awid,
+          "C++ same-master write trace reused a downstream AXI ID");
+
+  idle_request_outputs(dut);
+  dut.axi_ddr_io.b.bvalid = true;
+  dut.axi_ddr_io.b.bid = trace.newer.awid;
+  dut.axi_ddr_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  trace.newer_bready_while_resp_stalled = dut.axi_ddr_io.b.bready;
+  require(trace.newer_bready_while_resp_stalled,
+          "C++ same-master newer B was backpressured");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  dut.comb_outputs();
+  require(dut.write_ports[trace.master].resp.valid,
+          "C++ same-master newer write response was not held");
+  require(dut.write_ports[trace.master].resp.id == trace.newer.req_id,
+          "C++ same-master newer write response ID mismatch before older B");
+
+  idle_request_outputs(dut);
+  dut.axi_ddr_io.b.bvalid = true;
+  dut.axi_ddr_io.b.bid = trace.older.awid;
+  dut.axi_ddr_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  trace.older_bready_while_resp_stalled = dut.axi_ddr_io.b.bready;
+  require(trace.older_bready_while_resp_stalled,
+          "C++ same-master older B was backpressured");
+  require(dut.write_ports[trace.master].resp.valid &&
+              dut.write_ports[trace.master].resp.id == trace.newer.req_id,
+          "C++ same-master held write response changed before older B edge");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  dut.comb_outputs();
+  require(dut.write_ports[trace.master].resp.valid &&
+              dut.write_ports[trace.master].resp.id == trace.newer.req_id,
+          "C++ same-master held write response changed after older B completion");
+
+  capture_write_response(dut, trace.newer, trace.master);
+  capture_write_response(dut, trace.older, trace.master);
+  return trace;
+}
+
 ReadReuseTrace run_read_reuse_trace() {
   axi_interconnect::AXI_Interconnect dut;
   init_dut(dut);
@@ -4233,6 +4317,20 @@ void emit_same_master_read(std::ostream &os, const SameMasterReadTrace &trace) {
      << (trace.older_rready_while_resp_stalled ? 1 : 0) << ";\n";
 }
 
+void emit_same_master_write(std::ostream &os,
+                            const SameMasterWriteTrace &trace) {
+  emit_write(os, trace.older);
+  os << "localparam integer " << trace.older.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.master) << ";\n";
+  emit_write(os, trace.newer);
+  os << "localparam integer " << trace.newer.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.master) << ";\n";
+  os << "localparam " << trace.newer.prefix << "_BREADY_STALLED = 1'b"
+     << (trace.newer_bready_while_resp_stalled ? 1 : 0) << ";\n";
+  os << "localparam " << trace.older.prefix << "_BREADY_STALLED = 1'b"
+     << (trace.older_bready_while_resp_stalled ? 1 : 0) << ";\n";
+}
+
 void emit_read_reuse(std::ostream &os, const ReadReuseTrace &trace) {
   emit_read(os, trace.first);
   os << "localparam integer " << trace.first.prefix
@@ -4546,6 +4644,7 @@ void emit_vectors(std::ostream &os) {
   const auto overlap_read = run_overlapped_read_trace();
   const auto overlap_read64 = run_overlapped_read64_trace();
   const auto same_master_read = run_same_master_read_order_trace();
+  const auto same_master_write = run_same_master_write_order_trace();
   const auto read_reuse = run_read_reuse_trace();
   const auto read_budget_release = run_read_budget_release_trace();
   const auto overlap_write = run_overlapped_write_trace();
@@ -4661,6 +4760,7 @@ void emit_vectors(std::ostream &os) {
   emit_overlap_read(os, overlap_read);
   emit_overlap_read(os, overlap_read64);
   emit_same_master_read(os, same_master_read);
+  emit_same_master_write(os, same_master_write);
   emit_read_reuse(os, read_reuse);
   emit_read_budget_release(os, read_budget_release);
   emit_overlap_write(os, overlap_write);

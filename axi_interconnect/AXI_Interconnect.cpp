@@ -592,6 +592,56 @@ bool AXI_Interconnect::external_write_busy() const {
   return any_w_active() || any_aw_latched();
 }
 
+uint8_t AXI_Interconnect::write_resp_buffer_count(uint8_t master) const {
+  if (master >= NUM_WRITE_MASTERS) {
+    return 0;
+  }
+  return static_cast<uint8_t>((w_resp_valid[master] ? 1u : 0u) +
+                              w_resp_queue[master].size());
+}
+
+bool AXI_Interconnect::write_resp_buffer_has_space(uint8_t master) const {
+  return master < NUM_WRITE_MASTERS &&
+         write_resp_buffer_count(master) < MAX_WRITE_OUTSTANDING;
+}
+
+bool AXI_Interconnect::any_write_resp_buffered() const {
+  for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    if (w_resp_valid[master] || !w_resp_queue[master].empty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void AXI_Interconnect::enqueue_write_resp(uint8_t master, uint8_t id,
+                                          uint8_t resp) {
+  if (master >= NUM_WRITE_MASTERS) {
+    return;
+  }
+  if (!w_resp_valid[master]) {
+    w_resp_valid[master] = true;
+    w_resp_id[master] = id;
+    w_resp_resp[master] = resp;
+    return;
+  }
+  if (write_resp_buffer_has_space(master)) {
+    w_resp_queue[master].push_back(WriteRespEntry{id, resp});
+  }
+}
+
+void AXI_Interconnect::promote_write_resp_queue() {
+  for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
+    if (!w_resp_valid[master] && !w_resp_queue[master].empty()) {
+      const auto entry = w_resp_queue[master].front();
+      w_resp_queue[master].pop_front();
+      w_resp_valid[master] = true;
+      w_resp_id[master] = entry.id;
+      w_resp_resp[master] = entry.resp;
+    }
+  }
+}
+
 void AXI_Interconnect::sample_runtime_controls() {
   uint64_t env_value = 0;
   if (read_env_u64("AXI_SUBMODULE_MODE", env_value)) {
@@ -835,6 +885,7 @@ void AXI_Interconnect::init() {
     w_resp_valid[i] = false;
     w_resp_id[i] = 0;
     w_resp_resp[i] = 0;
+    w_resp_queue[i].clear();
     write_req_accepted[i] = false;
   }
 
@@ -992,7 +1043,7 @@ bool AXI_Interconnect::llc_path_quiescent() const {
   }
   for (int master = 0; master < NUM_WRITE_MASTERS; ++master) {
     if (w_req_ready_r[master] || write_ports[master].req.ready ||
-        w_resp_valid[master]) {
+        w_resp_valid[master] || !w_resp_queue[master].empty()) {
       return false;
     }
   }
@@ -2150,14 +2201,13 @@ void AXI_Interconnect::comb_read_response() {
 // ============================================================================
 void AXI_Interconnect::comb_write_request() {
   bool w_req_ready_curr[NUM_WRITE_MASTERS];
-  bool any_w_resp_valid = false;
+  const bool any_w_resp_valid = any_write_resp_buffered();
   for (int i = 0; i < NUM_WRITE_MASTERS; i++) {
     w_req_ready_curr[i] = w_req_ready_r[i];
     w_req_ready_r[i] = false;
     write_req_fire_c[i] = false;
     llc_upstream_write_accept_c[i] = false;
     llc_upstream_write_capture_c[i] = {};
-    any_w_resp_valid = any_w_resp_valid || w_resp_valid[i];
     if (w_req_ready_curr[i] && !write_ports[i].req.valid && DEBUG) {
       printf("[axi] write ready without valid (drop) master=%d\n", i);
     }
@@ -2414,7 +2464,7 @@ void AXI_Interconnect::comb_write_response() {
           return !llc_mem_write_resp_valid_;
         }
         return current.master_id < NUM_WRITE_MASTERS &&
-               !w_resp_valid[current.master_id];
+               write_resp_buffer_has_space(current.master_id);
       }
       const bool can_ignore_victim_b =
           !active && llc_mem_ignored_b_count_ > 0;
@@ -2455,7 +2505,7 @@ void AXI_Interconnect::comb_write_response() {
     if (master < 0 || master >= NUM_WRITE_MASTERS) {
       return false;
     }
-    return !w_resp_valid[master];
+    return write_resp_buffer_has_space(static_cast<uint8_t>(master));
   };
 
   const int ddr_b_master = b_target_master(DownstreamPort::DDR, axi_ddr_io);
@@ -2998,6 +3048,7 @@ void AXI_Interconnect::seq() {
         continue;
       }
     }
+    promote_write_resp_queue();
 
     for (int k = 0; k < NUM_WRITE_MASTERS; ++k) {
       const int idx = (w_arb_rr_idx + k) % NUM_WRITE_MASTERS;
@@ -3133,9 +3184,7 @@ void AXI_Interconnect::seq() {
           llc_mem_write_resp_valid_ = true;
           llc_mem_write_resp_ = io.b.bresp;
         } else if (current.master_id < NUM_WRITE_MASTERS) {
-          w_resp_valid[current.master_id] = true;
-          w_resp_id[current.master_id] = current.orig_id;
-          w_resp_resp[current.master_id] = io.b.bresp;
+          enqueue_write_resp(current.master_id, current.orig_id, io.b.bresp);
         }
         active = false;
         current = {};
@@ -3376,9 +3425,7 @@ void AXI_Interconnect::seq() {
             static_cast<unsigned>(txn.beats_sent), static_cast<int>(txn.w_done));
       }
       if (txn.master_id < NUM_WRITE_MASTERS) {
-        w_resp_valid[txn.master_id] = true;
-        w_resp_id[txn.master_id] = txn.orig_id;
-        w_resp_resp[txn.master_id] = io.b.bresp;
+        enqueue_write_resp(txn.master_id, txn.orig_id, io.b.bresp);
       }
       w_pending.erase(w_pending.begin() + pending_idx);
     }
@@ -3394,6 +3441,7 @@ void AXI_Interconnect::seq() {
       w_resp_resp[master] = 0;
     }
   }
+  promote_write_resp_queue();
 
   for (DownstreamPort port : {DownstreamPort::DDR, DownstreamPort::MMIO}) {
     auto &latch = aw_latch(port);

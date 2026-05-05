@@ -4,7 +4,11 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=181 / open=8。本轮新增 MODE_CACHE cacheable read miss 的 DDR
+当前计数：done=182 / open=7。本轮新增 MODE_OFF 同一 upstream write master 两笔
+DDR direct write 的多 ID / out-of-order `B` response actual C++ trace 到实际 RTL
+subsystem 一致性检查，并将 C++ direct write response 路径改为按 master queue
+buffer 外部 `B` response，避免上游 write response 被 hold 时无谓反压外部 `BREADY`；
+本轮继续新增 MODE_CACHE cacheable read miss 的 DDR
 refill `AR` 已发且 `R` 未返回时，同 line cacheable write 必须 `ready=0`、
 不 accepted、且不向 DDR/MMIO 外部 `AW/W/AR` 逃逸的 actual C++ trace 到实际
 RTL subsystem 一致性检查；本轮继续新增 MODE_OFF DDR direct-bypass write 的
@@ -77,7 +81,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 
 - [x] C++ regression：`ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`
   当前通过 24/24；最近一次复跑目录：
-  `local_debug/ctest_after_write_pending_read_20260506.log`。
+  `local_debug/ctest_after_same_master_write_queue_20260506_020413.log`。
+- [x] 2026-05-06 same-master write response queue 复核：targeted VCS
+  `tb_axi_llc_subsystem_dual_cpp_trace_contract` 通过，目录
+  `rtl/local_debug/vcs_dual_cpp_trace_same_master_write_20260506_020403_eda07`；
+  C++ regression 24/24 通过；全量 RTL contract 53/53 通过，目录
+  `rtl/local_debug/vcs_all_contracts_same_master_write_queue_20260506_020432_eda07`。
 - [x] 2026-05-06 same-line write-pending/read RTL fix 复核：targeted VCS
   `tb_axi_llc_subsystem_dual_cpp_trace_contract` 通过，目录
   `rtl/local_debug/vcs_dual_cpp_trace_write_pending_read_fix_20260506_011527_eda10`；
@@ -760,7 +769,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   DDR 64B 两拍 read/write 与 MMIO 同时在途的实际 C++ trace；同一 upstream read
   master 多 ID DDR response out-of-order 完成时，按实际 C++/RTL 完成顺序 FIFO 输出，
   且 held response 在上游不 ready 时保持稳定；read response retire 后第二笔 read
-  可继续 accepted/发 `AR` 并复用已释放 downstream AXI ID；还覆盖 MODE_CACHE 下 MMIO 4B
+  可继续 accepted/发 `AR` 并复用已释放 downstream AXI ID；同一 upstream write master
+  多 ID DDR `B` response out-of-order 完成时，按实际 C++/RTL 完成顺序 FIFO 输出，
+  held write response 在上游不 ready 时保持稳定，且外部 `BREADY` 只受内部 queue 空间
+  保护、不被当前 held upstream write response 无谓反压；还覆盖 MODE_CACHE 下 MMIO 4B
   read/write direct-bypass 不进入 LLC core 的实际 C++ trace，以及 MODE_CACHE
   cacheable read miss/refill 与 MMIO read direct-bypass 同时在途时的 DDR 64B refill
   两拍合并、MMIO response 先返回和外部 `RREADY` 不回压；还覆盖 MODE_CACHE
@@ -897,6 +909,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 write-side release/reuse 第一组：
   已补 write response 被 upstream 消费后，下一笔 write 可继续 accepted/发 `AW/W`，
   并复用已释放 downstream AWID，覆盖实际 C++ comb/seq 与实际 RTL subsystem 的一致性。
+- [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 write-side same-master
+  out-of-order 第一组：已补同一 upstream write master 连续两笔 DDR direct write，
+  downstream `B` 以 newer-before-older 顺序返回且上游 write response 被 hold 的场景；
+  actual C++ 与实际 RTL subsystem 均要求 held newer response 的 ID/code 稳定，
+  older `B` 在内部 queue 有空间时仍可被接收，随后按完成顺序回收 newer/older 两个
+  upstream write response。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 read full-budget release 第一组：
   已补 32 个 read outstanding 填满后第 33 个 read `ready=0` 且 no-`AR`；消费第一笔
   response 后，新 read 可重新 accepted/发 `AR`，并复用已释放 downstream ARID。
@@ -914,9 +932,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   full-line write miss 触发 DDR victim `AW/W`，victim `B` pending 期间另一 write master
   的 MMIO 4B write 仍可独立发出并回收/hold response；held MMIO response 不回压 DDR
   victim `BREADY`，DDR `B` 后 cache write response 与实际 C++ trace 一致。
-- [ ] 实际 C++ `AXI_Interconnect` trace-based EC 的剩余并发场景：DDR 64B 两拍
+- [x] 实际 C++ `AXI_Interconnect` trace-based EC 的剩余并发场景：DDR 64B 两拍
   read/write 与 MMIO 同时在途、同一 upstream read master 多 ID response out-of-order
-  完成与 held response 稳定性、read-side/write-side release-reuse、read/write
+  完成与 held response 稳定性、同一 upstream write master 多 ID `B` response
+  out-of-order 完成与 held response 稳定性、read-side/write-side release-reuse、read/write
   full-budget release、MODE_CACHE read refill/MMIO read direct-bypass、MODE_CACHE
   partial write miss/refill/MMIO write direct-bypass、MODE_CACHE dirty victim/MMIO
   write direct-bypass 已由 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 覆盖；后续如继续
@@ -1103,6 +1122,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] 外部 `BREADY` 不被上游 response stall 回压，但仍受内部 response queue 空间保护。
 - [x] 同一 upstream read master 多 ID response 交错：后完成/先完成不按 AR 顺序覆盖，
   而按 downstream 完成顺序 FIFO 输出；held response 在 upstream ready=0 时保持稳定。
+- [x] 同一 upstream write master 多 ID `B` response 交错：后完成/先完成不按 AW 顺序覆盖，
+  而按 downstream 完成顺序 FIFO 输出；held write response 在 upstream ready=0 时保持
+  稳定，且外部 `BREADY` 不被当前 held response 串行化。
 - [x] read-side owner/ID release-reuse：read response 被 upstream 消费后，下一笔 read
   可继续 accepted/发 `AR`，并复用已释放 downstream AXI ID。
 - [x] write-side owner/ID release-reuse：write response 被 upstream 消费后，下一笔 write

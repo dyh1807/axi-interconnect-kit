@@ -177,6 +177,11 @@ struct WritePendingTxn {
   bool llc_victim_write;
 };
 
+struct WriteRespEntry {
+  uint8_t id = 0;
+  uint8_t resp = 0;
+};
+
 // ============================================================================
 // AXI_Interconnect Class
 // ============================================================================
@@ -278,6 +283,11 @@ private:
   bool any_aw_latched() const;
   bool any_w_active() const;
   bool external_write_busy() const;
+  uint8_t write_resp_buffer_count(uint8_t master) const;
+  bool write_resp_buffer_has_space(uint8_t master) const;
+  bool any_write_resp_buffered() const;
+  void enqueue_write_resp(uint8_t master, uint8_t id, uint8_t resp);
+  void promote_write_resp_queue();
 
   // Read arbiter state
   uint8_t r_arb_rr_idx;
@@ -309,6 +319,7 @@ private:
   bool w_resp_valid[NUM_WRITE_MASTERS];
   uint8_t w_resp_id[NUM_WRITE_MASTERS];
   uint8_t w_resp_resp[NUM_WRITE_MASTERS];
+  std::deque<WriteRespEntry> w_resp_queue[NUM_WRITE_MASTERS];
 
   // AW latch for AXI compliance
   AWLatch_t aw_latched;
