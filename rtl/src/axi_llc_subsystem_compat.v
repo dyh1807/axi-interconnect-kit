@@ -245,6 +245,7 @@ module axi_llc_subsystem_compat #(
     integer                      rr_off;
     integer                      flat_idx;
     reg [7:0]                    next_port;
+    reg [7:0]                    write_port_w;
     integer                      slot_idx;
     reg [15:0]                   total_read_outstanding_w;
     reg [15:0]                   total_write_outstanding_w;
@@ -844,6 +845,7 @@ module axi_llc_subsystem_compat #(
         dispatch_master_w = 8'd0;
         dispatch_fifo_slot_w = 0;
         dispatch_slot_w = 8'd0;
+        write_port_w = 8'd0;
         total_read_outstanding_w = 16'd0;
         total_write_outstanding_w = 16'd0;
         rd_select_found_w = 1'b0;
@@ -1111,14 +1113,14 @@ module axi_llc_subsystem_compat #(
                             end
                         end
                     end else begin
-                        flat_idx = idx32(next_port) - NUM_READ_MASTERS;
-                        if ((wr_q_count[flat_idx] != 0) &&
-                            !wr_resp_valid_r[flat_idx]) begin
-                            dispatch_fifo_slot_w = wr_slot_index(flat_idx,
-                                                                 wr_q_head[flat_idx]);
+                        write_port_w = next_port - idx8(NUM_READ_MASTERS);
+                        if ((wr_q_count[write_port_w] != 0) &&
+                            !wr_resp_valid_r[write_port_w]) begin
+                            dispatch_fifo_slot_w = wr_slot_index(write_port_w,
+                                                                 wr_q_head[write_port_w]);
                             if (!(core_req_stage_valid_r &&
                                   core_req_stage_is_write_r &&
-                                  (core_req_stage_master_r == idx8(flat_idx)) &&
+                                  (core_req_stage_master_r == write_port_w) &&
                                   (core_req_stage_fifo_slot_r ==
                                    idx8(dispatch_fifo_slot_w))) &&
                                 !request_uses_direct_bypass(active_mode,
@@ -1130,7 +1132,7 @@ module axi_llc_subsystem_compat #(
                                     wr_q_addr[dispatch_fifo_slot_w])) begin
                                 dispatch_found_w = 1'b1;
                                 dispatch_is_write_w = 1'b1;
-                                dispatch_master_w = idx8(flat_idx);
+                                dispatch_master_w = write_port_w;
                                 dispatch_slot_w = next_port;
                             end
                         end
@@ -1171,10 +1173,10 @@ module axi_llc_subsystem_compat #(
                             end
                         end
                     end else begin
-                        flat_idx = idx32(next_port) - NUM_READ_MASTERS;
-                        if (wr_q_count[flat_idx] != 0) begin
+                        write_port_w = next_port - idx8(NUM_READ_MASTERS);
+                        if (wr_q_count[write_port_w] != 0) begin
                             direct_dispatch_fifo_slot_w =
-                                wr_slot_index(flat_idx, wr_q_head[flat_idx]);
+                                wr_slot_index(write_port_w, wr_q_head[write_port_w]);
                             if (request_uses_supported_direct_bypass(
                                     active_mode,
                                     active_offset,
@@ -1183,7 +1185,7 @@ module axi_llc_subsystem_compat #(
                                     wr_q_bypass[direct_dispatch_fifo_slot_w])) begin
                                 direct_dispatch_found_w = 1'b1;
                                 direct_dispatch_is_write_w = 1'b1;
-                                direct_dispatch_master_w = idx8(flat_idx);
+                                direct_dispatch_master_w = write_port_w;
                                 direct_dispatch_slot_w = idx8(next_port);
                                 direct_dispatch_addr_w =
                                     wr_q_addr[direct_dispatch_fifo_slot_w];

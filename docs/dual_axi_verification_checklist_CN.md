@@ -856,8 +856,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
   `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
   后最新全量 RTL contract 53/53 目录为
-  `rtl/local_debug/vcs_all_contracts_20260505_183249_compat_cast_cleanup2`；此前
-  第一轮 cleanup 53/53 目录为
+  `rtl/local_debug/vcs_all_contracts_20260505_185352_compat_cast_cleanup3`；此前
+  第二轮 cleanup 53/53 目录为
+  `rtl/local_debug/vcs_all_contracts_20260505_183249_compat_cast_cleanup2`，第一轮 cleanup
+  53/53 目录为
   `rtl/local_debug/vcs_all_contracts_20260505_180837_compat_cast_cleanup`，此前
   production-width direct read 补测目录为
   `rtl/local_debug/vcs_all_contracts_20260505_175032_with_prod_read64`，dual-only 4/4
@@ -866,6 +868,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   compat signedness cleanup 后已复跑稳定 manifest 中 16 个 `subsystem_dual_*`
   proof，全部通过，覆盖 MMIO read/write route/response、DDR/MMIO independent、
   cache refill/hit/full-write、mode0 DDR bypass、dirty-evict writeback/B response/post-B hit。
+  第三轮 cleanup 汇总 log 为
+  `local_debug/hw_cbmc_subsystem_dual_subset_20260505_185651_compat_cast_cleanup3.log`；
   第二轮 cleanup 汇总 log 为
   `local_debug/hw_cbmc_subsystem_dual_subset_20260505_183554_compat_cast_cleanup2.log`；
   第一轮 cleanup 汇总 log 为
