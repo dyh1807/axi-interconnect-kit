@@ -846,11 +846,25 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   生产 RTL 可被 DC analyze/elaborate/link；但 compat/core/subsystem/full-top 仍未完成该
   gate，且 bridge 报告中的大宽度寄存器/多处 2048-bit mux、LINT-1/LINT-52、高 fanout
   和 signedness warning 仍需继续清理或在 DC 时序报告中审视。
+  2026-05-05 根据旧 full DC elaborate log 暴露的大量 `axi_llc_subsystem_compat.v`
+  `VER-318` signed-to-unsigned warning，已先做一轮低风险 RTL cleanup：把 signed
+  `integer` 下标进入 variable part-select、8-bit master/slot id 和 FIFO pointer 前显式
+  转为无符号表达式，并把 FIFO next-pointer helper 改为 8-bit 返回。该改动已通过
+  VCS 53/53 与实际 dual-subsystem hw-cbmc 子集 16/16；但 warning 是否消除仍需新
+  DC link sanity 或 full DC 验证，因此本 gate 仍保持 open。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
-  `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4，其中全量 RTL contract 最新
-  53/53 目录为
-  `rtl/local_debug/vcs_all_contracts_20260505_175032_with_prod_read64`，dual-only 4/4 目录为
-  `rtl/local_debug/vcs_dual_axi_contracts_20260505_143514`。
+  `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
+  后最新全量 RTL contract 53/53 目录为
+  `rtl/local_debug/vcs_all_contracts_20260505_180837_compat_cast_cleanup`；此前
+  production-width direct read 补测目录为
+  `rtl/local_debug/vcs_all_contracts_20260505_175032_with_prod_read64`，dual-only 4/4
+  目录为 `rtl/local_debug/vcs_dual_axi_contracts_20260505_143514`。
+- [x] 受 `axi_llc_subsystem_compat.v` 影响的 actual dual-subsystem hw-cbmc 子集：
+  compat signedness cleanup 后已复跑稳定 manifest 中 16 个 `subsystem_dual_*`
+  proof，全部通过，覆盖 MMIO read/write route/response、DDR/MMIO independent、
+  cache refill/hit/full-write、mode0 DDR bypass、dirty-evict writeback/B response/post-B hit。
+  汇总 log 为
+  `local_debug/hw_cbmc_subsystem_dual_subset_20260505_181213_compat_cast_cleanup.log`。
 - [x] C++ 模块功能回归：实际 C++ 改动后需重跑
   `ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`；本轮已复跑并通过
   24/24，其中 `axi_interconnect_dual_port_test` 内部通过 38/38。最新 targeted log：
