@@ -4,10 +4,13 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=177 / open=12。本轮新增 MODE_CACHE cacheable read miss 的 DDR
+当前计数：done=178 / open=11。本轮新增 MODE_CACHE cacheable read miss 的 DDR
 refill `AR` 已发且 `R` 未返回时，同 line cacheable write 必须 `ready=0`、
 不 accepted、且不向 DDR/MMIO 外部 `AW/W/AR` 逃逸的 actual C++ trace 到实际
-RTL subsystem 一致性检查；本轮新增 MODE_MAPPED local-window actual C++ trace
+RTL subsystem 一致性检查；本轮继续新增 MODE_OFF DDR direct-bypass write 的
+`AW/W` 已发且 `B` 未返回时，同 line read 必须 `ready=0`、不 accepted、且不向
+DDR/MMIO 外部 `AR/AW/W` 逃逸的 actual C++ trace 到实际 RTL subsystem 一致性检查；
+本轮新增 MODE_MAPPED local-window actual C++ trace
 到实际 RTL subsystem 的 write/read 一致性检查，并补齐 mapped-window 上/下边界外
 MMIO read/write 双向路由检查，以及 mapped-window 跨界 8B unsupported blocked
 检查；继续补齐 MODE_CACHE `invalidate_all` 挂起时新 read/write blocked，以及
@@ -69,7 +72,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 
 - [x] C++ regression：`ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`
   当前通过 24/24；最近一次复跑目录：
-  `local_debug/ctest_after_same_line_read_hazard_20260506.log`。
+  `local_debug/ctest_after_write_pending_read_20260506.log`。
+- [x] 2026-05-06 same-line write-pending/read RTL fix 复核：targeted VCS
+  `tb_axi_llc_subsystem_dual_cpp_trace_contract` 通过，目录
+  `rtl/local_debug/vcs_dual_cpp_trace_write_pending_read_fix_20260506_011527_eda10`；
+  C++ regression 24/24 通过；全量 RTL contract 53/53 通过，目录
+  `rtl/local_debug/vcs_all_contracts_after_write_pending_read_20260506_011554_eda10`。
 - [x] 2026-05-06 push 前短门槛复核：`git diff --check` 通过；C++ regression 24/24
   通过；`cache_ctrl_*` hw-cbmc 4 项、`subsystem_dual_cache_*` hw-cbmc 3 项、
   production helper read/write issue-shape hw-cbmc 2 项均通过；并在 `eda-10`
@@ -179,6 +187,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `ready=0`、不 accepted、且不向 DDR/MMIO 发出新的 `AW/W/AR`；该场景同步修正了
   C++ production write-ready 判定只检查外部 pending read、未覆盖 LLC 内部
   read/MSHR/refill pending 的语义缺口。
+  本轮继续新增对称的 MODE_OFF DDR direct-bypass write 的 `AW/W` 已发且 `B`
+  未返回时，同 line read 在 actual C++ 与实际 RTL subsystem 中均必须 `ready=0`、
+  不 accepted、且不向 DDR/MMIO 发出新的 `AR/AW/W`；该场景同步修正了 RTL compat
+  direct-bypass read ready 路径绕过 `local_write_line_pending` 的语义缺口，只对同
+  line pending write 施加阻断，不串行化无关 line。
   为避免缩小 RTL 参数时 meta tag 截断 DDR 高位，该 trace contract 使用 2048 set /
   2-way 小缓存，使 `TAG_BITS <= META_BITS-1`，dirty victim 地址可完整重建为外部 DDR 地址。
   trace generator 使用 thin table adapter 只响应实际 C++ `AXI_Interconnect::get_llc_table_out()` 的表读，
@@ -188,7 +201,7 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   一致，log 为 `local_debug/cpp_ec_sanity_20260505_194045_stderr_trace`；同时把
   `AXI_Interconnect` runtime config 诊断改为 stderr，避免污染后续 trace header 生成。
   最新 targeted VCS 目录：
-  `rtl/local_debug/vcs_dual_cpp_trace_same_line_clean_20260506_010219_eda10`。该项是
+  `rtl/local_debug/vcs_dual_cpp_trace_write_pending_read_fix_20260506_011527_eda10`。该项是
   trace-based 功能 EC，不等同于 hw-cbmc 端到端形式 EC。
 - [x] actual C++ LLC cache trace -> actual RTL cache-control functional EC：
   `axi_llc_cache_trace_vectors` 从实际 `AXI_LLC` comb/seq 路径生成

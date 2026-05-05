@@ -2964,6 +2964,110 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode0_same_line_write_pending_read_and_check;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            reset_dut();
+            @(negedge clk);
+            ddr_axi_awready = 1'b0;
+            ddr_axi_wready = 1'b0;
+
+            write_req_addr[(CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_REQ_ADDR;
+            write_req_total_size[(CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER * 8) +: 8] =
+                CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_REQ_SIZE;
+            write_req_id[(CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_REQ_ID;
+            write_req_wdata[(CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER * LINE_BITS) +: LINE_BITS] =
+                CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_REQ_WDATA;
+            write_req_wstrb[(CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER * LINE_BYTES) +: LINE_BYTES] =
+                CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_REQ_WSTRB[LINE_BYTES-1:0];
+            write_req_bypass[CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER] = 1'b0;
+            write_req_valid[CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER] = 1'b1;
+
+            accepted_seen = 1'b0;
+            timeout = 100;
+            while (!ddr_axi_awvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (write_req_accepted[CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace same-line pending write AW timeout");
+            end
+            #1;
+            if (ddr_axi_awaddr != CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_AWADDR ||
+                ddr_axi_awlen != CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_AWLEN ||
+                ddr_axi_awsize != CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_AWSIZE ||
+                ddr_axi_awburst != CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_AWBURST ||
+                ddr_axi_awid != CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_AWID ||
+                mmio_axi_awvalid || mmio_axi_wvalid || mmio_axi_arvalid ||
+                ddr_axi_arvalid) begin
+                fail_now("C++ trace same-line pending write AW mismatch");
+            end
+            seen_ddr_awid = ddr_axi_awid;
+            ddr_axi_awready = 1'b1;
+            @(posedge clk);
+            #1;
+            if (write_req_accepted[CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER]) begin
+                accepted_seen = 1'b1;
+            end
+            if (!accepted_seen) begin
+                fail_now("C++ trace same-line pending write accepted missing");
+            end
+            @(negedge clk);
+            write_req_valid[CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER] = 1'b0;
+            write_req_bypass[CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_MASTER] = 1'b0;
+            ddr_axi_awready = 1'b0;
+
+            timeout = 100;
+            while (!ddr_axi_wvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace same-line pending write W timeout");
+            end
+            #1;
+            if (ddr_axi_wdata != CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_WBEAT0 ||
+                ddr_axi_wstrb != CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_WSTRB0 ||
+                ddr_axi_wlast != CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE_WLAST0 ||
+                ddr_axi_awvalid || mmio_axi_awvalid || mmio_axi_wvalid ||
+                mmio_axi_arvalid || ddr_axi_arvalid) begin
+                fail_now("C++ trace same-line pending write W mismatch");
+            end
+            ddr_axi_wready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_wready = 1'b0;
+
+            read_req_addr[(CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_REQ_ADDR;
+            read_req_total_size[(CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_MASTER * 8) +: 8] =
+                CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_REQ_SIZE;
+            read_req_id[(CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_REQ_ID;
+            read_req_bypass[CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_MASTER] = 1'b0;
+            read_req_valid[CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_MASTER] = 1'b1;
+            #1;
+            if (read_req_ready[CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_MASTER] !==
+                    CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_REQ_READY ||
+                read_req_accepted[CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_MASTER] !==
+                    CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_ACCEPTED_WHILE_WRITE_PENDING ||
+                !CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_NO_EXTERNAL_ISSUE_WHILE_WRITE_PENDING ||
+                ddr_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid ||
+                mmio_axi_arvalid || mmio_axi_awvalid || mmio_axi_wvalid) begin
+                fail_now("C++ trace same-line pending write read mismatch");
+            end
+            @(negedge clk);
+            read_req_valid[CPP_MODE0_SAME_LINE_WRITE_PENDING_READ_MASTER] = 1'b0;
+        end
+    endtask
+
     task issue_mode1_invalidate_all_cache_mmio_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -5553,6 +5657,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         issue_overlapped_write64_and_check();
         issue_write_reuse_and_check();
         issue_write_budget_release_and_check();
+        issue_mode0_same_line_write_pending_read_and_check();
 
         issue_mmio_read_and_check(MODE_CACHE,
                                   CPP_MODE1_MMIO_READ4_REQ_ADDR,

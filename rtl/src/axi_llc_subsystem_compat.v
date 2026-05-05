@@ -1009,11 +1009,13 @@ module axi_llc_subsystem_compat #(
                                              read_req_addr[(idx32(next_port) * ADDR_BITS) +: ADDR_BITS],
                                              read_req_total_size[(idx32(next_port) * 8) +: 8],
                                              read_req_bypass[next_port]) &&
-                    (request_uses_direct_bypass(active_mode,
-                                               active_offset,
-                                               read_req_addr[(idx32(next_port) * ADDR_BITS) +: ADDR_BITS],
-                                               read_req_total_size[(idx32(next_port) * 8) +: 8],
-                                               read_req_bypass[next_port]) ||
+                    ((request_uses_direct_bypass(active_mode,
+                                                active_offset,
+                                                read_req_addr[(idx32(next_port) * ADDR_BITS) +: ADDR_BITS],
+                                                read_req_total_size[(idx32(next_port) * 8) +: 8],
+                                                read_req_bypass[next_port]) &&
+                      !local_write_line_pending(
+                          read_req_addr[(idx32(next_port) * ADDR_BITS) +: ADDR_BITS])) ||
                      (!read_capture_line_hazard(
                           read_req_addr[(idx32(next_port) * ADDR_BITS) +: ADDR_BITS]) &&
                       !read_master_response_busy(next_port) &&
@@ -1267,11 +1269,13 @@ module axi_llc_subsystem_compat #(
                                        !(core_req_stage_pop_w &&
                                          !core_req_stage_is_write_r &&
                                          (core_req_stage_master_r == idx8(flat_idx))) &&
-                                       (request_uses_direct_bypass(active_mode,
-                                                                  active_offset,
-                                                                  read_req_addr[(idx32(flat_idx) * ADDR_BITS) +: ADDR_BITS],
-                                                                  read_req_total_size[(idx32(flat_idx) * 8) +: 8],
-                                                                  read_req_bypass[flat_idx]) ||
+                                       ((request_uses_direct_bypass(active_mode,
+                                                                   active_offset,
+                                                                   read_req_addr[(idx32(flat_idx) * ADDR_BITS) +: ADDR_BITS],
+                                                                   read_req_total_size[(idx32(flat_idx) * 8) +: 8],
+                                                                   read_req_bypass[flat_idx]) &&
+                                         !local_write_line_pending(
+                                             read_req_addr[(idx32(flat_idx) * ADDR_BITS) +: ADDR_BITS])) ||
                                         (!read_capture_line_hazard(
                                              read_req_addr[(idx32(flat_idx) * ADDR_BITS) +: ADDR_BITS]) &&
                                          !read_master_response_busy(flat_idx) &&

@@ -634,6 +634,15 @@ struct SameLineReadPendingWriteTrace {
   bool no_external_issue_while_read_pending = false;
 };
 
+struct SameLineWritePendingReadTrace {
+  WriteTrace write;
+  BlockedTrace read;
+  uint8_t write_master = 0;
+  uint8_t read_master = 0;
+  bool read_accepted_while_write_pending = false;
+  bool no_external_issue_while_write_pending = false;
+};
+
 struct Mode2MappedLocalTrace {
   std::string prefix;
   WriteTrace write;
@@ -2188,6 +2197,61 @@ run_mode1_same_line_read_pending_write_trace() {
       !dut.axi_mmio_io.w.wvalid && !dut.axi_mmio_io.ar.arvalid;
   require(trace.no_external_issue_while_read_pending,
           "C++ same-line write escaped externally while read pending");
+  dut.seq();
+  ++sim_time;
+
+  return trace;
+}
+
+SameLineWritePendingReadTrace
+run_mode0_same_line_write_pending_read_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_dut(dut);
+  clear_inputs(dut);
+
+  SameLineWritePendingReadTrace trace{};
+  trace.write.prefix = "CPP_MODE0_SAME_LINE_WRITE_PENDING_WRITE";
+  trace.write.req_addr = 0x40000c00u;
+  trace.write.req_size = 3;
+  trace.write.req_id = 0x8u;
+  const auto write_data = single_word_data(0xface0c00u);
+  const auto write_strobe = byte_strobe(0xfu);
+  trace.write.req_wdata = wide_write_words(write_data);
+  trace.write.req_wstrb = write_strobe_mask(write_strobe);
+  trace.write_master = axi_interconnect::MASTER_DCACHE_W;
+  trace.read.prefix = "CPP_MODE0_SAME_LINE_WRITE_PENDING_READ";
+  trace.read.req_addr = 0x40000c08u;
+  trace.read.req_size = 3;
+  trace.read.req_id = 0x9u;
+  trace.read_master = axi_interconnect::MASTER_DCACHE_R;
+
+  issue_write_and_capture_axi(dut, trace.write, trace.write_master,
+                              axi_interconnect::DownstreamPort::DDR,
+                              write_data, write_strobe);
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  auto &read_req = dut.read_ports[trace.read_master].req;
+  read_req.valid = true;
+  read_req.addr = trace.read.req_addr;
+  read_req.total_size = trace.read.req_size;
+  read_req.id = trace.read.req_id;
+  read_req.bypass = false;
+  dut.comb_outputs();
+  dut.comb_inputs();
+  trace.read.req_ready = dut.read_ports[trace.read_master].req.ready;
+  trace.read_accepted_while_write_pending =
+      dut.read_ports[trace.read_master].req.accepted;
+  trace.no_external_issue_while_write_pending =
+      !dut.axi_ddr_io.ar.arvalid && !dut.axi_ddr_io.aw.awvalid &&
+      !dut.axi_ddr_io.w.wvalid && !dut.axi_mmio_io.ar.arvalid &&
+      !dut.axi_mmio_io.aw.awvalid && !dut.axi_mmio_io.w.wvalid;
+  require(!trace.read.req_ready,
+          "C++ same-line read was ready while write B was pending");
+  require(!trace.read_accepted_while_write_pending,
+          "C++ same-line read was accepted while write B was pending");
+  require(trace.no_external_issue_while_write_pending,
+          "C++ same-line read escaped externally while write B was pending");
   dut.seq();
   ++sim_time;
 
@@ -4402,6 +4466,22 @@ void emit_same_line_read_pending_write(
      << (trace.no_external_issue_while_read_pending ? 1 : 0) << ";\n";
 }
 
+void emit_same_line_write_pending_read(
+    std::ostream &os, const SameLineWritePendingReadTrace &trace) {
+  emit_write(os, trace.write);
+  os << "localparam integer " << trace.write.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.write_master) << ";\n";
+  emit_blocked_read(os, trace.read);
+  os << "localparam integer " << trace.read.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.read_master) << ";\n";
+  os << "localparam " << trace.read.prefix
+     << "_ACCEPTED_WHILE_WRITE_PENDING = 1'b"
+     << (trace.read_accepted_while_write_pending ? 1 : 0) << ";\n";
+  os << "localparam " << trace.read.prefix
+     << "_NO_EXTERNAL_ISSUE_WHILE_WRITE_PENDING = 1'b"
+     << (trace.no_external_issue_while_write_pending ? 1 : 0) << ";\n";
+}
+
 void emit_invalidate_all_cache_mmio_read(
     std::ostream &os, const InvalidateAllCacheMmioReadTrace &trace) {
   emit_overlap_read(os, trace.overlap);
@@ -4472,6 +4552,8 @@ void emit_vectors(std::ostream &os) {
   const auto overlap_write64 = run_overlapped_write64_trace();
   const auto write_reuse = run_write_reuse_trace();
   const auto write_budget_release = run_write_budget_release_trace();
+  const auto mode0_same_line_write_pending_read =
+      run_mode0_same_line_write_pending_read_trace();
   const auto mode1_mmio_read4 = run_mode1_mmio_read_trace(
       "CPP_MODE1_MMIO_READ4", 0x10000088u, 3, 0xEu, 0xabcd0088u);
   const auto mode1_mmio_write4 =
@@ -4585,6 +4667,7 @@ void emit_vectors(std::ostream &os) {
   emit_overlap_write(os, overlap_write64);
   emit_write_reuse(os, write_reuse);
   emit_write_budget_release(os, write_budget_release);
+  emit_same_line_write_pending_read(os, mode0_same_line_write_pending_read);
   emit_read(os, mode1_mmio_read4);
   emit_write(os, mode1_mmio_write4);
   emit_overlap_read(os, mode1_cache_mmio_overlap_read);
