@@ -128,6 +128,8 @@ module llc_cache_ctrl #(
     localparam integer LINE_WORDS = LINE_BITS / RESP_WORD_BITS;
     localparam integer META_TAG_BITS = (TAG_BITS < (META_BITS - 1)) ?
                                        TAG_BITS : (META_BITS - 1);
+    localparam [WAY_BITS-1:0] LAST_WAY = WAY_COUNT - 1;
+    localparam [SET_BITS-1:0] LAST_SET = SET_COUNT - 1;
 
     reg [3:0] state_r;
     reg       req_write_r;
@@ -221,14 +223,14 @@ module llc_cache_ctrl #(
     reg                mshr_commit_found_r;
     reg [ID_BITS-1:0]  mshr_commit_slot_r;
 
-    integer lookup_way_idx;
-    integer flush_way_idx;
-    integer mshr_pending_idx;
-    integer mshr_issue_idx;
-    integer mshr_resp_idx;
-    integer mshr_commit_idx;
-    integer mshr_victim_idx;
-    integer mshr_seq_idx;
+    reg [31:0] lookup_way_idx;
+    reg [31:0] flush_way_idx;
+    reg [31:0] mshr_pending_idx;
+    reg [31:0] mshr_issue_idx;
+    reg [31:0] mshr_resp_idx;
+    reg [31:0] mshr_commit_idx;
+    reg [31:0] mshr_victim_idx;
+    reg [31:0] mshr_seq_idx;
 
     function [META_BITS-1:0] make_meta;
         input [TAG_BITS-1:0] tag_value;
@@ -258,10 +260,10 @@ module llc_cache_ctrl #(
     function [LINE_BITS-1:0] extract_line;
         input [DATA_ROW_BITS-1:0] row_value;
         input [WAY_BITS-1:0]      way_value;
-        integer idx;
+        reg [31:0] idx;
         begin
             extract_line = {LINE_BITS{1'b0}};
-            for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
+            for (idx = 32'd0; idx < WAY_COUNT; idx = idx + 32'd1) begin
                 if (way_value == idx[WAY_BITS-1:0]) begin
                     extract_line = row_value[(idx * LINE_BITS) +: LINE_BITS];
                 end
@@ -272,10 +274,10 @@ module llc_cache_ctrl #(
     function [META_BITS-1:0] extract_meta;
         input [META_ROW_BITS-1:0] row_value;
         input [WAY_BITS-1:0]      way_value;
-        integer idx;
+        reg [31:0] idx;
         begin
             extract_meta = {META_BITS{1'b0}};
-            for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
+            for (idx = 32'd0; idx < WAY_COUNT; idx = idx + 32'd1) begin
                 if (way_value == idx[WAY_BITS-1:0]) begin
                     extract_meta = row_value[(idx * META_BITS) +: META_BITS];
                 end
@@ -288,14 +290,14 @@ module llc_cache_ctrl #(
         input [ADDR_BITS-1:0] addr_value;
         input [LINE_BITS-1:0] write_data;
         input [LINE_BYTES-1:0] write_strb;
-        integer src_idx;
-        integer line_off;
-        integer dst_idx;
+        reg [31:0] src_idx;
+        reg [31:0] line_off;
+        reg [31:0] dst_idx;
         begin
             merge_line = base_line;
             line_off = addr_value[LINE_OFFSET_BITS-1:0];
-            for (dst_idx = 0; dst_idx < LINE_BYTES; dst_idx = dst_idx + 1) begin
-                for (src_idx = 0; src_idx < LINE_BYTES; src_idx = src_idx + 1) begin
+            for (dst_idx = 32'd0; dst_idx < LINE_BYTES; dst_idx = dst_idx + 32'd1) begin
+                for (src_idx = 32'd0; src_idx < LINE_BYTES; src_idx = src_idx + 32'd1) begin
                     if (write_strb[src_idx] &&
                         ((line_off + src_idx) == dst_idx)) begin
                         merge_line[(dst_idx * 8) +: 8] =
@@ -309,10 +311,10 @@ module llc_cache_ctrl #(
     function [DATA_ROW_BITS-1:0] place_line_in_row;
         input [WAY_BITS-1:0]      way_value;
         input [LINE_BITS-1:0]     line_value;
-        integer idx;
+        reg [31:0] idx;
         begin
             place_line_in_row = {DATA_ROW_BITS{1'b0}};
-            for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
+            for (idx = 32'd0; idx < WAY_COUNT; idx = idx + 32'd1) begin
                 if (way_value == idx[WAY_BITS-1:0]) begin
                     place_line_in_row[(idx * LINE_BITS) +: LINE_BITS] = line_value;
                 end
@@ -323,10 +325,10 @@ module llc_cache_ctrl #(
     function [META_ROW_BITS-1:0] place_meta_in_row;
         input [WAY_BITS-1:0]      way_value;
         input [META_BITS-1:0]     meta_value;
-        integer idx;
+        reg [31:0] idx;
         begin
             place_meta_in_row = {META_ROW_BITS{1'b0}};
-            for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
+            for (idx = 32'd0; idx < WAY_COUNT; idx = idx + 32'd1) begin
                 if (way_value == idx[WAY_BITS-1:0]) begin
                     place_meta_in_row[(idx * META_BITS) +: META_BITS] = meta_value;
                 end
@@ -336,10 +338,10 @@ module llc_cache_ctrl #(
 
     function [WAY_COUNT-1:0] way_onehot;
         input [WAY_BITS-1:0] way_value;
-        integer idx;
+        reg [31:0] idx;
         begin
             way_onehot = {WAY_COUNT{1'b0}};
-            for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
+            for (idx = 32'd0; idx < WAY_COUNT; idx = idx + 32'd1) begin
                 if (way_value == idx[WAY_BITS-1:0]) begin
                     way_onehot[idx] = 1'b1;
                 end
@@ -350,7 +352,7 @@ module llc_cache_ctrl #(
     function [WAY_BITS-1:0] next_way;
         input [WAY_BITS-1:0] way_value;
         begin
-            if (way_value == (WAY_COUNT - 1)) begin
+            if (way_value == LAST_WAY) begin
                 next_way = {WAY_BITS{1'b0}};
             end else begin
                 next_way = way_value + {{(WAY_BITS-1){1'b0}}, 1'b1};
@@ -406,14 +408,14 @@ module llc_cache_ctrl #(
     function [READ_RESP_BITS-1:0] extract_read_response;
         input [ADDR_BITS-1:0] addr_value;
         input [LINE_BITS-1:0] line_value;
-        integer dst_idx;
-        integer src_idx;
-        integer start_word;
+        reg [31:0] dst_idx;
+        reg [31:0] src_idx;
+        reg [31:0] start_word;
         begin
             extract_read_response = {READ_RESP_BITS{1'b0}};
             start_word = addr_value[LINE_OFFSET_BITS-1:2];
-            for (dst_idx = 0; dst_idx < RESP_WORDS; dst_idx = dst_idx + 1) begin
-                for (src_idx = 0; src_idx < LINE_WORDS; src_idx = src_idx + 1) begin
+            for (dst_idx = 32'd0; dst_idx < RESP_WORDS; dst_idx = dst_idx + 32'd1) begin
+                for (src_idx = 32'd0; src_idx < LINE_WORDS; src_idx = src_idx + 32'd1) begin
                     if (src_idx == (start_word + dst_idx)) begin
                         extract_read_response[(dst_idx * RESP_WORD_BITS) +: RESP_WORD_BITS] =
                             line_value[(src_idx * RESP_WORD_BITS) +: RESP_WORD_BITS];
@@ -430,9 +432,9 @@ module llc_cache_ctrl #(
         mshr_any_valid_r = 1'b0;
         invalidate_line_mshr_pending_r = 1'b0;
         invalidate_line_victim_pending_r = 1'b0;
-        for (mshr_pending_idx = 0;
+        for (mshr_pending_idx = 32'd0;
              mshr_pending_idx < MSHR_COUNT;
-             mshr_pending_idx = mshr_pending_idx + 1) begin
+             mshr_pending_idx = mshr_pending_idx + 32'd1) begin
             if (mshr_valid_r[mshr_pending_idx]) begin
                 mshr_any_valid_r = 1'b1;
             end
@@ -477,9 +479,9 @@ module llc_cache_ctrl #(
         mshr_issue_found_r = 1'b0;
         mshr_issue_write_r = 1'b0;
         mshr_issue_slot_r = {ID_BITS{1'b0}};
-        for (mshr_issue_idx = 0;
+        for (mshr_issue_idx = 32'd0;
              mshr_issue_idx < MSHR_COUNT;
-             mshr_issue_idx = mshr_issue_idx + 1) begin
+             mshr_issue_idx = mshr_issue_idx + 32'd1) begin
             if (!mshr_issue_found_r && mshr_valid_r[mshr_issue_idx]) begin
                 if (!mshr_committed_r[mshr_issue_idx] &&
                     mshr_need_refill_r[mshr_issue_idx] &&
@@ -506,9 +508,9 @@ module llc_cache_ctrl #(
         mshr_resp_is_wb_r = 1'b0;
         mshr_resp_slot_r = {ID_BITS{1'b0}};
         if (mem_resp_valid) begin
-            for (mshr_resp_idx = 0;
+            for (mshr_resp_idx = 32'd0;
                  mshr_resp_idx < MSHR_COUNT;
-                 mshr_resp_idx = mshr_resp_idx + 1) begin
+                 mshr_resp_idx = mshr_resp_idx + 32'd1) begin
                 if (!mshr_resp_match_r &&
                     mshr_valid_r[mshr_resp_idx] &&
                     (mem_resp_id == mshr_resp_idx[ID_BITS-1:0])) begin
@@ -532,9 +534,9 @@ module llc_cache_ctrl #(
     always @(*) begin
         mshr_commit_found_r = 1'b0;
         mshr_commit_slot_r = {ID_BITS{1'b0}};
-        for (mshr_commit_idx = 0;
+        for (mshr_commit_idx = 32'd0;
              mshr_commit_idx < MSHR_COUNT;
-             mshr_commit_idx = mshr_commit_idx + 1) begin
+             mshr_commit_idx = mshr_commit_idx + 32'd1) begin
             if (!mshr_commit_found_r && mshr_valid_r[mshr_commit_idx] &&
                 !mshr_committed_r[mshr_commit_idx] &&
                 ((mshr_need_refill_r[mshr_commit_idx] &&
@@ -551,9 +553,9 @@ module llc_cache_ctrl #(
     always @(*) begin
         victim_line_valid = {`AXI_LLC_MAX_OUTSTANDING{1'b0}};
         victim_line_addr = {(`AXI_LLC_MAX_OUTSTANDING*ADDR_BITS){1'b0}};
-        for (mshr_victim_idx = 0;
+        for (mshr_victim_idx = 32'd0;
              mshr_victim_idx < MSHR_COUNT;
-             mshr_victim_idx = mshr_victim_idx + 1) begin
+             mshr_victim_idx = mshr_victim_idx + 32'd1) begin
             if (mshr_valid_r[mshr_victim_idx] &&
                 mshr_victim_hazard_active(
                     mshr_is_write_r[mshr_victim_idx],
@@ -771,9 +773,9 @@ module llc_cache_ctrl #(
             meta_rd_valid &&
             valid_rd_valid &&
             repl_rd_valid) begin
-            for (lookup_way_idx = 0;
+            for (lookup_way_idx = 32'd0;
                  lookup_way_idx < WAY_COUNT;
-                 lookup_way_idx = lookup_way_idx + 1) begin
+                 lookup_way_idx = lookup_way_idx + 32'd1) begin
                 if (!lookup_hit_r &&
                     valid_rd_bits[lookup_way_idx] &&
                     (meta_tag(extract_meta(meta_rd_row,
@@ -787,9 +789,9 @@ module llc_cache_ctrl #(
             end
 
             if (!lookup_hit_r) begin
-                for (lookup_way_idx = 0;
+                for (lookup_way_idx = 32'd0;
                      lookup_way_idx < WAY_COUNT;
-                     lookup_way_idx = lookup_way_idx + 1) begin
+                     lookup_way_idx = lookup_way_idx + 32'd1) begin
                     if (!lookup_found_invalid_r && !valid_rd_bits[lookup_way_idx]) begin
                         lookup_found_invalid_r = 1'b1;
                         lookup_select_way_r = lookup_way_idx[WAY_BITS-1:0];
@@ -820,9 +822,9 @@ module llc_cache_ctrl #(
             meta_rd_valid &&
             valid_rd_valid &&
             repl_rd_valid) begin
-            for (flush_way_idx = 0;
+            for (flush_way_idx = 32'd0;
                  flush_way_idx < WAY_COUNT;
-                 flush_way_idx = flush_way_idx + 1) begin
+                 flush_way_idx = flush_way_idx + 32'd1) begin
                 if (!flush_found_dirty_r &&
                     (flush_way_idx >= flush_way_start_r) &&
                     valid_rd_bits[flush_way_idx] &&
@@ -835,7 +837,7 @@ module llc_cache_ctrl #(
                         meta_tag(extract_meta(meta_rd_row, flush_way_idx[WAY_BITS-1:0])),
                         flush_set_r
                     );
-                    if (flush_way_idx == (WAY_COUNT - 1)) begin
+                    if (flush_way_idx[WAY_BITS-1:0] == LAST_WAY) begin
                         flush_next_way_r = {WAY_BITS{1'b0}};
                         flush_next_set_r = flush_set_r + {{(SET_BITS-1){1'b0}}, 1'b1};
                     end else begin
@@ -884,9 +886,9 @@ module llc_cache_ctrl #(
             resp_code_r <= 2'b00;
             install_from_mshr_r <= 1'b0;
             install_mshr_slot_r <= {ID_BITS{1'b0}};
-            for (mshr_seq_idx = 0;
+            for (mshr_seq_idx = 32'd0;
                  mshr_seq_idx < MSHR_COUNT;
-                 mshr_seq_idx = mshr_seq_idx + 1) begin
+                 mshr_seq_idx = mshr_seq_idx + 32'd1) begin
                 mshr_valid_r[mshr_seq_idx] <= 1'b0;
                 mshr_addr_r[mshr_seq_idx] <= {ADDR_BITS{1'b0}};
                 mshr_set_r[mshr_seq_idx] <= {SET_BITS{1'b0}};
@@ -1043,9 +1045,9 @@ module llc_cache_ctrl #(
                                                              req_wdata_r,
                                                              req_wstrb_r);
                                 if (!req_bypass_r) begin
-                                    for (mshr_seq_idx = 0;
+                                    for (mshr_seq_idx = 32'd0;
                                          mshr_seq_idx < MSHR_COUNT;
-                                         mshr_seq_idx = mshr_seq_idx + 1) begin
+                                         mshr_seq_idx = mshr_seq_idx + 32'd1) begin
                                         if (mshr_valid_r[mshr_seq_idx] &&
                                             !mshr_is_write_r[mshr_seq_idx] &&
                                             !mshr_refill_valid_r[mshr_seq_idx] &&
@@ -1244,7 +1246,7 @@ module llc_cache_ctrl #(
                             flush_set_r <= flush_next_set_r;
                             flush_way_start_r <= flush_next_way_r;
                             state_r <= ST_FLUSH_WB_REQ;
-                        end else if (flush_set_r == (SET_COUNT - 1)) begin
+                        end else if (flush_set_r == LAST_SET) begin
                             state_r <= ST_IDLE;
                         end else begin
                             flush_set_r <= flush_next_set_r;

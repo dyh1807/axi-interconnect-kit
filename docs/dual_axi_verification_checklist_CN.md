@@ -67,6 +67,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] C++ regression：`ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`
   当前通过 24/24；最近一次复跑目录：
   `local_debug/short_ec_gate_20260505_195710`。
+- [x] 2026-05-06 push 前短门槛复核：`git diff --check` 通过；C++ regression 24/24
+  通过；`cache_ctrl_*` hw-cbmc 4 项、`subsystem_dual_cache_*` hw-cbmc 3 项、
+  production helper read/write issue-shape hw-cbmc 2 项均通过；并在 `eda-10`
+  复跑 RTL dual-only 4/4 与全量 RTL contract 53/53。
 - [x] C++ dual-port state-machine directed smoke：`axi_interconnect_dual_port_test`
   内部当前通过 38/38。
 - [x] actual C++ LLC DCache read accepted/id parent-facing pulse smoke：
@@ -930,6 +934,16 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   8-bit typed expression。该改动已通过
   VCS 53/53 与实际 dual-subsystem hw-cbmc 子集 16/16；但 warning 是否消除仍需新
   DC link sanity 或 full DC 验证，因此本 gate 仍保持 open。
+  2026-05-06 又补了一轮低风险 RTL hygiene cleanup：把 cache/core/maintenance 侧
+  loop 下标改为无符号寄存器、补齐 typed last-index localparam，并把 SRAM wrapper
+  `READ_LATENCY_CYCLES - 2` 的延迟初值改为显式 guarded localparam，避免 DC 对负值/
+  宽度推导产生无关 warning。该轮已通过 C++ 24/24、9 个相关 hw-cbmc proof、
+  `eda-10` 上 dual-only RTL contract 4/4 和全量 RTL contract 53/53；是否消除 DC
+  warning 仍需新 link/full DC 证明。
+  同日 DC 服务器探测结果：`eda-10`、`eda-09`、`eda-05` 均可启动 `dc_shell` 并通过
+  `DC_SMOKE_OK`；`eda-10` 当前负载低、内存充足，是下一轮 full 1GHz DC 首选；
+  `eda-05` 可用但负载高且有旧 DC 任务；`eda-08` 当前 `Design Compiler is not enabled`
+  / vendor daemon 不可用，不应作为 DC 首选。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
   `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
   后最新全量 RTL contract 53/53 目录为
@@ -940,7 +954,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_all_contracts_20260505_180837_compat_cast_cleanup`，此前
   production-width direct read 补测目录为
   `rtl/local_debug/vcs_all_contracts_20260505_175032_with_prod_read64`，dual-only 4/4
-  目录为 `rtl/local_debug/vcs_dual_axi_contracts_20260505_143514`。
+  目录为 `rtl/local_debug/vcs_dual_axi_contracts_20260505_143514`。2026-05-06 RTL
+  hygiene cleanup 后又在 `eda-10` 复跑 dual-only 4/4，目录为
+  `rtl/local_debug/vcs_dual_axi_contracts_push_check_20260506_001419_eda10`；全量 RTL
+  contract 53/53，目录为
+  `rtl/local_debug/vcs_all_contracts_push_check_20260506_001441_eda10`。
 - [x] 受 `axi_llc_subsystem_compat.v` 影响的 actual dual-subsystem hw-cbmc 子集：
   compat signedness cleanup 后已复跑稳定 manifest 中 16 个 `subsystem_dual_*`
   proof，全部通过，覆盖 MMIO read/write route/response、DDR/MMIO independent、
@@ -999,7 +1017,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - 备份/长跑顺序：C++/RTL 等价性短回归和 checklist 收敛到可交付点后，先在
   submodule 内建/复用非 `main` 分支并 `git push` 备份；full DC 这类长耗时验证放在
   push 之后启动。Linux large + `CONFIG_BPU` + 5M commit 属于中等耗时 gate，一切顺利
-  时可在 push 前后作为功能/性能 sanity 补跑。
+  时可在 push 前后作为功能/性能 sanity 补跑。2026-05-06 探测后，下一轮 full DC
+  首选 `eda-10`；若 license/资源变化，再按 `rtl/dc/README_CN.md` 的 smoke test
+  重探测 `eda-09`/`eda-05`。
 - 短期收敛预估：不含 Linux 长跑和 full 1GHz signoff 时，单 agent 串行约 3-4 个
   工作日；5-7 个 agent 分工后可压到约 1-1.5 个工作日外加最终 gate 时间。若包含
   full-top DC/1GHz 和 Linux/image 回归，主要瓶颈变成工具运行时间，预计只能从

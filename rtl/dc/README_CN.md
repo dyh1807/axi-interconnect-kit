@@ -15,10 +15,15 @@
 
 ## 快速 link sanity
 
-在 `eda-05` 等可用节点上运行：
+在 `eda-05`/`eda-09`/`eda-10` 等可用节点上运行。启动前先确认当前节点的 Synopsys
+环境脚本和 `dc_shell` 可用，不要复用上一台服务器的假设。2026-05-06 探测结果：
+`eda-10`/`eda-09`/`eda-05` 可以启动 `dc_shell`，其中 `eda-10` 当前负载最低、内存
+充足，优先用于下一轮长 DC；`eda-05` 可用但负载很高且已有旧 DC 任务；
+`eda-08` 当前 license vendor daemon 不可用，不应作为 DC 首选。
 
 ```sh
-source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda05
+source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
+dc_shell -x 'echo DC_SMOKE_OK; quit'
 dc_shell -f rtl/dc/run_dual_link_sanity.tcl | tee rtl/dc/runs/link_sanity.log
 ```
 
@@ -28,7 +33,7 @@ dc_shell -f rtl/dc/run_dual_link_sanity.tcl | tee rtl/dc/runs/link_sanity.log
 ## 1GHz full compile
 
 ```sh
-source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda05
+source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
 dc_shell -f rtl/dc/run_dual_full_compile_1g.tcl | tee rtl/dc/runs/full_compile_1g.log
 ```
 

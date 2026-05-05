@@ -265,10 +265,10 @@ module axi_llc_subsystem_core #(
     // Utility helpers for direct-window writeback into a set-row store.
     function [WAY_COUNT-1:0] way_onehot;
         input [WAY_BITS-1:0] way_idx;
-        integer idx;
+        reg [31:0] idx;
         begin
             way_onehot = {WAY_COUNT{1'b0}};
-            for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
+            for (idx = 32'd0; idx < WAY_COUNT; idx = idx + 32'd1) begin
                 if (way_idx == idx[WAY_BITS-1:0]) begin
                     way_onehot[idx] = 1'b1;
                 end
@@ -279,10 +279,10 @@ module axi_llc_subsystem_core #(
     function [DATA_ROW_BITS-1:0] place_line_in_row;
         input [WAY_BITS-1:0]  way_idx;
         input [LINE_BITS-1:0] line_data;
-        integer idx;
+        reg [31:0] idx;
         begin
             place_line_in_row = {DATA_ROW_BITS{1'b0}};
-            for (idx = 0; idx < WAY_COUNT; idx = idx + 1) begin
+            for (idx = 32'd0; idx < WAY_COUNT; idx = idx + 32'd1) begin
                 if (way_idx == idx[WAY_BITS-1:0]) begin
                     place_line_in_row[(idx * LINE_BITS) +: LINE_BITS] = line_data;
                 end
@@ -293,13 +293,13 @@ module axi_llc_subsystem_core #(
     function [READ_RESP_BITS-1:0] extract_read_response;
         input [ADDR_BITS-1:0] addr_value;
         input [LINE_BITS-1:0] line_value;
-        integer dst_idx;
-        integer src_idx;
-        integer start_word;
+        reg [31:0] dst_idx;
+        reg [31:0] src_idx;
+        reg [31:0] start_word;
         begin
             extract_read_response = {READ_RESP_BITS{1'b0}};
             start_word = addr_value[LINE_OFFSET_BITS-1:2];
-            for (dst_idx = 0; dst_idx < RESP_WORDS; dst_idx = dst_idx + 1) begin
+            for (dst_idx = 32'd0; dst_idx < RESP_WORDS; dst_idx = dst_idx + 32'd1) begin
                 src_idx = start_word + dst_idx;
                 if (src_idx < LINE_WORDS) begin
                     extract_read_response[(dst_idx * RESP_WORD_BITS) +: RESP_WORD_BITS] =

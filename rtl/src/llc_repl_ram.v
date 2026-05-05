@@ -23,6 +23,9 @@ module llc_repl_ram #(
     reg                read_pending_r;
     reg [7:0]          read_delay_left_r;
     reg [SET_BITS-1:0] read_set_r;
+    localparam integer READ_DELAY_INIT_INT =
+        (READ_LATENCY_CYCLES > 1) ? (READ_LATENCY_CYCLES - 2) : 0;
+    localparam [7:0]   READ_DELAY_INIT = READ_DELAY_INIT_INT;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -49,7 +52,7 @@ module llc_repl_ram #(
                 end else begin
                     read_pending_r <= 1'b1;
                     read_set_r <= rd_set;
-                    read_delay_left_r <= READ_LATENCY_CYCLES - 2;
+                    read_delay_left_r <= READ_DELAY_INIT;
                 end
             end
 

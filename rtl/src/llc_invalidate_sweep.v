@@ -19,6 +19,7 @@ module llc_invalidate_sweep #(
 
     reg busy_r;
     reg [SET_BITS-1:0] sweep_index_r;
+    localparam [SET_BITS-1:0] LAST_SET = SET_COUNT - 1;
 
     assign busy          = busy_r;
     assign valid_wr_en   = busy_r;
@@ -43,7 +44,7 @@ module llc_invalidate_sweep #(
                     sweep_index_r <= {SET_BITS{1'b0}};
                 end
             end else begin
-                if (sweep_index_r == (SET_COUNT - 1)) begin
+                if (sweep_index_r == LAST_SET) begin
                     busy_r        <= 1'b0;
                     done          <= 1'b1;
                     sweep_index_r <= {SET_BITS{1'b0}};
