@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=169 / open=14。本轮新增 MODE_MAPPED local-window actual C++ trace
+当前计数：done=170 / open=13。本轮新增 MODE_MAPPED local-window actual C++ trace
 到实际 RTL subsystem 的 write/read 一致性检查，并补齐 mapped-window 上/下边界外
 MMIO read/write 双向路由检查，以及 mapped-window 跨界 8B unsupported blocked
 检查；继续补齐 MODE_CACHE `invalidate_all` 挂起时新 read/write blocked，以及
@@ -39,7 +39,8 @@ Linux 300k/5M commit sanity，确认不再触发低地址 cacheline read deadloc
 contract，验证 reset 后 valid sweep 收敛到 MODE_CACHE idle 且无伪请求/响应；
 并新增实际 `axi_llc_subsystem_dual.v` 在 8192 set / 16 way / 4MB mapped window
 参数下的 production-size RTL contract，覆盖 `0x303ffffc` 窗口末端 4B local
-write/read 写后读且不逃逸到 DDR/MMIO。
+write/read 写后读且不逃逸到 DDR/MMIO；并完成两个未纳入 stable manifest 的
+hw-cbmc 入口分流：均保留为 experimental/non-stable，不作为当前生产 RTL 失败结论。
 剩余 open 项主要集中在端到端 hw-cbmc 形式 EC、更完整 production-width cacheable
 subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
 
@@ -566,15 +567,17 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 
 ## 待继续收敛的生产边界
 
-- [ ] 未纳入稳定 manifest 的 formal 入口需要按优先级处理：
+- [x] 未纳入稳定 manifest 的 formal 入口已按优先级分流：
   当前 `formal/run_passed_hw_cbmc.sh` 已纳入 72 个稳定入口，`formal/*/run_hw_cbmc.sh`
   当前共有 74 个入口，剩余未纳入入口为
   `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response` 和
-  `formal/subsystem_core_dirty_evict_writeback` 两项。dual bridge production-width
+  `formal/subsystem_core_dirty_evict_writeback` 两项；二者均已明确归类为
+  experimental/non-stable，不计入稳定回归缺口。dual bridge production-width
   `AR` shape、cacheline read response、bypass-source cacheline read response、cacheline write payload
   和 mode2 write targeted proof 已通过并纳入 manifest；
   `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response` 是 native dual top
-  production-width direct-bypass 64B read response 入口，当前 300 秒 timeout 仍停在 top
+  production-width direct-bypass 64B read response 入口，当前 300 秒 timeout 仍停在
+  `axi_llc_subsystem_dual` top
   type-check/展开阶段，因为它会拉入 core/compat/store；该项暂不作为生产 RTL 失败结论，
   bridge-level production-width bypass-source cacheline read-response proof 已通过并分担
   payload/merge 覆盖；若必须做 native-top 级别，应把 compat direct-bypass accept/slot/response-owner
@@ -582,7 +585,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `formal/dual_port_hazard_scoreboard_one_entry` 已在 2026-05-04 重跑通过并纳入
   `formal/run_passed_hw_cbmc.sh`，不再视为稳定 manifest 缺口；
   `formal/subsystem_core_dirty_evict_writeback`
-  是 core-alone 实验入口，当前失败集中在 startup/reconfig idle harness 收敛约束，不作为生产
+  是 core-alone 实验入口，当前本地复跑仍失败，失败集中在 startup/reconfig idle harness
+  收敛约束与 dirty-evict 进度断言混在同一 harness，不作为生产
   RTL 失败结论。startup/reconfig idle 已改由 VCS contract 直接验证实际
   `axi_llc_subsystem_core.v` 并通过；已有 `cache_ctrl` 与 `subsystem_dual`
   dirty-evict proof 分担 dirty victim 主链路覆盖；后续若继续推进 core-alone formal，

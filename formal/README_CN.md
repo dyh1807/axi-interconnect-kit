@@ -28,6 +28,9 @@ formal/run_passed_hw_cbmc.sh
 从第 21 项继续跑并通过 51/51。新增第 72 项
 `formal/dual_bridge_prod_width_bypass_cacheline_read_response` 的 targeted log 为
 `local_debug/hw_cbmc_dual_bridge_prod_width_bypass_cacheline_read_response_20260505_154112.log`。
+当前 `formal/*/run_hw_cbmc.sh` 共有 74 个入口，未纳入 stable manifest 的 2 个入口
+已明确归类为 experimental/non-stable，见下方“非稳定实验入口”。它们不作为当前生产
+RTL 失败结论，也不应在未收敛前加入 `formal/run_passed_hw_cbmc.sh`。
 
 ## 已通过
 
@@ -2074,6 +2077,34 @@ formal/dual_port_hazard_scoreboard/run_hw_cbmc.sh
 - 暂不直接用 hw-cbmc 绑定完整 core。
 - 优先使用 VCS directed tests 保持覆盖；后续如要 formal，先抽小状态子模块或针对
   store wrapper 做局部 invariant。
+
+## 非稳定实验入口
+
+以下入口保留为定位材料，不计入 `formal/run_passed_hw_cbmc.sh`：
+
+- `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response`
+
+  该入口直接实例化实际 `axi_llc_subsystem_dual.v`，覆盖目标是 MODE_OFF/direct-bypass
+  64B read response 的 native top production-width 路径。当前失败模式是 300s timeout
+  停在 `Type-checking Verilog::axi_llc_subsystem_dual`，尚未进入 harness/BMC；根因更像
+  monolithic native top 拉入 compat/core/store/bridge 后超出 hw-cbmc frontend 展开成本。
+  bridge-level `dual_bridge_prod_width_bypass_cacheline_read_response` 已覆盖 64B bypass
+  read 的 DDR `AR`、两拍 `RREADY/RLAST`、512-bit merge 与 response 回收；VCS trace
+  contract 也覆盖 actual C++ trace 到 actual RTL subsystem 的 MODE_OFF DDR 64B read/write。
+  若后续必须补 native-top formal，应优先把 compat direct-bypass accept/slot/owner 逻辑拆成
+  生产子模块再证明，不应把该 monolithic top 入口直接加入 stable manifest。
+
+- `formal/subsystem_core_dirty_evict_writeback`
+
+  该入口直接实例化实际 `axi_llc_subsystem_core.v`，覆盖目标是 core-alone dirty victim
+  writeback。当前本地复跑 log
+  `local_debug/hw_cbmc_subsystem_core_dirty_evict_writeback_current_20260505_173851.log`
+  仍为 `VERIFICATION FAILED`；失败集中在 startup/reconfig idle 前置条件和 dirty-evict
+  进度断言混在同一 harness，而不是生产 RTL 明确失败。startup/reconfig idle 已由
+  `tb_axi_llc_subsystem_core_startup_idle_contract.v` 直接验证实际 core 并通过；dirty victim
+  主链路已由 `cache_ctrl` 与 `subsystem_dual_cache_dirty_evict_*` 稳定 proof 分担覆盖。
+  后续若继续推进 core-alone formal，应拆成“startup 已稳定后两路 dirty fill”、
+  “dirty writeback issue”和“dirty writeback response”小入口。
 
 ## 暂不作为当前 hw-cbmc 目标
 
