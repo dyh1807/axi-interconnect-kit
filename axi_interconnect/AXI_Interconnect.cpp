@@ -1100,6 +1100,83 @@ bool AXI_Interconnect::has_same_line_write_hazard(uint32_t line_addr) const {
   return false;
 }
 
+bool AXI_Interconnect::has_same_line_read_hazard(uint32_t line_addr) const {
+  if (!llc_enabled()) {
+    return false;
+  }
+
+  auto request_hits_line = [&](uint32_t addr, uint8_t total_size) {
+    return AXI_LLC::line_addr(llc_config, translate_llc_addr(addr, total_size)) ==
+           line_addr;
+  };
+
+  for (int master = 0; master < NUM_READ_MASTERS; ++master) {
+    if (llc_upstream_req[master].valid &&
+        request_hits_line(llc_upstream_req[master].addr,
+                          llc_upstream_req[master].total_size)) {
+      return true;
+    }
+    if (read_req_hold[master].valid &&
+        !request_uses_mmio_port(read_req_hold[master].addr,
+                                read_req_hold[master].total_size) &&
+        request_hits_line(read_req_hold[master].addr,
+                          read_req_hold[master].total_size)) {
+      return true;
+    }
+    if (read_ports[master].req.valid) {
+      const uint32_t addr = static_cast<uint32_t>(read_ports[master].req.addr);
+      const uint8_t total_size =
+          static_cast<uint8_t>(read_ports[master].req.total_size);
+      if (!request_uses_mmio_port(addr, total_size) &&
+          request_hits_line(addr, total_size)) {
+        return true;
+      }
+    }
+  }
+
+  if (llc_core_req_stage_.valid && !llc_core_req_stage_.is_write &&
+      request_hits_line(llc_core_req_stage_.read.addr,
+                        llc_core_req_stage_.read.total_size)) {
+    return true;
+  }
+
+  if (llc.io.regs.lookup_valid_r && !llc.io.regs.lookup_is_write_r &&
+      AXI_LLC::line_addr(llc_config, llc.io.regs.lookup_addr_r) == line_addr) {
+    return true;
+  }
+  if (llc.io.ext_out.mem.read_req_valid &&
+      AXI_LLC::line_addr(llc_config, llc.io.ext_out.mem.read_req_addr) ==
+          line_addr) {
+    return true;
+  }
+
+  for (uint32_t slot = 0; slot < llc_config.mshr_num && slot < MAX_OUTSTANDING;
+       ++slot) {
+    const auto &entry = llc.io.regs.mshr[slot];
+    if (entry.valid && !entry.is_write && entry.line_addr == line_addr) {
+      return true;
+    }
+  }
+
+  if (ar_latched.valid && ar_latched.to_llc &&
+      AXI_LLC::line_addr(llc_config, ar_latched.upstream_addr) == line_addr) {
+    return true;
+  }
+  if (ar_latched_mmio.valid && ar_latched_mmio.to_llc &&
+      AXI_LLC::line_addr(llc_config, ar_latched_mmio.upstream_addr) ==
+          line_addr) {
+    return true;
+  }
+  for (const auto &txn : r_pending) {
+    if (txn.to_llc && txn.beats_done < txn.total_beats &&
+        AXI_LLC::line_addr(llc_config, txn.upstream_addr) == line_addr) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 uint32_t AXI_Interconnect::external_hazard_line_addr(uint32_t addr) const {
   constexpr uint32_t kHazardBytes = MAX_WRITE_TRANSACTION_BYTES;
   static_assert((kHazardBytes & (kHazardBytes - 1u)) == 0,
@@ -1535,13 +1612,27 @@ void AXI_Interconnect::comb_outputs() {
   for (int i = 0; i < NUM_WRITE_MASTERS; i++) {
     write_ports[i].req.accepted = write_req_accepted[i];
     if (llc_enabled()) {
+      const uint32_t req_addr =
+          static_cast<uint32_t>(write_ports[i].req.addr);
+      const uint8_t req_total_size =
+          static_cast<uint8_t>(write_ports[i].req.total_size);
+      const uint32_t req_line = AXI_LLC::line_addr(
+          llc_config, translate_llc_addr(req_addr, req_total_size));
       const bool blocked_by_line_invalidate =
           llc_invalidate_line_valid_ && write_ports[i].req.valid &&
-          AXI_LLC::line_addr(llc_config, write_ports[i].req.addr) ==
+          req_line ==
               AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
+      const bool request_goes_through_llc =
+          write_ports[i].req.valid &&
+          !request_uses_mmio_port(req_addr, req_total_size);
+      const bool blocked_by_pending_read =
+          write_ports[i].req.valid &&
+          (has_external_pending_read_hazard(req_addr) ||
+           (request_goes_through_llc && has_same_line_read_hazard(req_line)));
       write_ports[i].req.ready =
           !invalidate_all_requested() &&
           !blocked_by_line_invalidate &&
+          !blocked_by_pending_read &&
           w_req_ready_r[i];
     } else {
       write_ports[i].req.ready = w_req_ready_r[i] && !mode_transition_needs_flush();
@@ -2158,6 +2249,9 @@ void AXI_Interconnect::comb_write_request() {
         }
         const uint32_t req_addr =
             static_cast<uint32_t>(write_ports[idx].req.addr);
+        if (has_external_pending_read_hazard(req_addr)) {
+          continue;
+        }
         const uint8_t req_total_size =
             static_cast<uint8_t>(write_ports[idx].req.total_size);
         const DownstreamPort req_port =
@@ -2196,17 +2290,21 @@ void AXI_Interconnect::comb_write_request() {
         if (!write_ports[idx].req.valid) {
           continue;
         }
-        const bool blocked_by_line_invalidate =
-            llc_invalidate_line_valid_ &&
-            AXI_LLC::line_addr(llc_config, write_ports[idx].req.addr) ==
-                AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
-        if (blocked_by_line_invalidate) {
-          continue;
-        }
         const uint32_t req_addr =
             static_cast<uint32_t>(write_ports[idx].req.addr);
         const uint8_t req_total_size =
             static_cast<uint8_t>(write_ports[idx].req.total_size);
+        const uint32_t req_line = AXI_LLC::line_addr(
+            llc_config, translate_llc_addr(req_addr, req_total_size));
+        const bool blocked_by_line_invalidate =
+            llc_invalidate_line_valid_ &&
+            req_line == AXI_LLC::line_addr(llc_config, llc_invalidate_line_addr_);
+        const bool blocked_by_pending_read =
+            !request_uses_mmio_port(req_addr, req_total_size) &&
+            has_same_line_read_hazard(req_line);
+        if (blocked_by_line_invalidate || blocked_by_pending_read) {
+          continue;
+        }
         const DownstreamPort req_port =
             classify_downstream_port(req_addr, req_total_size);
         const bool req_supported =

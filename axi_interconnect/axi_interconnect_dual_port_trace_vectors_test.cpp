@@ -625,6 +625,15 @@ struct DirtyVictimMmioWriteTrace {
   bool ddr_bready_while_resp_stalled = false;
 };
 
+struct SameLineReadPendingWriteTrace {
+  ReadTrace read;
+  BlockedTrace write;
+  uint8_t read_master = 0;
+  uint8_t write_master = 0;
+  bool write_accepted_while_read_pending = false;
+  bool no_external_issue_while_read_pending = false;
+};
+
 struct Mode2MappedLocalTrace {
   std::string prefix;
   WriteTrace write;
@@ -2089,6 +2098,99 @@ run_mode1_invalidate_line_pending_read_trace() {
             "C++ invalidate_line did not accept after read response retired");
   }
   dut.set_llc_invalidate_line(false, 0);
+  return trace;
+}
+
+SameLineReadPendingWriteTrace
+run_mode1_same_line_read_pending_write_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  InvalidLlcTableDriver table_driver(dut.get_llc_config());
+
+  SameLineReadPendingWriteTrace trace{};
+  trace.read.prefix = "CPP_MODE1_SAME_LINE_READ_PENDING_READ";
+  trace.read.req_addr = 0x40000b04u;
+  trace.read.req_size = 3;
+  trace.read.req_id = 0x6u;
+  trace.read.beat_count = 2;
+  trace.write.prefix = "CPP_MODE1_SAME_LINE_READ_PENDING_WRITE";
+  trace.write.req_addr = 0x40000b08u;
+  trace.write.req_size = 3;
+  trace.write.req_id = 0x7u;
+  const auto write_data = single_word_data(0xface0b08u);
+  const auto write_strobe = byte_strobe(0xfu);
+  trace.write.req_wdata = wide_write_words(write_data);
+  trace.write.req_wstrb = write_strobe_mask(write_strobe);
+  trace.read_master = axi_interconnect::MASTER_DCACHE_R;
+  trace.write_master = axi_interconnect::MASTER_DCACHE_W;
+
+  bool accepted = false;
+  bool ar_seen = false;
+  bool request_active = true;
+  for (int cycle = 0; cycle < 100 && !ar_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    if (request_active) {
+      auto &req = dut.read_ports[trace.read_master].req;
+      req.valid = true;
+      req.addr = trace.read.req_addr;
+      req.total_size = trace.read.req_size;
+      req.id = trace.read.req_id;
+      req.bypass = false;
+    }
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (request_active && dut.read_ports[trace.read_master].req.ready) {
+      accepted = true;
+      request_active = false;
+    }
+    if (dut.axi_ddr_io.ar.arvalid) {
+      require(!dut.axi_mmio_io.ar.arvalid,
+              "C++ same-line read pending trace escaped read to MMIO");
+      trace.read.araddr = static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr);
+      trace.read.arlen = static_cast<uint8_t>(dut.axi_ddr_io.ar.arlen);
+      trace.read.arsize = static_cast<uint8_t>(dut.axi_ddr_io.ar.arsize);
+      trace.read.arburst = static_cast<uint8_t>(dut.axi_ddr_io.ar.arburst);
+      trace.read.arid = static_cast<uint8_t>(dut.axi_ddr_io.ar.arid);
+      ar_seen = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  require(accepted, "C++ same-line read pending read was not accepted");
+  require(ar_seen, "C++ same-line read pending read did not issue DDR AR");
+  require(trace.read.beat_count == static_cast<uint32_t>(trace.read.arlen) + 1u,
+          "C++ same-line read pending read beat count mismatch");
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  auto &write_req = dut.write_ports[trace.write_master].req;
+  write_req.valid = true;
+  write_req.addr = trace.write.req_addr;
+  write_req.total_size = trace.write.req_size;
+  write_req.id = trace.write.req_id;
+  write_req.wdata = write_data;
+  write_req.wstrb = write_strobe;
+  write_req.bypass = false;
+  dut.comb_outputs();
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  trace.write.req_ready = dut.write_ports[trace.write_master].req.ready;
+  trace.write_accepted_while_read_pending =
+      dut.write_ports[trace.write_master].req.accepted;
+  trace.no_external_issue_while_read_pending =
+      !dut.axi_ddr_io.aw.awvalid && !dut.axi_ddr_io.w.wvalid &&
+      !dut.axi_ddr_io.ar.arvalid && !dut.axi_mmio_io.aw.awvalid &&
+      !dut.axi_mmio_io.w.wvalid && !dut.axi_mmio_io.ar.arvalid;
+  require(trace.no_external_issue_while_read_pending,
+          "C++ same-line write escaped externally while read pending");
+  dut.seq();
+  ++sim_time;
+
   return trace;
 }
 
@@ -4265,6 +4367,41 @@ void emit_invalidate_line_pending_read(
      << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
 }
 
+void emit_same_line_read_pending_write(
+    std::ostream &os, const SameLineReadPendingWriteTrace &trace) {
+  os << "\n";
+  os << "localparam [31:0] " << trace.read.prefix
+     << "_REQ_ADDR = " << hex_u32(trace.read.req_addr) << ";\n";
+  os << "localparam [7:0] " << trace.read.prefix
+     << "_REQ_SIZE = 8'd" << static_cast<unsigned>(trace.read.req_size)
+     << ";\n";
+  os << "localparam [3:0] " << trace.read.prefix
+     << "_REQ_ID = 4'd" << static_cast<unsigned>(trace.read.req_id) << ";\n";
+  os << "localparam [31:0] " << trace.read.prefix
+     << "_ARADDR = " << hex_u32(trace.read.araddr) << ";\n";
+  os << "localparam [7:0] " << trace.read.prefix
+     << "_ARLEN = 8'd" << static_cast<unsigned>(trace.read.arlen) << ";\n";
+  os << "localparam [2:0] " << trace.read.prefix
+     << "_ARSIZE = 3'd" << static_cast<unsigned>(trace.read.arsize) << ";\n";
+  os << "localparam [1:0] " << trace.read.prefix
+     << "_ARBURST = 2'd" << static_cast<unsigned>(trace.read.arburst) << ";\n";
+  os << "localparam [5:0] " << trace.read.prefix
+     << "_ARID = 6'd" << static_cast<unsigned>(trace.read.arid) << ";\n";
+  os << "localparam integer " << trace.read.prefix
+     << "_BEATS = " << trace.read.beat_count << ";\n";
+  os << "localparam integer " << trace.read.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.read_master) << ";\n";
+  emit_blocked_write(os, trace.write);
+  os << "localparam integer " << trace.write.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.write_master) << ";\n";
+  os << "localparam " << trace.write.prefix
+     << "_ACCEPTED_WHILE_READ_PENDING = 1'b"
+     << (trace.write_accepted_while_read_pending ? 1 : 0) << ";\n";
+  os << "localparam " << trace.write.prefix
+     << "_NO_EXTERNAL_ISSUE_WHILE_READ_PENDING = 1'b"
+     << (trace.no_external_issue_while_read_pending ? 1 : 0) << ";\n";
+}
+
 void emit_invalidate_all_cache_mmio_read(
     std::ostream &os, const InvalidateAllCacheMmioReadTrace &trace) {
   emit_overlap_read(os, trace.overlap);
@@ -4345,6 +4482,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_cache_mmio_overlap_read_trace();
   const auto mode1_invalidate_line_pending_read =
       run_mode1_invalidate_line_pending_read_trace();
+  const auto mode1_same_line_read_pending_write =
+      run_mode1_same_line_read_pending_write_trace();
   const auto mode1_invalidate_all_cache_mmio_read =
       run_mode1_invalidate_all_cache_mmio_read_trace();
   const auto mode1_cache_write_miss_mmio_write =
@@ -4450,6 +4589,7 @@ void emit_vectors(std::ostream &os) {
   emit_write(os, mode1_mmio_write4);
   emit_overlap_read(os, mode1_cache_mmio_overlap_read);
   emit_invalidate_line_pending_read(os, mode1_invalidate_line_pending_read);
+  emit_same_line_read_pending_write(os, mode1_same_line_read_pending_write);
   emit_invalidate_all_cache_mmio_read(os,
                                       mode1_invalidate_all_cache_mmio_read);
   emit_cache_write_miss_mmio_write(os, mode1_cache_write_miss_mmio_write);

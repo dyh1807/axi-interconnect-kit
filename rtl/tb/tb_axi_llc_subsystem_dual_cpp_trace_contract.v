@@ -2879,6 +2879,91 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_same_line_read_pending_write_and_check;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            write_resp_ready = {NUM_WRITE_MASTERS{1'b0}};
+            ddr_axi_arready = 1'b0;
+
+            read_req_addr[(CPP_MODE1_SAME_LINE_READ_PENDING_READ_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_SAME_LINE_READ_PENDING_READ_REQ_ADDR;
+            read_req_total_size[(CPP_MODE1_SAME_LINE_READ_PENDING_READ_MASTER * 8) +: 8] =
+                CPP_MODE1_SAME_LINE_READ_PENDING_READ_REQ_SIZE;
+            read_req_id[(CPP_MODE1_SAME_LINE_READ_PENDING_READ_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_SAME_LINE_READ_PENDING_READ_REQ_ID;
+            read_req_bypass[CPP_MODE1_SAME_LINE_READ_PENDING_READ_MASTER] = 1'b0;
+            read_req_valid[CPP_MODE1_SAME_LINE_READ_PENDING_READ_MASTER] = 1'b1;
+            timeout = 180;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[CPP_MODE1_SAME_LINE_READ_PENDING_READ_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (!accepted_seen) begin
+                fail_now("C++ trace same-line pending read accept timeout");
+            end
+            read_req_valid[CPP_MODE1_SAME_LINE_READ_PENDING_READ_MASTER] = 1'b0;
+            @(negedge clk);
+
+            timeout = 240;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace same-line pending read AR timeout");
+            end
+            #1;
+            if (ddr_axi_araddr != CPP_MODE1_SAME_LINE_READ_PENDING_READ_ARADDR ||
+                ddr_axi_arlen != CPP_MODE1_SAME_LINE_READ_PENDING_READ_ARLEN ||
+                ddr_axi_arsize != CPP_MODE1_SAME_LINE_READ_PENDING_READ_ARSIZE ||
+                ddr_axi_arburst != CPP_MODE1_SAME_LINE_READ_PENDING_READ_ARBURST ||
+                ddr_axi_arid != CPP_MODE1_SAME_LINE_READ_PENDING_READ_ARID ||
+                mmio_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid ||
+                mmio_axi_awvalid || mmio_axi_wvalid) begin
+                fail_now("C++ trace same-line pending read AR mismatch");
+            end
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+
+            write_req_addr[(CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_REQ_ADDR;
+            write_req_total_size[(CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_MASTER * 8) +: 8] =
+                CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_REQ_SIZE;
+            write_req_id[(CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_REQ_ID;
+            write_req_wdata[(CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_MASTER * LINE_BITS) +: LINE_BITS] =
+                CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_REQ_WDATA;
+            write_req_wstrb[(CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_MASTER * LINE_BYTES) +: LINE_BYTES] =
+                CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_REQ_WSTRB[LINE_BYTES-1:0];
+            write_req_bypass[CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_MASTER] = 1'b0;
+            write_req_valid[CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_MASTER] = 1'b1;
+            #1;
+            if (write_req_ready[CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_MASTER] !==
+                    CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_REQ_READY ||
+                write_req_accepted[CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_MASTER] !==
+                    CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_ACCEPTED_WHILE_READ_PENDING ||
+                !CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_NO_EXTERNAL_ISSUE_WHILE_READ_PENDING ||
+                ddr_axi_awvalid || ddr_axi_wvalid || ddr_axi_arvalid ||
+                mmio_axi_awvalid || mmio_axi_wvalid || mmio_axi_arvalid) begin
+                fail_now("C++ trace same-line pending read write mismatch");
+            end
+            @(negedge clk);
+            write_req_valid[CPP_MODE1_SAME_LINE_READ_PENDING_WRITE_MASTER] = 1'b0;
+        end
+    endtask
+
     task issue_mode1_invalidate_all_cache_mmio_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -5501,6 +5586,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
 
         issue_mode1_cache_mmio_overlap_read_and_check();
         issue_mode1_invalidate_line_pending_read_and_check();
+        issue_mode1_same_line_read_pending_write_and_check();
         issue_mode1_invalidate_all_cache_mmio_read_and_check();
         issue_mode1_cache_write_miss_mmio_write_and_check();
         issue_mode1_dirty_victim_mmio_write_and_check();

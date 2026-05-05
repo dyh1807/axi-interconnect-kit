@@ -323,6 +323,7 @@ private:
   const sim_ddr::SimDDR_IO_t &downstream_io(DownstreamPort port) const;
   bool can_issue_llc_read_req() const;
   bool has_same_line_write_hazard(uint32_t line_addr) const;
+  bool has_same_line_read_hazard(uint32_t line_addr) const;
   bool has_external_pending_read_hazard(uint32_t addr) const;
   bool has_external_pending_write_hazard(uint32_t addr) const;
   bool has_direct_read_response(uint8_t master_id) const;
