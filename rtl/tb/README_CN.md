@@ -436,6 +436,10 @@ core 内部 hazard 遮掉。
 - 覆盖 MODE_CACHE 下 MMIO 4B read/write：LLC-on 时 MMIO 请求仍按实际 C++
   `AXI_Interconnect` trace 直接走 MMIO AXI 口，`AR/AW/W/R/B` 形状与 response
   ID/data/code 对齐，且不误走 DDR/cacheable LLC core 路径
+- 覆盖 MODE_CACHE 下 cacheable read miss/refill 与 `invalidate_line` 同 line
+  maintenance hazard：DDR refill R beat 在途时外部 `RREADY` 不能被维护请求反压，
+  upstream read response 被 hold 时 `invalidate_line` 仍不能 accepted，response
+  被消费后才允许 accepted
 - 对比 upstream 请求、DDR/MMIO `AR/AW/W/R/B` 形状、DDR 256-bit beat
   payload/strobe、MMIO 32-bit payload/strobe、response ID/data/code，并检查 DDR/MMIO
   trace 不误走对侧 AXI 口；unsupported MMIO trace 还要求 ready=0、不 accepted、不发出

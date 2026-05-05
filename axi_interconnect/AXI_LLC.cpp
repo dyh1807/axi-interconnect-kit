@@ -752,6 +752,13 @@ int AXI_LLC::pick_unreserved_way(const AXI_LLC_Regs_t &regs, uint32_t set,
 }
 
 bool AXI_LLC::can_accept_invalidate_line_now(uint32_t line_addr_value) const {
+  for (uint8_t master = 0; master < NUM_READ_MASTERS; ++master) {
+    if (io.regs.read_resp_valid_r[master] ||
+        io.regs.read_resp_q_count_r[master] != 0) {
+      return false;
+    }
+  }
+
   if (find_mshr_by_line_addr(io.regs, line_addr_value) >= 0) {
     return false;
   }

@@ -2734,6 +2734,151 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_invalidate_line_pending_read_and_check;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            ddr_axi_arready = 1'b0;
+
+            read_req_addr[(CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_INVALIDATE_LINE_PENDING_READ_REQ_ADDR;
+            read_req_total_size[(CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER * 8) +: 8] =
+                CPP_MODE1_INVALIDATE_LINE_PENDING_READ_REQ_SIZE;
+            read_req_id[(CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_INVALIDATE_LINE_PENDING_READ_REQ_ID;
+            read_req_bypass[CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER] = 1'b0;
+            read_req_valid[CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER] = 1'b1;
+            timeout = 180;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (!accepted_seen) begin
+                fail_now("C++ trace invalidate-line pending read accept timeout");
+            end
+            read_req_valid[CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER] = 1'b0;
+            @(negedge clk);
+
+            timeout = 240;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace invalidate-line pending read AR timeout");
+            end
+            #1;
+            if (ddr_axi_araddr != CPP_MODE1_INVALIDATE_LINE_PENDING_READ_ARADDR ||
+                ddr_axi_arlen != CPP_MODE1_INVALIDATE_LINE_PENDING_READ_ARLEN ||
+                ddr_axi_arsize != CPP_MODE1_INVALIDATE_LINE_PENDING_READ_ARSIZE ||
+                ddr_axi_arburst != CPP_MODE1_INVALIDATE_LINE_PENDING_READ_ARBURST ||
+                ddr_axi_arid != CPP_MODE1_INVALIDATE_LINE_PENDING_READ_ARID ||
+                mmio_axi_arvalid) begin
+                fail_now("C++ trace invalidate-line pending read AR mismatch");
+            end
+            seen_ddr_arid = ddr_axi_arid;
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+
+            invalidate_line_addr = CPP_MODE1_INVALIDATE_LINE_PENDING_READ_INVALIDATE_ADDR;
+            invalidate_line_valid = 1'b1;
+            repeat (3) begin
+                #1;
+                if (invalidate_line_accepted !==
+                    !CPP_MODE1_INVALIDATE_LINE_PENDING_READ_BLOCKED_BEFORE_R) begin
+                    fail_now("C++ trace invalidate-line pending read early accept mismatch");
+                end
+                @(posedge clk);
+                @(negedge clk);
+            end
+
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = CPP_MODE1_INVALIDATE_LINE_PENDING_READ_RBEAT0;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b0;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVALIDATE_LINE_PENDING_READ_RREADY_PENDING ||
+                invalidate_line_accepted) begin
+                fail_now("C++ trace invalidate-line pending read R beat0 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = CPP_MODE1_INVALIDATE_LINE_PENDING_READ_RBEAT1;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVALIDATE_LINE_PENDING_READ_RREADY_PENDING ||
+                invalidate_line_accepted) begin
+                fail_now("C++ trace invalidate-line pending read R beat1 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 240;
+            while (!read_resp_valid[CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER] &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace invalidate-line pending read response timeout");
+            end
+            #1;
+            if (read_resp_id[(CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVALIDATE_LINE_PENDING_READ_RESP_ID ||
+                read_resp_data[(CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    CPP_MODE1_INVALIDATE_LINE_PENDING_READ_RESP_DATA) begin
+                fail_now("C++ trace invalidate-line pending read response mismatch");
+            end
+            if (invalidate_line_accepted !==
+                !CPP_MODE1_INVALIDATE_LINE_PENDING_READ_BLOCKED_WHILE_RESP_HELD) begin
+                fail_now("C++ trace invalidate-line held response accept mismatch");
+            end
+            read_resp_ready[CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER] = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            read_resp_ready[CPP_MODE1_INVALIDATE_LINE_PENDING_READ_MASTER] = 1'b0;
+
+            if (CPP_MODE1_INVALIDATE_LINE_PENDING_READ_BLOCKED_WHILE_RESP_HELD) begin
+                timeout = 240;
+                accepted_seen = 1'b0;
+                while (!accepted_seen && (timeout > 0)) begin
+                    #1;
+                    if (invalidate_line_accepted) begin
+                        accepted_seen = 1'b1;
+                    end
+                    @(posedge clk);
+                    timeout = timeout - 1;
+                end
+                if (accepted_seen !==
+                    CPP_MODE1_INVALIDATE_LINE_PENDING_READ_ACCEPTED_AFTER_RETIRE) begin
+                    fail_now("C++ trace invalidate-line final accept mismatch");
+                end
+            end
+            @(negedge clk);
+            invalidate_line_valid = 1'b0;
+            invalidate_line_addr = {ADDR_BITS{1'b0}};
+        end
+    endtask
+
     task issue_mode1_dirty_victim_setup_write_and_check;
         input [31:0] req_addr;
         input [7:0] req_size;
@@ -5114,6 +5259,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
                                    CPP_MODE1_MMIO_WRITE4_RESP_CODE);
 
         issue_mode1_cache_mmio_overlap_read_and_check();
+        issue_mode1_invalidate_line_pending_read_and_check();
         issue_mode1_cache_write_miss_mmio_write_and_check();
         issue_mode1_dirty_victim_mmio_write_and_check();
         issue_mode2_mapped_local_write_read_and_check();

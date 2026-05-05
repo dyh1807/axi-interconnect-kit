@@ -999,7 +999,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `AW/W` 已发出但 DDR `B` 未返回时，另一 write master 的 MMIO 4B write 仍独立走
   MMIO `AW/W/B`，MMIO held response 不反压 DDR victim `BREADY`，DDR `B` 后 cache
   write response 与实际 C++ trace 一致。
-- [x] invalidate_line / invalidate_all 相关 hazard、drain 与 recovery 合同。
+- [x] invalidate_line / invalidate_all 相关 hazard、drain 与 recovery 合同；
+  MODE_CACHE 下 cacheable read miss/refill 未完成和 read response 被上游 hold 时，
+  `invalidate_line` 必须保持阻塞，response 被消费后才允许 accepted，且该场景已由
+  actual C++ trace 到实际 RTL subsystem contract 覆盖。
 - [ ] C++ reference 与 RTL 端到端形式 EC。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate。
 - [ ] Linux/image 级长期性能与 difftest 回归。
