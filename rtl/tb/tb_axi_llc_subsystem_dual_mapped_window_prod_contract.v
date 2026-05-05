@@ -30,13 +30,25 @@ module tb_axi_llc_subsystem_dual_mapped_window_prod_contract;
     localparam READ_RESP_BYTES   = `AXI_LLC_READ_RESP_BYTES;
     localparam READ_RESP_BITS    = `AXI_LLC_READ_RESP_BITS;
 
+    localparam [MODE_BITS-1:0] MODE_OFF = 2'b00;
     localparam [MODE_BITS-1:0] MODE_MAPPED = 2'b10;
     localparam [ADDR_BITS-1:0] WINDOW_OFFSET = 32'h3000_0000;
     localparam [ADDR_BITS-1:0] WINDOW_LAST_4B_ADDR = 32'h303f_fffc;
     localparam [ID_BITS-1:0] WRITE_ID = 4'h9;
     localparam [ID_BITS-1:0] READ_ID = 4'hA;
+    localparam [ID_BITS-1:0] DIRECT_READ_ID = 4'h4;
     localparam [31:0] PAYLOAD = 32'h5a3c_fffc;
     localparam [1:0] AXI_RESP_OKAY = 2'b00;
+    localparam [1:0] AXI_BURST_INCR = 2'b01;
+    localparam [2:0] AXI_SIZE_256 = 3'd5;
+    localparam [ADDR_BITS-1:0] DIRECT_READ64_ADDR = 32'h4000_0000;
+    localparam [DDR_DATA_BITS-1:0] DIRECT_RBEAT0 =
+        256'h0000200700002006000020050000200400002003000020020000200100002000;
+    localparam [DDR_DATA_BITS-1:0] DIRECT_RBEAT1 =
+        256'h0000300700003006000030050000300400003003000030020000300100003000;
+    localparam integer DIRECT_RESP_ZERO_BITS = READ_RESP_BITS - (2 * DDR_DATA_BITS);
+    localparam [READ_RESP_BITS-1:0] DIRECT_READ64_RESP =
+        {{DIRECT_RESP_ZERO_BITS{1'b0}}, DIRECT_RBEAT1, DIRECT_RBEAT0};
 
     reg                              clk;
     reg                              rst_n;
@@ -138,6 +150,7 @@ module tb_axi_llc_subsystem_dual_mapped_window_prod_contract;
     wire                             reconfig_busy;
     wire [1:0]                       reconfig_state;
     wire                             config_error;
+    reg  [AXI_ID_BITS-1:0]           seen_ddr_arid;
 
     always #5 clk = ~clk;
 
@@ -317,6 +330,25 @@ module tb_axi_llc_subsystem_dual_mapped_window_prod_contract;
         end
     endtask
 
+    task enter_mode_off;
+        integer timeout;
+        begin
+            @(negedge clk);
+            mode_req = MODE_OFF;
+            timeout = 30000;
+            while (((active_mode != MODE_OFF) ||
+                    reconfig_busy ||
+                    config_error) && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("production mode-off reconfig timeout");
+            end
+            @(negedge clk);
+        end
+    endtask
+
     task issue_last_word_write;
         integer timeout;
         begin
@@ -434,6 +466,112 @@ module tb_axi_llc_subsystem_dual_mapped_window_prod_contract;
         end
     endtask
 
+    task issue_direct_read64_and_check;
+        integer timeout;
+        reg accepted_seen;
+        reg [ID_BITS-1:0] accepted_id_seen;
+        begin
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            accepted_seen = 1'b0;
+            accepted_id_seen = {ID_BITS{1'b0}};
+            read_req_addr[ADDR_BITS-1:0] = DIRECT_READ64_ADDR;
+            read_req_total_size[7:0] = 8'd63;
+            read_req_id[ID_BITS-1:0] = DIRECT_READ_ID;
+            read_req_bypass[0] = 1'b0;
+            read_req_valid[0] = 1'b1;
+
+            timeout = 160;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[0]) begin
+                    accepted_seen = 1'b1;
+                    accepted_id_seen = read_req_accepted_id[ID_BITS-1:0];
+                end
+                if (mmio_axi_arvalid || mmio_axi_awvalid || mmio_axi_wvalid ||
+                    ddr_axi_awvalid || ddr_axi_wvalid) begin
+                    fail_now("mode-off direct read leaked to wrong AXI channel");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("mode-off direct 64B read AR timeout");
+            end
+            #1;
+            if (ddr_axi_araddr != DIRECT_READ64_ADDR ||
+                ddr_axi_arlen != 8'd1 ||
+                ddr_axi_arsize != AXI_SIZE_256 ||
+                ddr_axi_arburst != AXI_BURST_INCR ||
+                ddr_axi_arid != {AXI_ID_BITS{1'b0}}) begin
+                fail_now("mode-off direct 64B read AR shape mismatch");
+            end
+            seen_ddr_arid = ddr_axi_arid;
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            #1;
+            if (read_req_accepted[0]) begin
+                accepted_seen = 1'b1;
+                accepted_id_seen = read_req_accepted_id[ID_BITS-1:0];
+            end
+            if (!accepted_seen || accepted_id_seen != DIRECT_READ_ID) begin
+                fail_now("mode-off direct 64B read accept metadata mismatch");
+            end
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+            read_req_valid[0] = 1'b0;
+
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = DIRECT_RBEAT0;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b0;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now("mode-off direct 64B read first R beat backpressured");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            if (read_resp_valid[0]) begin
+                fail_now("mode-off direct 64B read responded before RLAST");
+            end
+
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = DIRECT_RBEAT1;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now("mode-off direct 64B read second R beat backpressured");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 160;
+            while (!read_resp_valid[0] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("mode-off direct 64B read response timeout");
+            end
+            #1;
+            if (read_resp_id[ID_BITS-1:0] != DIRECT_READ_ID ||
+                read_resp_data != DIRECT_READ64_RESP) begin
+                fail_now("mode-off direct 64B read response mismatch");
+            end
+            read_resp_ready[0] = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            read_resp_ready[0] = 1'b0;
+        end
+    endtask
+
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
@@ -478,6 +616,7 @@ module tb_axi_llc_subsystem_dual_mapped_window_prod_contract;
         invalidate_line_valid = 1'b0;
         invalidate_line_addr = {ADDR_BITS{1'b0}};
         invalidate_all_valid = 1'b0;
+        seen_ddr_arid = {AXI_ID_BITS{1'b0}};
 
         wait_cycles(5);
         rst_n = 1'b1;
@@ -488,6 +627,8 @@ module tb_axi_llc_subsystem_dual_mapped_window_prod_contract;
         wait_last_word_write_response();
         issue_last_word_read();
         wait_last_word_read_response();
+        enter_mode_off();
+        issue_direct_read64_and_check();
 
         if (invalidate_line_accepted || invalidate_all_accepted) begin
             fail_now("unexpected maintenance accepted pulse");

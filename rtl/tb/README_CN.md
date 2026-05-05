@@ -448,7 +448,10 @@ core 内部 hazard 遮掉。
 - reset 后等待 8192-set valid sweep 收敛到 `MODE_MAPPED + 0x30000000`
 - 在窗口最后 4B 地址 `0x303ffffc` 发 local write，再 read back，要求数据一致、
   response ID/code 正确，且整个过程中不得向 DDR/MMIO `AR/AW/W` 逃逸
-- 该 bench 覆盖 production-size native dual top 的 mapped-window 边界 smoke；它不替代
+- 随后 reconfig 到 `MODE_OFF`，发 64B DDR direct read，检查 `ARLEN=1`、
+  两拍 256-bit `R` merge、`RLAST` 前不回包、外部 `RREADY` 不被上游 response stall
+  回压，以及 512-bit upstream response 数据/ID
+- 该 bench 覆盖 production-size native dual top 的 mapped-window/direct-read 边界 smoke；它不替代
   后续 production-width cacheable miss/refill 或 full DC 时序检查
 
 ### `tb_llc_cache_ctrl_cpp_trace_contract.v`
@@ -525,4 +528,4 @@ vvp simv_reconfig
 该脚本按 `flist/tb_*.f` 排序编译并运行当前 53 个 testbench，扫描 `FAIL`，并兼容
 `<test> PASS` 与旧 bench 的独立 `PASS` marker。2026-05-05 在 `eda-05` 上通过
 `bash_eda05 + VCS` 跑通，结果为 53 passed / 0 failed。最新输出目录为
-`rtl/local_debug/vcs_all_contracts_20260505_173010_with_prod_window`。
+`rtl/local_debug/vcs_all_contracts_20260505_175032_with_prod_read64`。
