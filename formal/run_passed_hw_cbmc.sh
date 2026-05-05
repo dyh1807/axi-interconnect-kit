@@ -67,6 +67,7 @@ tests=(
   "subsystem_dual_mmio_read_response"
   "subsystem_dual_mmio_write_route"
   "subsystem_dual_mmio_write_response"
+  "subsystem_dual_ddr_read_mmio_read_independent"
   "subsystem_dual_ddr_read_mmio_write_independent"
   "subsystem_dual_ddr_write_mmio_read_independent"
   "subsystem_dual_ddr_write_mmio_write_independent"
