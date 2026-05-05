@@ -20,7 +20,7 @@ formal/run_passed_hw_cbmc.sh
 ```
 
 该入口当前默认设置 `HW_CBMC_TIMEOUT_SEC=600`，只包含已能返回
-`VERIFICATION SUCCESSFUL` 的项目。2026-05-05 当前 stable manifest 为 73 项；
+`VERIFICATION SUCCESSFUL` 的项目。2026-05-05 当前 stable manifest 为 74 项；
 其中前 71 项已有 split-run 证据：
 `local_debug/run_passed_hw_cbmc_manifest71_20260505_144134.log` 完成前 20 项，
 并在第 21 项本体已 `VERIFICATION SUCCESSFUL` 后因旧 240s wrapper timeout 退出；
@@ -29,8 +29,10 @@ formal/run_passed_hw_cbmc.sh
 `formal/dual_bridge_prod_width_bypass_cacheline_read_response` 的 targeted log 为
 `local_debug/hw_cbmc_dual_bridge_prod_width_bypass_cacheline_read_response_20260505_154112.log`；
 新增第 73 项 `formal/dual_bridge_prod_helper_read_issue_shape` 的 targeted log 为
-`local_debug/hw_cbmc_dual_bridge_prod_helper_read_issue_shape_20260505_215117.log`。
-当前 `formal/*/run_hw_cbmc.sh` 共有 75 个入口，未纳入 stable manifest 的 2 个入口
+`local_debug/hw_cbmc_dual_bridge_prod_helper_read_issue_shape_20260505_215117.log`；
+新增第 74 项 `formal/dual_bridge_prod_helper_write_issue_shape` 的 targeted log 为
+`local_debug/hw_cbmc_dual_bridge_prod_helper_write_issue_shape_20260505_220230.log`。
+当前 `formal/*/run_hw_cbmc.sh` 共有 76 个入口，未纳入 stable manifest 的 2 个入口
 已明确归类为 experimental/non-stable，见下方“非稳定实验入口”。它们不作为当前生产
 RTL 失败结论，也不应在未收敛前加入 `formal/run_passed_hw_cbmc.sh`。
 
@@ -706,12 +708,43 @@ formal/dual_bridge_prod_helper_read_issue_shape/run_hw_cbmc.sh
 - DDR case 使用 `bypass_req_mode2_ddr_aligned=1`，覆盖 mode0/direct DDR 侧固定
   256-bit aligned read issue shape。
 - MMIO case 覆盖 4B supported 和非 4B unsupported；unsupported 必须
-  `bypass_req_ready=0` 且不发任一外部 `AR/AW/W`。
+  `bypass_req_ready=0` 且不发外部 `AR/AW`。
 
 明确不覆盖：
 
 - 不覆盖 write issue shape、`R` response merge/route，也不宣称完整 C++ class 与
   RTL top 端到端等价。它是 production-helper/actual-RTL EC 的一个可控切片。
+
+### `formal/dual_bridge_prod_helper_write_issue_shape`
+
+状态：已通过，并已计入 `formal/run_passed_hw_cbmc.sh`。
+
+运行：
+
+```sh
+formal/dual_bridge_prod_helper_write_issue_shape/run_hw_cbmc.sh
+```
+
+实际生产对象：
+
+- C helper：`include/axi_dual_port_route_shape.h`
+- RTL：实际 `rtl/src/axi_llc_axi_bridge_dual.v`
+
+覆盖范围：
+
+- nondet DDR/MMIO bypass write request 经过实际 dual bridge route/issue 后，外部
+  `AWADDR/AWLEN/AWSIZE/AWBURST` 必须匹配生产 C helper
+  `axi_bridge_downstream_write_issue_shape()`。
+- DDR case 使用 `bypass_req_mode2_ddr_aligned=1`，覆盖 mode0/direct DDR 侧固定
+  256-bit aligned write issue shape。
+- MMIO case 覆盖 4B supported 和非 4B unsupported；unsupported 必须
+  `bypass_req_ready=0` 且不发外部 `AR/AW`。
+
+明确不覆盖：
+
+- 不覆盖 write data/strobe payload、unsupported `WVALID` no-escape、`B` response
+  route，也不宣称完整 C++ class 与 RTL top 端到端等价。它是
+  production-helper/actual-RTL EC 的一个可控切片。
 
 ### `formal/dual_bridge_prod_width_cacheline_read_response`
 

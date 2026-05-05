@@ -22,6 +22,7 @@ tests=(
   "bridge_prod_width_cacheline_read_response"
   "dual_bridge_prod_width_cacheline_ar_shape"
   "dual_bridge_prod_helper_read_issue_shape"
+  "dual_bridge_prod_helper_write_issue_shape"
   "dual_bridge_prod_width_cacheline_read_response"
   "dual_bridge_prod_width_bypass_cacheline_read_response"
   "dual_bridge_prod_width_cacheline_write_shape"

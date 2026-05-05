@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=175 / open=12。本轮新增 MODE_MAPPED local-window actual C++ trace
+当前计数：done=176 / open=12。本轮新增 MODE_MAPPED local-window actual C++ trace
 到实际 RTL subsystem 的 write/read 一致性检查，并补齐 mapped-window 上/下边界外
 MMIO read/write 双向路由检查，以及 mapped-window 跨界 8B unsupported blocked
 检查；继续补齐 MODE_CACHE `invalidate_all` 挂起时新 read/write blocked，以及
@@ -55,7 +55,10 @@ actual C++ trace 到实际 RTL subsystem 一致性检查，要求 MMIO/DDR `RREA
 maintenance pending 被回压，且 maintenance 只能在 MMIO/cache response 均 retire
 后最终 accepted；并新增 production C helper `axi_bridge_downstream_read_issue_shape()`
 到实际 `axi_llc_axi_bridge_dual.v` 的 hw-cbmc bounded EC，覆盖 nondet DDR/MMIO
-bypass read issue shape 与 unsupported MMIO 阻断。
+bypass read issue shape 与 unsupported MMIO 阻断；并新增对称的 production C helper
+`axi_bridge_downstream_write_issue_shape()` 到实际 `axi_llc_axi_bridge_dual.v`
+的 hw-cbmc bounded EC，覆盖 nondet DDR/MMIO bypass write issue shape 与
+unsupported MMIO ready/no-`AW` 阻断。
 剩余 open 项主要集中在端到端 hw-cbmc 形式 EC、更完整 production-width cacheable
 subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image 级回归。
 
@@ -188,8 +191,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   最新 targeted VCS 目录：`rtl/local_debug/vcs_llc_cache_cpp_trace_dvpw_20260504_081121`。
   该项是 trace-based 功能 EC，meta/valid/repl 只做 C++ 抽象表项到 RTL row encoding
   的接口适配。
-- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 73 项；
-  `formal/*/run_hw_cbmc.sh` 当前共有 74 个入口，其中 2 个实验/未收敛入口暂未纳入
+- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 74 项；
+  `formal/*/run_hw_cbmc.sh` 当前共有 76 个入口，其中 2 个实验/未收敛入口暂未纳入
   稳定 manifest。原 68/68 已有 split-run 通过证据。前 20 项见
   `local_debug/run_passed_hw_cbmc_after_ddr_write_mmio_read_20260504_202454.log`；
   该 log 在 `dual_bridge_prod_width_ddr_read_mmio_write_independent` 处因默认 240s
@@ -232,6 +235,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `local_debug/hw_cbmc_dual_bridge_prod_helper_read_issue_shape_20260505_215117.log`，
   覆盖 production C helper `axi_bridge_downstream_read_issue_shape()` 与实际
   `axi_llc_axi_bridge_dual.v` 的 bypass read `AR` issue shape 一致性，并已纳入
+  manifest；本轮新增并通过
+  `formal/dual_bridge_prod_helper_write_issue_shape/run_hw_cbmc.sh`，targeted log 为
+  `local_debug/hw_cbmc_dual_bridge_prod_helper_write_issue_shape_20260505_220230.log`，
+  覆盖 production C helper `axi_bridge_downstream_write_issue_shape()` 与实际
+  `axi_llc_axi_bridge_dual.v` 的 bypass write `AW` issue shape 一致性，并已纳入
   manifest；`formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
   `rtl/local_debug/vcs_all_contracts_20260505_211305`。本轮新增
@@ -604,8 +612,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 ## 待继续收敛的生产边界
 
 - [x] 未纳入稳定 manifest 的 formal 入口已按优先级分流：
-  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 72 个稳定入口，`formal/*/run_hw_cbmc.sh`
-  当前共有 74 个入口，剩余未纳入入口为
+  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 74 个稳定入口，`formal/*/run_hw_cbmc.sh`
+  当前共有 76 个入口，剩余未纳入入口为
   `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response` 和
   `formal/subsystem_core_dirty_evict_writeback` 两项；二者均已明确归类为
   experimental/non-stable，不计入稳定回归缺口。dual bridge production-width
@@ -844,9 +852,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [ ] 实际 C++ request/response 状态机 vs RTL bridge/subsystem 的 hw-cbmc 同 harness
   bounded EC：当前已有 trace-based 功能 EC，但还没有把实际 C++ 对象和实际 RTL top
   放进同一个 hw-cbmc harness；后续需要解决 C++ 标准库/frontend 接入或建立可复用的
-  production-thin C wrapper，避免验证对象与实际使用对象分叉。本轮已补第一条
+  production-thin C wrapper，避免验证对象与实际使用对象分叉。本轮已补两条
   production-thin C wrapper 切片：`dual_bridge_prod_helper_read_issue_shape`
-  使用实际生产 C helper 与实际 dual bridge，证明 bypass read issue shape 一致；
+  和 `dual_bridge_prod_helper_write_issue_shape` 使用实际生产 C helper 与实际
+  dual bridge，分别证明 bypass read/write issue shape 一致；
   但这还不是完整 C++ class / RTL top 端到端 EC，因此本项保持 open。
 - [x] 实际 C++ LLC cache 行为 vs RTL cache-control 的 trace-based bounded
   functional EC 第一组：`axi_llc_cache_trace_vectors` +
