@@ -168,3 +168,16 @@ constraint/power/check_design。
 - `AXI_LLC_DC_META_DB`
 - `AXI_LLC_DC_FLIST`
 - `AXI_LLC_DC_TOP`
+
+## 检查运行状态
+
+长 DC 运行期间优先使用只读状态脚本，避免重复手写 `ssh/ps/stat/grep/find`：
+
+```sh
+rtl/dc/check_dc_run.sh --host eda-09 \
+  rtl/dc/runs/full_compile_1g_strict_template_9t20_5274f9d_20260506_2154_eda09
+```
+
+该脚本会输出目标节点时间、`run_metadata.txt`、launcher/DC 子进程状态、节点内存、
+console log mtime、最新 `DC_STAGE`/warning/error、`exit_code.txt` 和已生成的
+reports/outputs。脚本只读，不会启动、停止或修改 DC run。
