@@ -4,7 +4,11 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=195 / open=2。本轮新增 MODE_CACHE MMIO read 与 MMIO write 同时
+当前计数：done=196 / open=2。本轮新增 MODE_CACHE cacheable read miss/refill 的 DDR
+`AR` 已发且 `R`/upstream response 尚未 retire 时请求 MODE_MAPPED 的 actual C++
+trace 到实际 RTL subsystem 一致性检查，要求外部 DDR `RREADY` 不被 reconfig 回压，
+且 active mode 必须等 cache read response 被上游消费后才能完成切换。本轮此前新增
+MODE_CACHE MMIO read 与 MMIO write 同时
 在途时请求 MODE_MAPPED 的 actual C++ trace 到实际 RTL subsystem 一致性检查，刻意让
 MMIO `B` 先于 `R` 返回并先消费 write response，要求此时 active mode 仍不能完成切换、
 后续 MMIO `RREADY` 也不能被回压，直到 read response 被上游消费后才允许进入
@@ -1278,11 +1282,16 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_reconfig_pending_mmio_read_20260506_140801_eda10`；
   对称的 pending MMIO write 期间请求 MODE_MAPPED targeted VCS 也已通过，目录为
   `rtl/local_debug/vcs_dual_cpp_trace_reconfig_pending_mmio_rw_20260506_141306_eda10`；
-  进一步补齐 pending MMIO read/write 同时在途且 `B` 先于 `R` 返回时请求
-  MODE_MAPPED 的 targeted VCS，目录为
-  `rtl/local_debug/vcs_dual_cpp_trace_reconfig_pending_mmio_rw_b_before_r_20260506_141938_eda10`。
-  随后复跑全量 RTL contract 53/53 通过，目录为
-  `rtl/local_debug/vcs_all_contracts_reconfig_rw_20260506_142058_eda10`。
+	  进一步补齐 pending MMIO read/write 同时在途且 `B` 先于 `R` 返回时请求
+	  MODE_MAPPED 的 targeted VCS，目录为
+	  `rtl/local_debug/vcs_dual_cpp_trace_reconfig_pending_mmio_rw_b_before_r_20260506_141938_eda10`。
+	  随后复跑全量 RTL contract 53/53 通过，目录为
+	  `rtl/local_debug/vcs_all_contracts_reconfig_rw_20260506_142058_eda10`。
+	  继续补齐 pending cacheable read miss/refill 期间请求 MODE_MAPPED 的 targeted VCS，
+	  目录为
+	  `rtl/local_debug/vcs_dual_cpp_trace_reconfig_pending_cache_read_20260506_143444_eda10`。
+	  随后复跑全量 RTL contract 53/53 通过，目录为
+	  `rtl/local_debug/vcs_all_contracts_reconfig_cache_read_20260506_143554_eda10`。
 - [x] 受 `axi_llc_subsystem_compat.v` 影响的 actual dual-subsystem hw-cbmc 子集：
   compat signedness cleanup 后已复跑稳定 manifest 中 16 个 `subsystem_dual_*`
   proof，全部通过，覆盖 MMIO read/write route/response、DDR/MMIO independent、
@@ -1305,7 +1314,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   pending MMIO read 期间请求 MODE_MAPPED 的 trace 后再次复跑同一 ctest 命令，24/24
   通过；继续补入对称 pending MMIO write trace 后再次复跑同一 ctest 命令，24/24 通过；
   继续补入 pending MMIO read/write 同时在途、`B` 先于 `R` 返回的 reconfig drain
-  trace 后再次复跑同一 ctest 命令，24/24 通过。
+  trace 后再次复跑同一 ctest 命令，24/24 通过；继续补入 pending cacheable read
+  miss/refill 期间请求 MODE_MAPPED 的 trace 后再次复跑同一 ctest 命令，24/24 通过。
 - [x] Linux/image 级 300k/5M 功能与性能 sanity：父仓库临时适配 cacheability/MMIO
   分类后，large + `CONFIG_BPU` + `../img/linux.bin` 已补跑 300k 与 5M commit。
   该 gate 不能只看退出码或 difftest/error；每轮都必须同时记录并比较
@@ -1438,7 +1448,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   完成 active mode 切换；对称地，MMIO write `AW/W` 已发且 `B`/upstream response
   尚未 retire 时，不得回压外部 MMIO `BREADY`，也不得提前完成 active mode 切换；
   read/write 同时在途且 `B` 先于 `R` 返回时，即使 write response 已被上游消费，也必须
-  等 read `R` 和 upstream read response 完成后才允许进入 MODE_MAPPED。
+  等 read `R` 和 upstream read response 完成后才允许进入 MODE_MAPPED；cacheable
+  read miss/refill 的 DDR `AR` 已发且 `R`/upstream response 尚未 retire 时，同样不得
+  回压 DDR `RREADY`，且必须等 cache read response 被上游消费后才允许进入 MODE_MAPPED。
 - [x] MODE_CACHE cacheable read miss/refill 与 MMIO read direct-bypass 并发：cache miss
   发 DDR 64B/2-beat refill，同时 MMIO read 独立走 MMIO 口；上游 response stall 不回压
   MMIO/DDR `RREADY`，两拍 refill 后 cache response 与实际 C++ trace 一致。
