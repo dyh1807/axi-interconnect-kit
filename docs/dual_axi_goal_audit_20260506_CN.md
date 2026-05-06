@@ -146,6 +146,20 @@ contract 已通过 `53/53`，目录为
   `axi_llc_subsystem_compat`，RSS 约 `5.2GB`，`eda-09` 约 `582GiB` available memory；
   当前仍无 compile/QoR/timing/netlist 结果，因此不能 signoff
 
+DC 脚本产物审计：
+
+- `rtl/dc/run_dual_full_compile_1g.tcl` 在 compile 前写
+  `${top_name}_qor_precompile.rpt` 和 `${top_name}_timing_precompile.rpt`。
+- compile 后通过 `axi_llc_write_reports ${top_name}_postcompile_1g` 写
+  `check_timing`、`report_timing`、`report_timing -max_paths 80`、`report_qor`、
+  hierarchy `report_area`、`report_reference`、`report_cell`、`report_constraint`、
+  `report_power` 和 `check_design`。
+- compile 后通过 `axi_llc_write_mapped_outputs ${top_name}_postcompile_1g` 写
+  `outputs/ddc/*.ddc`、`outputs/netlist/*.v`、`outputs/db/*.db`、
+  `outputs/sdc/*.sdc`、`outputs/sdf/*.sdf`、`outputs/spf/*.spf`。
+- 因此当前脚本满足“保留 report/results/QoR/timing/netlist”的产物要求；缺口是当前
+  full DC 尚未跑到这些阶段，不能用脚本审计替代实际 timing signoff。
+
 OOM 诊断：
 
 - `rtl/dc/runs/compat_link_sanity_resp_pool_idx_db0faed_20260506_202711_eda10`
