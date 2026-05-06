@@ -462,6 +462,10 @@ core 内部 hazard 遮掉。
   recovery/scope：两个 read master 先各自填充 clean cache line，只 invalidate
   second-master line；second-master 后续必须重新 DDR miss/refill，first-master survivor
   后续必须 hit 且不外发 AXI
+- 覆盖固定 32 seed 的 MODE_CACHE maintenance/recovery trace suite：由实际 C++ 模型
+  生成 `CPP_SEEDED_MAINT_*` 数组，RTL 逐 seed replay；seed 随机化地址、
+  `ICACHE/DCACHE_R` master 顺序和 `invalidate_all` / target-line `invalidate_line`，
+  并检查 accepted 后对应 line miss/refill 或 survivor hit/no-external
 - 覆盖 MODE_CACHE 下 cacheable read miss/refill、MMIO read direct-bypass 与
   `invalidate_all` 同时存在的 drain/recovery：MMIO `R` 先返回并被 upstream hold 时，
   DDR refill `RREADY` 仍不能被 held response 或 maintenance pending 反压；MMIO/cache

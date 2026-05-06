@@ -6787,6 +6787,147 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_seeded_maintenance_recovery_and_check;
+        integer idx;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            for (idx = 0; idx < CPP_SEEDED_MAINT_COUNT; idx = idx + 1) begin
+                reset_dut();
+                enter_mode(MODE_CACHE);
+                @(negedge clk);
+                read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+                ddr_axi_arready = 1'b0;
+                mmio_axi_arready = 1'b0;
+                invalidate_all_valid = 1'b0;
+                invalidate_line_valid = 1'b0;
+                invalidate_line_addr = {ADDR_BITS{1'b0}};
+
+                issue_mode1_invalidate_line_recovery_cache_read(
+                    CPP_SEEDED_MAINT_FIRST_MASTER[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_REQ_ADDR[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_REQ_SIZE[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_REQ_ID[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_ARADDR[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_ARLEN[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_ARSIZE[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_ARBURST[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_ARID[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_BEATS[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_RBEAT0[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_RBEAT1[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_RESP_ID[idx],
+                    CPP_SEEDED_MAINT_FIRST_FILL_RESP_DATA[idx],
+                    "seeded maint first fill mismatch");
+
+                issue_mode1_invalidate_line_recovery_cache_read(
+                    CPP_SEEDED_MAINT_SECOND_MASTER[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_REQ_ADDR[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_REQ_SIZE[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_REQ_ID[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_ARADDR[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_ARLEN[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_ARSIZE[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_ARBURST[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_ARID[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_BEATS[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_RBEAT0[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_RBEAT1[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_RESP_ID[idx],
+                    CPP_SEEDED_MAINT_SECOND_FILL_RESP_DATA[idx],
+                    "seeded maint second fill mismatch");
+
+                if (CPP_SEEDED_MAINT_INVALIDATE_ALL[idx]) begin
+                    invalidate_all_valid = 1'b1;
+                end else begin
+                    invalidate_line_addr = CPP_SEEDED_MAINT_INVALIDATE_ADDR[idx];
+                    invalidate_line_valid = 1'b1;
+                end
+                timeout = 10000;
+                accepted_seen = 1'b0;
+                while (!accepted_seen && (timeout > 0)) begin
+                    #1;
+                    if (CPP_SEEDED_MAINT_INVALIDATE_ALL[idx]) begin
+                        if (invalidate_all_accepted) begin
+                            accepted_seen = 1'b1;
+                        end
+                    end else begin
+                        if (invalidate_line_accepted) begin
+                            accepted_seen = 1'b1;
+                        end
+                    end
+                    @(posedge clk);
+                    timeout = timeout - 1;
+                end
+                if (accepted_seen !== CPP_SEEDED_MAINT_ACCEPTED[idx]) begin
+                    fail_now("seeded maint accept mismatch");
+                end
+                @(negedge clk);
+                invalidate_all_valid = 1'b0;
+                invalidate_line_valid = 1'b0;
+                invalidate_line_addr = {ADDR_BITS{1'b0}};
+
+                if (CPP_SEEDED_MAINT_FIRST_AFTER_MISS[idx]) begin
+                    issue_mode1_invalidate_line_recovery_cache_read(
+                        CPP_SEEDED_MAINT_FIRST_MASTER[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_REQ_ADDR[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_REQ_SIZE[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_REQ_ID[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_ARADDR[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_ARLEN[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_ARSIZE[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_ARBURST[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_ARID[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_BEATS[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_RBEAT0[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_RBEAT1[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_RESP_ID[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_RESP_DATA[idx],
+                        "seeded maint first after miss mismatch");
+                end else begin
+                    issue_mode1_invalidate_line_scope_cache_hit(
+                        CPP_SEEDED_MAINT_FIRST_MASTER[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_REQ_ADDR[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_REQ_SIZE[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_REQ_ID[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_RESP_ID[idx],
+                        CPP_SEEDED_MAINT_FIRST_AFTER_RESP_DATA[idx],
+                        CPP_SEEDED_MAINT_FIRST_HIT_NO_EXTERNAL[idx],
+                        "seeded maint first after hit mismatch");
+                end
+
+                if (CPP_SEEDED_MAINT_SECOND_AFTER_MISS[idx]) begin
+                    issue_mode1_invalidate_line_recovery_cache_read(
+                        CPP_SEEDED_MAINT_SECOND_MASTER[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_REQ_ADDR[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_REQ_SIZE[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_REQ_ID[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_ARADDR[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_ARLEN[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_ARSIZE[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_ARBURST[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_ARID[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_BEATS[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_RBEAT0[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_RBEAT1[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_RESP_ID[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_RESP_DATA[idx],
+                        "seeded maint second after miss mismatch");
+                end else begin
+                    issue_mode1_invalidate_line_scope_cache_hit(
+                        CPP_SEEDED_MAINT_SECOND_MASTER[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_REQ_ADDR[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_REQ_SIZE[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_REQ_ID[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_RESP_ID[idx],
+                        CPP_SEEDED_MAINT_SECOND_AFTER_RESP_DATA[idx],
+                        CPP_SEEDED_MAINT_SECOND_HIT_NO_EXTERNAL[idx],
+                        "seeded maint second after hit mismatch");
+                end
+            end
+        end
+    endtask
+
     task issue_mode1_invalidate_all_recovery_cache_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -12825,6 +12966,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         issue_mode1_invalidate_line_recovery_read_and_check();
         issue_mode1_invalidate_line_scope_read_and_check();
         issue_mode1_invalidate_line_multi_master_recovery_read_and_check();
+        issue_mode1_seeded_maintenance_recovery_and_check();
         issue_mode1_invalidate_all_recovery_cache_read_and_check();
         issue_mode1_invalidate_all_multi_master_recovery_cache_read_and_check();
         issue_mode1_invalidate_all_recovery_cache_write_and_check();

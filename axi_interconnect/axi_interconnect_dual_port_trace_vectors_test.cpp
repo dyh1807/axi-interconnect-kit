@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -743,6 +744,23 @@ struct InvalidateLineMultiMasterRecoveryReadTrace {
   uint32_t invalidate_addr = 0;
   bool invalidate_accepted = false;
   bool survivor_hit_no_external = false;
+};
+
+struct SeededMaintenanceRecoveryTrace {
+  uint32_t seed = 0;
+  ReadTrace first_fill;
+  ReadTrace second_fill;
+  ReadTrace first_after;
+  ReadTrace second_after;
+  uint8_t first_master = 0;
+  uint8_t second_master = 0;
+  uint32_t invalidate_addr = 0;
+  bool invalidate_all = false;
+  bool maintenance_accepted = false;
+  bool first_after_miss = false;
+  bool second_after_miss = false;
+  bool first_hit_no_external = false;
+  bool second_hit_no_external = false;
 };
 
 struct InvalidateAllRecoveryReadTrace {
@@ -3621,6 +3639,132 @@ run_mode1_invalidate_line_multi_master_recovery_read_trace() {
   require(trace.survivor_hit_no_external,
           "C++ invalidate_line multi-master survivor escaped to external AXI");
   return trace;
+}
+
+SeededMaintenanceRecoveryTrace
+run_mode1_seeded_maintenance_recovery_trace(uint32_t seed_index,
+                                            uint32_t seed) {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  StatefulLlcTableDriver table_driver(dut.get_llc_config());
+  std::mt19937 rng(seed);
+
+  SeededMaintenanceRecoveryTrace trace{};
+  trace.seed = seed;
+  trace.invalidate_all = ((rng() & 1u) == 0u);
+  const bool swap_masters = (rng() & 1u) != 0u;
+  trace.first_master = swap_masters ? axi_interconnect::MASTER_DCACHE_R
+                                    : axi_interconnect::MASTER_ICACHE;
+  trace.second_master = swap_masters ? axi_interconnect::MASTER_ICACHE
+                                     : axi_interconnect::MASTER_DCACHE_R;
+
+  const uint32_t line_slot = seed_index * 8u + (rng() & 3u);
+  const uint32_t first_line = 0x40010000u + line_slot * 64u;
+  const uint32_t second_line = first_line + 64u;
+  const uint32_t first_offset = 4u + ((rng() & 3u) * 4u);
+  const uint32_t second_offset = 4u + ((rng() & 3u) * 4u);
+
+  trace.first_fill.prefix = "CPP_SEEDED_MAINT_FIRST_FILL";
+  trace.first_fill.req_addr = first_line + first_offset;
+  trace.first_fill.req_size = 3;
+  trace.first_fill.req_id = static_cast<uint8_t>((seed_index * 4u + 1u) & 0xfu);
+  trace.first_fill.beat_count = 2;
+
+  trace.second_fill.prefix = "CPP_SEEDED_MAINT_SECOND_FILL";
+  trace.second_fill.req_addr = second_line + second_offset;
+  trace.second_fill.req_size = 3;
+  trace.second_fill.req_id =
+      static_cast<uint8_t>((seed_index * 4u + 2u) & 0xfu);
+  trace.second_fill.beat_count = 2;
+
+  trace.first_after.prefix = "CPP_SEEDED_MAINT_FIRST_AFTER";
+  trace.first_after.req_addr = trace.first_fill.req_addr;
+  trace.first_after.req_size = trace.first_fill.req_size;
+  trace.first_after.req_id =
+      static_cast<uint8_t>((seed_index * 4u + 3u) & 0xfu);
+  trace.second_after.prefix = "CPP_SEEDED_MAINT_SECOND_AFTER";
+  trace.second_after.req_addr = trace.second_fill.req_addr;
+  trace.second_after.req_size = trace.second_fill.req_size;
+  trace.second_after.req_id =
+      static_cast<uint8_t>((seed_index * 4u + 4u) & 0xfu);
+  trace.invalidate_addr = trace.second_fill.req_addr;
+
+  issue_cache_read_miss_and_wait_response(
+      dut, table_driver, trace.first_fill, trace.first_master,
+      0xe0000000u + seed_index * 0x1000u);
+  issue_cache_read_miss_and_wait_response(
+      dut, table_driver, trace.second_fill, trace.second_master,
+      0xe0000200u + seed_index * 0x1000u);
+
+  for (int cycle = 0; cycle < 10000 && !trace.maintenance_accepted; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    if (trace.invalidate_all) {
+      dut.set_llc_invalidate_all(true);
+    } else {
+      dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    }
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    trace.maintenance_accepted =
+        trace.invalidate_all ? dut.llc_invalidate_all_accepted()
+                             : dut.llc_invalidate_line_accepted();
+    dut.seq();
+    ++sim_time;
+  }
+  require(trace.maintenance_accepted,
+          "C++ seeded maintenance recovery did not accept maintenance");
+  dut.set_llc_invalidate_all(false);
+  dut.set_llc_invalidate_line(false, 0);
+
+  if (trace.invalidate_all) {
+    trace.first_after.beat_count = 2;
+    trace.second_after.beat_count = 2;
+    trace.first_after_miss = true;
+    trace.second_after_miss = true;
+    issue_cache_read_miss_and_wait_response(
+        dut, table_driver, trace.first_after, trace.first_master,
+        0xe0000400u + seed_index * 0x1000u);
+    issue_cache_read_miss_and_wait_response(
+        dut, table_driver, trace.second_after, trace.second_master,
+        0xe0000600u + seed_index * 0x1000u);
+  } else {
+    trace.first_after_miss = false;
+    trace.second_after_miss = true;
+    issue_cache_read_hit_and_wait_response(dut, table_driver, trace.first_after,
+                                           trace.first_master,
+                                           trace.first_hit_no_external);
+    require(trace.first_hit_no_external,
+            "C++ seeded invalidate_line survivor escaped to external AXI");
+    trace.second_after.beat_count = 2;
+    issue_cache_read_miss_and_wait_response(
+        dut, table_driver, trace.second_after, trace.second_master,
+        0xe0000800u + seed_index * 0x1000u);
+  }
+  return trace;
+}
+
+std::vector<SeededMaintenanceRecoveryTrace>
+run_mode1_seeded_maintenance_recovery_suite() {
+  constexpr std::array<uint32_t, 32> seeds = {
+      0x26042301u, 0x26042302u, 0x26042303u, 0x26042304u,
+      0x26042305u, 0x26042306u, 0x26042307u, 0x26042308u,
+      0x26042309u, 0x2604230au, 0x2604230bu, 0x2604230cu,
+      0x2604230du, 0x2604230eu, 0x2604230fu, 0x26042310u,
+      0x26042311u, 0x26042312u, 0x26042313u, 0x26042314u,
+      0x26042315u, 0x26042316u, 0x26042317u, 0x26042318u,
+      0x26042319u, 0x2604231au, 0x2604231bu, 0x2604231cu,
+      0x2604231du, 0x2604231eu, 0x2604231fu, 0x26042320u,
+  };
+  std::vector<SeededMaintenanceRecoveryTrace> traces;
+  traces.reserve(seeds.size());
+  for (uint32_t idx = 0; idx < seeds.size(); ++idx) {
+    traces.push_back(run_mode1_seeded_maintenance_recovery_trace(idx, seeds[idx]));
+  }
+  return traces;
 }
 
 InvalidateAllRecoveryReadTrace
@@ -10237,6 +10381,166 @@ void emit_read(std::ostream &os, const ReadTrace &trace) {
      << "_RESP_DATA = " << hex_words(trace.resp_data, 64) << ";\n";
 }
 
+std::string hex_words_or_zero(std::vector<uint32_t> words, uint32_t count) {
+  words.resize(count, 0);
+  return hex_words(words, count);
+}
+
+template <typename ValueFn>
+void emit_sv_u32_array(std::ostream &os, const std::string &name,
+                       const std::vector<SeededMaintenanceRecoveryTrace> &traces,
+                       ValueFn value_fn) {
+  os << "localparam [31:0] " << name
+     << " [0:CPP_SEEDED_MAINT_COUNT-1] = '{";
+  for (size_t idx = 0; idx < traces.size(); ++idx) {
+    os << (idx == 0 ? "" : ", ") << hex_u32(value_fn(traces[idx]));
+  }
+  os << "};\n";
+}
+
+template <typename ValueFn>
+void emit_sv_uint_array(std::ostream &os, const std::string &name,
+                        const std::string &type,
+                        const std::vector<SeededMaintenanceRecoveryTrace> &traces,
+                        ValueFn value_fn) {
+  os << "localparam " << type << " " << name
+     << " [0:CPP_SEEDED_MAINT_COUNT-1] = '{";
+  for (size_t idx = 0; idx < traces.size(); ++idx) {
+    os << (idx == 0 ? "" : ", ") << value_fn(traces[idx]);
+  }
+  os << "};\n";
+}
+
+template <typename ValueFn>
+void emit_sv_bool_array(std::ostream &os, const std::string &name,
+                        const std::vector<SeededMaintenanceRecoveryTrace> &traces,
+                        ValueFn value_fn) {
+  os << "localparam [0:0] " << name
+     << " [0:CPP_SEEDED_MAINT_COUNT-1] = '{";
+  for (size_t idx = 0; idx < traces.size(); ++idx) {
+    os << (idx == 0 ? "" : ", ") << "1'b"
+       << (value_fn(traces[idx]) ? 1 : 0);
+  }
+  os << "};\n";
+}
+
+template <typename ReadFn>
+void emit_seeded_read_arrays(
+    std::ostream &os, const std::string &prefix,
+    const std::vector<SeededMaintenanceRecoveryTrace> &traces, ReadFn read_fn) {
+  emit_sv_u32_array(os, prefix + "_REQ_ADDR", traces,
+                    [&](const auto &trace) { return read_fn(trace).req_addr; });
+  emit_sv_uint_array(os, prefix + "_REQ_SIZE", "[7:0]", traces,
+                     [&](const auto &trace) {
+                       return static_cast<unsigned>(read_fn(trace).req_size);
+                     });
+  emit_sv_uint_array(os, prefix + "_REQ_ID", "[3:0]", traces,
+                     [&](const auto &trace) {
+                       return static_cast<unsigned>(read_fn(trace).req_id);
+                     });
+  emit_sv_u32_array(os, prefix + "_ARADDR", traces,
+                    [&](const auto &trace) { return read_fn(trace).araddr; });
+  emit_sv_uint_array(os, prefix + "_ARLEN", "[7:0]", traces,
+                     [&](const auto &trace) {
+                       return static_cast<unsigned>(read_fn(trace).arlen);
+                     });
+  emit_sv_uint_array(os, prefix + "_ARSIZE", "[2:0]", traces,
+                     [&](const auto &trace) {
+                       return static_cast<unsigned>(read_fn(trace).arsize);
+                     });
+  emit_sv_uint_array(os, prefix + "_ARBURST", "[1:0]", traces,
+                     [&](const auto &trace) {
+                       return static_cast<unsigned>(read_fn(trace).arburst);
+                     });
+  emit_sv_uint_array(os, prefix + "_ARID", "[5:0]", traces,
+                     [&](const auto &trace) {
+                       return static_cast<unsigned>(read_fn(trace).arid);
+                     });
+  emit_sv_uint_array(os, prefix + "_BEATS", "integer", traces,
+                     [&](const auto &trace) { return read_fn(trace).beat_count; });
+  os << "localparam [255:0] " << prefix
+     << "_RBEAT0 [0:CPP_SEEDED_MAINT_COUNT-1] = '{";
+  for (size_t idx = 0; idx < traces.size(); ++idx) {
+    const auto &read = read_fn(traces[idx]);
+    os << (idx == 0 ? "" : ", ")
+       << hex_words_or_zero(read.rbeats[0], 8);
+  }
+  os << "};\n";
+  os << "localparam [255:0] " << prefix
+     << "_RBEAT1 [0:CPP_SEEDED_MAINT_COUNT-1] = '{";
+  for (size_t idx = 0; idx < traces.size(); ++idx) {
+    const auto &read = read_fn(traces[idx]);
+    os << (idx == 0 ? "" : ", ")
+       << hex_words_or_zero(read.rbeats[1], 8);
+  }
+  os << "};\n";
+  emit_sv_uint_array(os, prefix + "_RESP_ID", "[3:0]", traces,
+                     [&](const auto &trace) {
+                       return static_cast<unsigned>(read_fn(trace).resp_id);
+                     });
+  os << "localparam [2047:0] " << prefix
+     << "_RESP_DATA [0:CPP_SEEDED_MAINT_COUNT-1] = '{";
+  for (size_t idx = 0; idx < traces.size(); ++idx) {
+    const auto &read = read_fn(traces[idx]);
+    os << (idx == 0 ? "" : ", ")
+       << hex_words_or_zero(read.resp_data, 64);
+  }
+  os << "};\n";
+}
+
+void emit_seeded_maintenance_recovery(
+    std::ostream &os,
+    const std::vector<SeededMaintenanceRecoveryTrace> &traces) {
+  os << "\nlocalparam integer CPP_SEEDED_MAINT_COUNT = " << traces.size()
+     << ";\n";
+  emit_sv_u32_array(os, "CPP_SEEDED_MAINT_SEED", traces,
+                    [](const auto &trace) { return trace.seed; });
+  emit_sv_uint_array(os, "CPP_SEEDED_MAINT_FIRST_MASTER", "integer", traces,
+                     [](const auto &trace) {
+                       return static_cast<unsigned>(trace.first_master);
+                     });
+  emit_sv_uint_array(os, "CPP_SEEDED_MAINT_SECOND_MASTER", "integer", traces,
+                     [](const auto &trace) {
+                       return static_cast<unsigned>(trace.second_master);
+                     });
+  emit_sv_u32_array(os, "CPP_SEEDED_MAINT_INVALIDATE_ADDR", traces,
+                    [](const auto &trace) { return trace.invalidate_addr; });
+  emit_sv_bool_array(os, "CPP_SEEDED_MAINT_INVALIDATE_ALL", traces,
+                     [](const auto &trace) { return trace.invalidate_all; });
+  emit_sv_bool_array(os, "CPP_SEEDED_MAINT_ACCEPTED", traces,
+                     [](const auto &trace) {
+                       return trace.maintenance_accepted;
+                     });
+  emit_sv_bool_array(os, "CPP_SEEDED_MAINT_FIRST_AFTER_MISS", traces,
+                     [](const auto &trace) { return trace.first_after_miss; });
+  emit_sv_bool_array(os, "CPP_SEEDED_MAINT_SECOND_AFTER_MISS", traces,
+                     [](const auto &trace) { return trace.second_after_miss; });
+  emit_sv_bool_array(os, "CPP_SEEDED_MAINT_FIRST_HIT_NO_EXTERNAL", traces,
+                     [](const auto &trace) {
+                       return trace.first_hit_no_external;
+                     });
+  emit_sv_bool_array(os, "CPP_SEEDED_MAINT_SECOND_HIT_NO_EXTERNAL", traces,
+                     [](const auto &trace) {
+                       return trace.second_hit_no_external;
+                     });
+  emit_seeded_read_arrays(os, "CPP_SEEDED_MAINT_FIRST_FILL", traces,
+                          [](const auto &trace) -> const ReadTrace & {
+                            return trace.first_fill;
+                          });
+  emit_seeded_read_arrays(os, "CPP_SEEDED_MAINT_SECOND_FILL", traces,
+                          [](const auto &trace) -> const ReadTrace & {
+                            return trace.second_fill;
+                          });
+  emit_seeded_read_arrays(os, "CPP_SEEDED_MAINT_FIRST_AFTER", traces,
+                          [](const auto &trace) -> const ReadTrace & {
+                            return trace.first_after;
+                          });
+  emit_seeded_read_arrays(os, "CPP_SEEDED_MAINT_SECOND_AFTER", traces,
+                          [](const auto &trace) -> const ReadTrace & {
+                            return trace.second_after;
+                          });
+}
+
 void emit_write(std::ostream &os, const WriteTrace &trace) {
   os << "\n";
   os << "localparam [31:0] " << trace.prefix
@@ -11174,6 +11478,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_invalidate_line_scope_read_trace();
   const auto mode1_invalidate_line_multi_master_recovery_read =
       run_mode1_invalidate_line_multi_master_recovery_read_trace();
+  const auto mode1_seeded_maintenance_recovery =
+      run_mode1_seeded_maintenance_recovery_suite();
   const auto mode1_invalidate_all_recovery_cache_read =
       run_mode1_invalidate_all_recovery_cache_read_trace();
   const auto mode1_invalidate_all_multi_master_recovery_cache_read =
@@ -11355,6 +11661,7 @@ void emit_vectors(std::ostream &os) {
   emit_invalidate_line_scope_read(os, mode1_invalidate_line_scope_read);
   emit_invalidate_line_multi_master_recovery_read(
       os, mode1_invalidate_line_multi_master_recovery_read);
+  emit_seeded_maintenance_recovery(os, mode1_seeded_maintenance_recovery);
   emit_invalidate_all_recovery_cache_read(
       os, mode1_invalidate_all_recovery_cache_read);
   emit_invalidate_all_multi_master_recovery_cache_read(
