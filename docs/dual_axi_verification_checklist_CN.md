@@ -1088,6 +1088,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   data/meta SRAM `.db` 均加载通过，且无 `DDB-24`/Error/Warning；run root 为
   `rtl/dc/runs/lib_setup_smoke_template_9t20_20260506_112133_eda10`。因此当前 eda-07
   已启动长跑最多作为调试参考，最终 clean signoff 应使用修正后的脚本重新启动。
+  修正提交 `4ac96ae` 推送后，已在 `eda-10` 启动 strict-template 9T20 full 1GHz DC，
+  run root 为
+  `rtl/dc/runs/full_compile_1g_template_9t20_4ac96ae_20260506_112854_eda10`，
+  parent PID `2469192`，dc_shell child PID `2469465`；早期日志已进入
+  `read_data_db_start`，并确认加载 9T20 RVT/LVT 与 data/meta SRAM `.db`。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
   `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
   后最新全量 RTL contract 53/53 目录为
