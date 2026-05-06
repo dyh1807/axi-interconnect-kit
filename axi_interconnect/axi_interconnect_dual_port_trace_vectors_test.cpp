@@ -871,6 +871,20 @@ struct InvalidateLineCacheMmioReadWriteTrace {
   bool accepted_after_resp_retire = false;
 };
 
+struct InvalidateLineCacheWriteMmioReadWriteTrace {
+  CacheWriteMissMmioWriteTrace flow;
+  ReadTrace mmio_read;
+  std::string prefix;
+  uint8_t mmio_read_master = 0;
+  uint32_t invalidate_addr = 0;
+  bool mmio_rready_while_invalidate_pending = false;
+  bool mmio_bready_while_invalidate_pending = false;
+  bool ddr_rready_while_mmio_resp_held = false;
+  bool blocked_while_mmio_resp_held = false;
+  bool blocked_while_cache_resp_held = false;
+  bool accepted_after_resp_retire = false;
+};
+
 struct InvalidateAllMmioReadWriteTrace {
   ReadTrace read;
   WriteTrace write;
@@ -6082,6 +6096,278 @@ run_mode1_invalidate_line_cache_mmio_write_trace() {
   return trace;
 }
 
+InvalidateLineCacheWriteMmioReadWriteTrace
+run_mode1_invalidate_line_cache_write_mmio_read_write_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  InvalidLlcTableDriver table_driver(dut.get_llc_config());
+
+  InvalidateLineCacheWriteMmioReadWriteTrace trace{};
+  trace.prefix = "CPP_MODE1_INVLINE_CACHE_WRITE_MMIO_RW";
+  auto &flow = trace.flow;
+  flow.cache.prefix = "CPP_MODE1_INVLINE_CACHE_WRITE_MMIO_RW_CACHE";
+  flow.cache.req_addr = 0x40001104u;
+  flow.cache.req_size = 3;
+  flow.cache.req_id = 0x9u;
+  const auto cache_data = single_word_data(0x468a1357u);
+  const auto cache_strobe = byte_strobe(0xfu);
+  flow.cache.req_wdata = wide_write_words(cache_data);
+  flow.cache.req_wstrb = write_strobe_mask(cache_strobe);
+  flow.refill.prefix = "CPP_MODE1_INVLINE_CACHE_WRITE_MMIO_RW_REFILL";
+  flow.refill.req_addr = flow.cache.req_addr;
+  flow.refill.req_size = 63;
+  flow.refill.req_id = 0;
+  flow.refill.beat_count = 2;
+  flow.refill.resp_data.assign(axi_interconnect::MAX_READ_TRANSACTION_WORDS,
+                               0);
+  trace.mmio_read.prefix = "CPP_MODE1_INVLINE_CACHE_WRITE_MMIO_RW_MMIO_READ";
+  trace.mmio_read.req_addr = 0x10000280u;
+  trace.mmio_read.req_size = 3;
+  trace.mmio_read.req_id = 0xAu;
+  trace.mmio_read.beat_count = 1;
+  flow.mmio.prefix = "CPP_MODE1_INVLINE_CACHE_WRITE_MMIO_RW_MMIO_WRITE";
+  flow.mmio.req_addr = 0x100002c0u;
+  flow.mmio.req_size = 3;
+  flow.mmio.req_id = 0xBu;
+  const auto mmio_write_data = single_word_data(0xface02c0u);
+  const auto mmio_write_strobe = byte_strobe(0xfu);
+  flow.mmio.req_wdata = wide_write_words(mmio_write_data);
+  flow.mmio.req_wstrb = write_strobe_mask(mmio_write_strobe);
+  flow.cache_master = axi_interconnect::MASTER_DCACHE_W;
+  trace.mmio_read_master = axi_interconnect::MASTER_UNCORE_LSU_R;
+  flow.mmio_master = axi_interconnect::MASTER_UNCORE_LSU_W;
+  trace.invalidate_addr = flow.cache.req_addr;
+
+  bool accepted = false;
+  bool ar_seen = false;
+  bool request_active = true;
+  for (int cycle = 0; cycle < 120 && !ar_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    const bool ready_snapshot = dut.write_ports[flow.cache_master].req.ready;
+    if (request_active) {
+      auto &req = dut.write_ports[flow.cache_master].req;
+      req.valid = true;
+      req.addr = flow.cache.req_addr;
+      req.total_size = flow.cache.req_size;
+      req.id = flow.cache.req_id;
+      req.wdata = cache_data;
+      req.wstrb = cache_strobe;
+      req.bypass = false;
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (request_active && ready_snapshot) {
+      accepted = true;
+      request_active = false;
+    }
+    if (dut.axi_ddr_io.ar.arvalid) {
+      require(!dut.axi_mmio_io.ar.arvalid,
+              "C++ invline cache-write/MMIO RW DDR AR overlapped with MMIO AR");
+      flow.refill.araddr = static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr);
+      flow.refill.arlen = static_cast<uint8_t>(dut.axi_ddr_io.ar.arlen);
+      flow.refill.arsize = static_cast<uint8_t>(dut.axi_ddr_io.ar.arsize);
+      flow.refill.arburst = static_cast<uint8_t>(dut.axi_ddr_io.ar.arburst);
+      flow.refill.arid = static_cast<uint8_t>(dut.axi_ddr_io.ar.arid);
+      ar_seen = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  require(accepted, "C++ invline cache-write/MMIO RW miss was not accepted");
+  require(ar_seen,
+          "C++ invline cache-write/MMIO RW did not issue DDR refill AR");
+  require(flow.refill.beat_count ==
+              static_cast<uint32_t>(flow.refill.arlen) + 1u,
+          "C++ invline cache-write/MMIO RW refill beat count mismatch");
+
+  issue_read_and_capture_ar(dut, trace.mmio_read, trace.mmio_read_master,
+                            axi_interconnect::DownstreamPort::MMIO);
+  issue_write_and_capture_axi(dut, flow.mmio, flow.mmio_master,
+                              axi_interconnect::DownstreamPort::MMIO,
+                              mmio_write_data, mmio_write_strobe);
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.axi_mmio_io.r.rvalid = true;
+  dut.axi_mmio_io.r.rid = trace.mmio_read.arid;
+  dut.axi_mmio_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+  dut.axi_mmio_io.r.rlast = true;
+  dut.axi_mmio_io.r.rdata = {};
+  axi_compat::set_u32(dut.axi_mmio_io.r.rdata, 0, 0xcafe0280u);
+  trace.mmio_read.rbeats[0] = axi_words(dut.axi_mmio_io.r.rdata);
+  dut.axi_mmio_io.b.bvalid = true;
+  dut.axi_mmio_io.b.bid = flow.mmio.awid;
+  dut.axi_mmio_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  trace.mmio_rready_while_invalidate_pending = dut.axi_mmio_io.r.rready;
+  trace.mmio_bready_while_invalidate_pending = dut.axi_mmio_io.b.bready;
+  flow.mmio_bready_while_resp_stalled =
+      trace.mmio_bready_while_invalidate_pending;
+  require(dut.axi_mmio_io.r.rready,
+          "C++ invline cache-write/MMIO RW MMIO R was backpressured");
+  require(dut.axi_mmio_io.b.bready,
+          "C++ invline cache-write/MMIO RW MMIO B was backpressured");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline cache-write/MMIO RW accepted in MMIO R/B cycle");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.comb_outputs();
+  require(dut.read_ports[trace.mmio_read_master].resp.valid,
+          "C++ invline cache-write/MMIO RW MMIO read response was not held");
+  require(dut.write_ports[flow.mmio_master].resp.valid,
+          "C++ invline cache-write/MMIO RW MMIO write response was not held");
+  require(!dut.write_ports[flow.cache_master].resp.valid,
+          "C++ invline cache-write/MMIO RW cache response appeared before refill");
+  trace.blocked_while_mmio_resp_held = !dut.llc_invalidate_line_accepted();
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline cache-write/MMIO RW accepted while MMIO responses held");
+  dut.seq();
+  ++sim_time;
+
+  trace.ddr_rready_while_mmio_resp_held = true;
+  for (uint32_t beat = 0; beat < flow.refill.beat_count; ++beat) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.axi_ddr_io.r.rvalid = true;
+    dut.axi_ddr_io.r.rid = flow.refill.arid;
+    dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+    dut.axi_ddr_io.r.rlast = beat == flow.refill.beat_count - 1u;
+    dut.axi_ddr_io.r.rdata = ddr_read_beat(0xd00d1100u + beat * 0x100u);
+    flow.refill.rbeats[beat] = axi_words(dut.axi_ddr_io.r.rdata);
+    dut.comb_outputs();
+    trace.ddr_rready_while_mmio_resp_held =
+        trace.ddr_rready_while_mmio_resp_held && dut.axi_ddr_io.r.rready;
+    flow.ddr_rready_while_resp_stalled =
+        trace.ddr_rready_while_mmio_resp_held;
+    require(dut.axi_ddr_io.r.rready,
+            "C++ invline cache-write/MMIO RW DDR R was backpressured");
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_line_accepted(),
+            "C++ invline cache-write/MMIO RW accepted in DDR R cycle");
+    dut.seq();
+    ++sim_time;
+  }
+
+  bool cache_resp_seen = false;
+  for (int cycle = 0; cycle < 180 && !cache_resp_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.comb_outputs();
+    require(dut.read_ports[trace.mmio_read_master].resp.valid,
+            "C++ invline cache-write/MMIO RW MMIO read response dropped");
+    require(dut.write_ports[flow.mmio_master].resp.valid,
+            "C++ invline cache-write/MMIO RW MMIO write response dropped");
+    auto &cache_resp = dut.write_ports[flow.cache_master].resp;
+    if (cache_resp.valid) {
+      cache_resp_seen = true;
+      flow.cache.resp_id = static_cast<uint8_t>(cache_resp.id);
+      flow.cache.resp_code = static_cast<uint8_t>(cache_resp.resp);
+      trace.blocked_while_cache_resp_held =
+          !dut.llc_invalidate_line_accepted();
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_line_accepted(),
+            "C++ invline cache-write/MMIO RW accepted while cache response held");
+    dut.seq();
+    ++sim_time;
+  }
+  require(cache_resp_seen,
+          "C++ invline cache-write/MMIO RW cache response timeout");
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.read_ports[trace.mmio_read_master].resp.ready = true;
+  dut.comb_outputs();
+  auto &mmio_read_resp = dut.read_ports[trace.mmio_read_master].resp;
+  require(mmio_read_resp.valid,
+          "C++ invline cache-write/MMIO RW MMIO read response not valid");
+  trace.mmio_read.resp_id = static_cast<uint8_t>(mmio_read_resp.id);
+  trace.mmio_read.resp_data = wide_read_words(mmio_read_resp.data);
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline cache-write/MMIO RW accepted before MMIO read retire");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.write_ports[flow.mmio_master].resp.ready = true;
+  dut.comb_outputs();
+  auto &mmio_write_resp = dut.write_ports[flow.mmio_master].resp;
+  require(mmio_write_resp.valid,
+          "C++ invline cache-write/MMIO RW MMIO write response not valid");
+  flow.mmio.resp_id = static_cast<uint8_t>(mmio_write_resp.id);
+  flow.mmio.resp_code = static_cast<uint8_t>(mmio_write_resp.resp);
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline cache-write/MMIO RW accepted before MMIO write retire");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.write_ports[flow.cache_master].resp.ready = true;
+  dut.comb_outputs();
+  require(dut.write_ports[flow.cache_master].resp.valid,
+          "C++ invline cache-write/MMIO RW cache response not valid");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline cache-write/MMIO RW accepted before cache retire");
+  dut.seq();
+  ++sim_time;
+
+  bool accepted_after_retire = false;
+  for (int retry = 0; retry < 10000 && !accepted_after_retire; ++retry) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (dut.llc_invalidate_line_accepted()) {
+      accepted_after_retire = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  require(accepted_after_retire,
+          "C++ invline cache-write/MMIO RW did not accept after responses");
+  trace.accepted_after_resp_retire = true;
+  dut.set_llc_invalidate_line(false, 0);
+  return trace;
+}
+
 InvalidateAllCacheMmioReadWriteTrace
 run_mode1_invalidate_all_cache_mmio_read_write_trace() {
   axi_interconnect::AXI_Interconnect dut;
@@ -9350,6 +9636,32 @@ void emit_invalidate_line_cache_mmio_read_write(
      << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
 }
 
+void emit_invalidate_line_cache_write_mmio_read_write(
+    std::ostream &os,
+    const InvalidateLineCacheWriteMmioReadWriteTrace &trace) {
+  emit_cache_write_miss_mmio_write(os, trace.flow);
+  emit_read(os, trace.mmio_read);
+  os << "localparam integer " << trace.mmio_read.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.mmio_read_master)
+     << ";\n";
+  os << "localparam " << trace.mmio_read.prefix << "_RREADY_STALLED = 1'b"
+     << (trace.mmio_rready_while_invalidate_pending ? 1 : 0) << ";\n";
+  os << "localparam [31:0] " << trace.prefix
+     << "_INVALIDATE_ADDR = " << hex_u32(trace.invalidate_addr) << ";\n";
+  os << "localparam " << trace.prefix << "_MMIO_RREADY_PENDING = 1'b"
+     << (trace.mmio_rready_while_invalidate_pending ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_MMIO_BREADY_PENDING = 1'b"
+     << (trace.mmio_bready_while_invalidate_pending ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_DDR_RREADY_MMIO_HELD = 1'b"
+     << (trace.ddr_rready_while_mmio_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_BLOCKED_MMIO_HELD = 1'b"
+     << (trace.blocked_while_mmio_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_BLOCKED_CACHE_HELD = 1'b"
+     << (trace.blocked_while_cache_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_ACCEPTED_AFTER_RETIRE = 1'b"
+     << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
+}
+
 void emit_invalidate_all_mmio_read_write(
     std::ostream &os, const InvalidateAllMmioReadWriteTrace &trace) {
   emit_read(os, trace.read);
@@ -9466,6 +9778,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_invalidate_line_cache_mmio_write_trace();
   const auto mode1_invalidate_line_cache_mmio_read_write =
       run_mode1_invalidate_line_cache_mmio_read_write_trace();
+  const auto mode1_invalidate_line_cache_write_mmio_read_write =
+      run_mode1_invalidate_line_cache_write_mmio_read_write_trace();
   const auto mode1_invalidate_all_cache_mmio_read_write =
       run_mode1_invalidate_all_cache_mmio_read_write_trace();
   const auto mode1_dirty_victim_mmio_write =
@@ -9624,6 +9938,8 @@ void emit_vectors(std::ostream &os) {
       os, mode1_invalidate_line_cache_mmio_write);
   emit_invalidate_line_cache_mmio_read_write(
       os, mode1_invalidate_line_cache_mmio_read_write);
+  emit_invalidate_line_cache_write_mmio_read_write(
+      os, mode1_invalidate_line_cache_write_mmio_read_write);
   emit_invalidate_all_cache_mmio_read_write(
       os, mode1_invalidate_all_cache_mmio_read_write);
   emit_dirty_victim_mmio_write(os, mode1_dirty_victim_mmio_write);

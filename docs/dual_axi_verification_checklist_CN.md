@@ -4,8 +4,13 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=206 / open=2。本轮新增 MODE_CACHE cacheable read miss + MMIO
-read + MMIO write 三路并发下的 target-line `invalidate_line` drain/recovery 检查：
+当前计数：done=207 / open=2。本轮继续新增 MODE_CACHE cacheable write miss/refill
+与 MMIO read/write 三路并发下的 target-line `invalidate_line` drain/recovery 检查：
+DCache write miss 发出 DDR refill `AR`，MMIO read/write 分别发出 MMIO `AR/AW/W`；
+`invalidate_line` pending 时 MMIO `RREADY/BREADY` 和 held MMIO response 期间的
+DDR refill `RREADY` 都不能被回压，MMIO read/write response 与 cache write response
+均 retire 后才允许 target-line maintenance accepted。本轮此前新增 MODE_CACHE
+cacheable read miss + MMIO read + MMIO write 三路并发下的 target-line `invalidate_line` drain/recovery 检查：
 DCache read 发出 DDR refill `AR`，MMIO read/write 分别发出 MMIO `AR/AW/W`；
 `invalidate_line` pending 时 MMIO `RREADY/BREADY` 和 held MMIO response 期间的
 DDR refill `RREADY` 都不能被回压，MMIO read/write response 与 cache read response
@@ -1191,6 +1196,15 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_invline_cache_mmio_rw_20260506_163822_eda-10`，
   全量 RTL contract 目录：
   `rtl/local_debug/vcs_all_contracts_invline_cache_mmio_rw_20260506_163836_eda-10`；
+  本轮继续补齐对称的 cache write miss/refill + MMIO read/write 三路并发下的
+  target-line `invalidate_line` drain/recovery：DCache write miss 发出 DDR refill
+  `AR`，MMIO read/write 分别发出 MMIO `AR/AW/W`；`invalidate_line` pending 时
+  MMIO `RREADY/BREADY` 和 held MMIO response 期间的 DDR refill `RREADY` 均保持 1，
+  MMIO read/write response 与 cache write response 均 retire 后 target-line
+  maintenance 才 accepted。最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_cache_write_mmio_rw_20260506_165824_eda-10`，
+  全量 RTL contract 目录：
+  `rtl/local_debug/vcs_all_contracts_invline_cache_write_mmio_rw_20260506_165836_eda-10`；
   后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
   maintenance/recovery 组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
@@ -1359,6 +1373,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_invall_cache_rw_20260506_162202_eda-10`，
   latest 全量 RTL contract 53/53 目录为
   `rtl/local_debug/vcs_all_contracts_invall_cache_rw_20260506_162215_eda-10`。
+  继续新增 cache write miss/refill + MMIO read/write 三路并发下的 target-line
+  `invalidate_line` drain/recovery trace 后，C++ regression 24/24 通过；latest
+  targeted VCS 为
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_cache_write_mmio_rw_20260506_165824_eda-10`，
+  latest 全量 RTL contract 53/53 目录为
+  `rtl/local_debug/vcs_all_contracts_invline_cache_write_mmio_rw_20260506_165836_eda-10`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
@@ -1593,7 +1613,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   cache read/write mixed dirty-blocked trace 也只改同类测试/文档文件。本轮新增
   target-line `invalidate_line` + cache read + MMIO read/write 三路并发 trace 仍只改
   trace generator、generated TB include、RTL contract TB 和文档，不改变 production
-  simulator/RTL 路径，因此继续沿用上述 cycle delta=0、IPC delta=0 结论；如果下一轮修改 production C++/RTL，则 Linux
+  simulator/RTL 路径；本轮新增 target-line `invalidate_line` + cache write +
+  MMIO read/write 三路并发 trace 同样只改测试生成器、generated include、RTL contract
+  TB 和文档，不改变 production simulator/RTL 路径，因此继续沿用上述 cycle delta=0、
+  IPC delta=0 结论；如果下一轮修改 production C++/RTL，则 Linux
   5M 结论必须同时报告 error/difftest、cycles、IPC、相对 baseline delta 和是否可接受。
 
 ## Multi-Agent 并行推进边界
@@ -1691,7 +1714,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   survivor 的作用域恢复检查也已覆盖；本轮补齐对称的 cacheable
   write miss/refill + pending MMIO write + target-line `invalidate_line` 组合，要求
   MMIO `BREADY`/DDR refill `RREADY` 不被回压，两个 write response 均 retire 后才
-  accepted。
+  accepted；本轮继续补齐 cacheable write miss/refill + pending MMIO read/write +
+  target-line `invalidate_line` 组合，要求 MMIO `RREADY/BREADY` 与 DDR refill
+  `RREADY` 都不被 maintenance/held response 回压，MMIO read/write response 与 cache
+  write response 都 retire 后才 accepted。
 - [ ] C++ reference 与 RTL 端到端形式 EC；当前已有 production-helper read issue
   shape 切片，但完整 C++ class / RTL top 同 harness 仍未完成。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate。
