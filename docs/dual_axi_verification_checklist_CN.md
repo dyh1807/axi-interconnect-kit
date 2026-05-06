@@ -4,7 +4,12 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=205 / open=2。本轮新增 MODE_CACHE cache read miss + cache write
+当前计数：done=206 / open=2。本轮新增 MODE_CACHE cacheable read miss + MMIO
+read + MMIO write 三路并发下的 target-line `invalidate_line` drain/recovery 检查：
+DCache read 发出 DDR refill `AR`，MMIO read/write 分别发出 MMIO `AR/AW/W`；
+`invalidate_line` pending 时 MMIO `RREADY/BREADY` 和 held MMIO response 期间的
+DDR refill `RREADY` 都不能被回压，MMIO read/write response 与 cache read response
+均 retire 后才允许 target-line maintenance accepted。本轮新增 MODE_CACHE cache read miss + cache write
 miss 混合并发下的 `invalidate_all` drain/dirty-blocked 检查：DCache read/write
 各自发出不同 cache line 的 DDR refill `AR`，`invalidate_all` pending 时 read DDR
 `RREADY` 和 held read response 期间的 write refill `RREADY` 都不能被回压，read/write
@@ -1177,6 +1182,15 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_invall_cache_rw_20260506_162202_eda-10`，
   全量 RTL contract 目录：
   `rtl/local_debug/vcs_all_contracts_invall_cache_rw_20260506_162215_eda-10`；
+  本轮继续补齐 cache read miss + MMIO read/write 三路并发下的 target-line
+  `invalidate_line` drain/recovery：DCache read 发出 DDR refill `AR`，MMIO read/write
+  分别发出 MMIO `AR/AW/W`；`invalidate_line` pending 时 MMIO `RREADY/BREADY`
+  和 held MMIO response 期间的 DDR refill `RREADY` 均保持 1，MMIO read/write
+  response 与 cache read response 均 retire 后 target-line maintenance 才 accepted。
+  最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_cache_mmio_rw_20260506_163822_eda-10`，
+  全量 RTL contract 目录：
+  `rtl/local_debug/vcs_all_contracts_invline_cache_mmio_rw_20260506_163836_eda-10`；
   后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
   maintenance/recovery 组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
@@ -1569,7 +1583,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   上述 cycle delta=0、IPC delta=0 结论。本轮新增 target-line `invalidate_line`
   cache read/write mixed drain trace 同样只修改 trace generator、generated TB include、
   RTL contract TB 和文档，不改变 production simulator/RTL 路径；本轮新增 `invalidate_all`
-  cache read/write mixed dirty-blocked trace 也只改同类测试/文档文件；如果下一轮修改 production C++/RTL，则 Linux
+  cache read/write mixed dirty-blocked trace 也只改同类测试/文档文件。本轮新增
+  target-line `invalidate_line` + cache read + MMIO read/write 三路并发 trace 仍只改
+  trace generator、generated TB include、RTL contract TB 和文档，不改变 production
+  simulator/RTL 路径，因此继续沿用上述 cycle delta=0、IPC delta=0 结论；如果下一轮修改 production C++/RTL，则 Linux
   5M 结论必须同时报告 error/difftest、cycles、IPC、相对 baseline delta 和是否可接受。
 
 ## Multi-Agent 并行推进边界

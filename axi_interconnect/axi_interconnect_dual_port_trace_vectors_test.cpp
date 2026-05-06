@@ -857,6 +857,20 @@ struct InvalidateAllCacheMmioReadWriteTrace {
   bool accepted_after_resp_retire = false;
 };
 
+struct InvalidateLineCacheMmioReadWriteTrace {
+  OverlapReadTrace overlap;
+  WriteTrace mmio_write;
+  std::string prefix;
+  uint8_t mmio_write_master = 0;
+  uint32_t invalidate_addr = 0;
+  bool mmio_rready_while_invalidate_pending = false;
+  bool mmio_bready_while_invalidate_pending = false;
+  bool ddr_rready_while_mmio_resp_held = false;
+  bool blocked_while_mmio_resp_held = false;
+  bool blocked_while_cache_resp_held = false;
+  bool accepted_after_resp_retire = false;
+};
+
 struct InvalidateAllMmioReadWriteTrace {
   ReadTrace read;
   WriteTrace write;
@@ -6325,6 +6339,265 @@ run_mode1_invalidate_all_cache_mmio_read_write_trace() {
   return trace;
 }
 
+InvalidateLineCacheMmioReadWriteTrace
+run_mode1_invalidate_line_cache_mmio_read_write_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  InvalidLlcTableDriver table_driver(dut.get_llc_config());
+
+  InvalidateLineCacheMmioReadWriteTrace trace{};
+  trace.prefix = "CPP_MODE1_INVLINE_CACHE_MMIO_RW";
+  trace.overlap.ddr.prefix = "CPP_MODE1_INVLINE_CACHE_MMIO_RW_DDR";
+  trace.overlap.ddr.req_addr = 0x40000f04u;
+  trace.overlap.ddr.req_size = 3;
+  trace.overlap.ddr.req_id = 0xBu;
+  trace.overlap.ddr.beat_count = 2;
+  trace.overlap.mmio.prefix = "CPP_MODE1_INVLINE_CACHE_MMIO_RW_MMIO_READ";
+  trace.overlap.mmio.req_addr = 0x100001f0u;
+  trace.overlap.mmio.req_size = 3;
+  trace.overlap.mmio.req_id = 0xCu;
+  trace.overlap.mmio.beat_count = 1;
+  trace.overlap.ddr_master = axi_interconnect::MASTER_DCACHE_R;
+  trace.overlap.mmio_master = axi_interconnect::MASTER_UNCORE_LSU_R;
+  trace.mmio_write.prefix = "CPP_MODE1_INVLINE_CACHE_MMIO_RW_MMIO_WRITE";
+  trace.mmio_write.req_addr = 0x10000240u;
+  trace.mmio_write.req_size = 3;
+  trace.mmio_write.req_id = 0xDu;
+  const auto write_data = single_word_data(0xface0240u);
+  const auto write_strobe = byte_strobe(0xfu);
+  trace.mmio_write.req_wdata = wide_write_words(write_data);
+  trace.mmio_write.req_wstrb = write_strobe_mask(write_strobe);
+  trace.mmio_write_master = axi_interconnect::MASTER_UNCORE_LSU_W;
+  trace.invalidate_addr = trace.overlap.ddr.req_addr;
+
+  bool accepted = false;
+  bool ar_seen = false;
+  bool request_active = true;
+  for (int cycle = 0; cycle < 80 && !ar_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    if (request_active) {
+      auto &req = dut.read_ports[trace.overlap.ddr_master].req;
+      req.valid = true;
+      req.addr = trace.overlap.ddr.req_addr;
+      req.total_size = trace.overlap.ddr.req_size;
+      req.id = trace.overlap.ddr.req_id;
+      req.bypass = false;
+    }
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (request_active && dut.read_ports[trace.overlap.ddr_master].req.ready) {
+      accepted = true;
+      request_active = false;
+    }
+    if (dut.axi_ddr_io.ar.arvalid) {
+      require(!dut.axi_mmio_io.ar.arvalid,
+              "C++ invline cache/MMIO RW DDR AR overlapped with MMIO AR");
+      trace.overlap.ddr.araddr =
+          static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr);
+      trace.overlap.ddr.arlen =
+          static_cast<uint8_t>(dut.axi_ddr_io.ar.arlen);
+      trace.overlap.ddr.arsize =
+          static_cast<uint8_t>(dut.axi_ddr_io.ar.arsize);
+      trace.overlap.ddr.arburst =
+          static_cast<uint8_t>(dut.axi_ddr_io.ar.arburst);
+      trace.overlap.ddr.arid = static_cast<uint8_t>(dut.axi_ddr_io.ar.arid);
+      ar_seen = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  require(accepted, "C++ invline cache/MMIO RW cache read was not accepted");
+  require(ar_seen, "C++ invline cache/MMIO RW cache read did not issue DDR AR");
+  require(trace.overlap.ddr.beat_count ==
+              static_cast<uint32_t>(trace.overlap.ddr.arlen) + 1u,
+          "C++ invline cache/MMIO RW cache read beat count mismatch");
+
+  issue_read_and_capture_ar(dut, trace.overlap.mmio, trace.overlap.mmio_master,
+                            axi_interconnect::DownstreamPort::MMIO);
+  issue_write_and_capture_axi(dut, trace.mmio_write, trace.mmio_write_master,
+                              axi_interconnect::DownstreamPort::MMIO,
+                              write_data, write_strobe);
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.axi_mmio_io.r.rvalid = true;
+  dut.axi_mmio_io.r.rid = trace.overlap.mmio.arid;
+  dut.axi_mmio_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+  dut.axi_mmio_io.r.rlast = true;
+  dut.axi_mmio_io.r.rdata = {};
+  axi_compat::set_u32(dut.axi_mmio_io.r.rdata, 0, 0xcafe01f0u);
+  trace.overlap.mmio.rbeats[0] = axi_words(dut.axi_mmio_io.r.rdata);
+  dut.axi_mmio_io.b.bvalid = true;
+  dut.axi_mmio_io.b.bid = trace.mmio_write.awid;
+  dut.axi_mmio_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  trace.mmio_rready_while_invalidate_pending = dut.axi_mmio_io.r.rready;
+  trace.mmio_bready_while_invalidate_pending = dut.axi_mmio_io.b.bready;
+  trace.overlap.mmio_rready_while_resp_stalled =
+      trace.mmio_rready_while_invalidate_pending;
+  require(dut.axi_mmio_io.r.rready,
+          "C++ invline cache/MMIO RW MMIO R was backpressured");
+  require(dut.axi_mmio_io.b.bready,
+          "C++ invline cache/MMIO RW MMIO B was backpressured");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline cache/MMIO RW accepted in MMIO R/B handshake cycle");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.comb_outputs();
+  require(dut.read_ports[trace.overlap.mmio_master].resp.valid,
+          "C++ invline cache/MMIO RW MMIO read response was not held");
+  require(dut.write_ports[trace.mmio_write_master].resp.valid,
+          "C++ invline cache/MMIO RW MMIO write response was not held");
+  trace.blocked_while_mmio_resp_held = !dut.llc_invalidate_line_accepted();
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline cache/MMIO RW accepted while MMIO responses held");
+  dut.seq();
+  ++sim_time;
+
+  trace.ddr_rready_while_mmio_resp_held = true;
+  for (uint32_t beat = 0; beat < trace.overlap.ddr.beat_count; ++beat) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.axi_ddr_io.r.rvalid = true;
+    dut.axi_ddr_io.r.rid = trace.overlap.ddr.arid;
+    dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+    dut.axi_ddr_io.r.rlast = beat == trace.overlap.ddr.beat_count - 1u;
+    dut.axi_ddr_io.r.rdata = ddr_read_beat(0xd00d0f00u + beat * 0x100u);
+    trace.overlap.ddr.rbeats[beat] = axi_words(dut.axi_ddr_io.r.rdata);
+    dut.comb_outputs();
+    trace.ddr_rready_while_mmio_resp_held =
+        trace.ddr_rready_while_mmio_resp_held && dut.axi_ddr_io.r.rready;
+    trace.overlap.ddr_rready_while_resp_stalled =
+        trace.ddr_rready_while_mmio_resp_held;
+    require(dut.axi_ddr_io.r.rready,
+            "C++ invline cache/MMIO RW DDR R was backpressured");
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_line_accepted(),
+            "C++ invline cache/MMIO RW accepted in DDR R handshake cycle");
+    dut.seq();
+    ++sim_time;
+  }
+
+  bool cache_resp_seen = false;
+  for (int cycle = 0; cycle < 180 && !cache_resp_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.comb_outputs();
+    require(dut.read_ports[trace.overlap.mmio_master].resp.valid,
+            "C++ invline cache/MMIO RW MMIO read response dropped while held");
+    require(dut.write_ports[trace.mmio_write_master].resp.valid,
+            "C++ invline cache/MMIO RW MMIO write response dropped while held");
+    auto &cache_resp = dut.read_ports[trace.overlap.ddr_master].resp;
+    if (cache_resp.valid) {
+      cache_resp_seen = true;
+      trace.overlap.ddr.resp_id = static_cast<uint8_t>(cache_resp.id);
+      trace.overlap.ddr.resp_data = wide_read_words(cache_resp.data);
+      trace.blocked_while_cache_resp_held =
+          !dut.llc_invalidate_line_accepted();
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_line_accepted(),
+            "C++ invline cache/MMIO RW accepted while cache response held");
+    dut.seq();
+    ++sim_time;
+  }
+  require(cache_resp_seen, "C++ invline cache/MMIO RW cache response timeout");
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.read_ports[trace.overlap.mmio_master].resp.ready = true;
+  dut.comb_outputs();
+  auto &mmio_read_resp = dut.read_ports[trace.overlap.mmio_master].resp;
+  require(mmio_read_resp.valid,
+          "C++ invline cache/MMIO RW MMIO read response not valid at retire");
+  trace.overlap.mmio.resp_id = static_cast<uint8_t>(mmio_read_resp.id);
+  trace.overlap.mmio.resp_data = wide_read_words(mmio_read_resp.data);
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline cache/MMIO RW accepted before MMIO read retired");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.write_ports[trace.mmio_write_master].resp.ready = true;
+  dut.comb_outputs();
+  auto &mmio_write_resp = dut.write_ports[trace.mmio_write_master].resp;
+  require(mmio_write_resp.valid,
+          "C++ invline cache/MMIO RW MMIO write response not valid at retire");
+  trace.mmio_write.resp_id = static_cast<uint8_t>(mmio_write_resp.id);
+  trace.mmio_write.resp_code = static_cast<uint8_t>(mmio_write_resp.resp);
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline cache/MMIO RW accepted before MMIO write retired");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.read_ports[trace.overlap.ddr_master].resp.ready = true;
+  dut.comb_outputs();
+  require(dut.read_ports[trace.overlap.ddr_master].resp.valid,
+          "C++ invline cache/MMIO RW cache response not valid at retire");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline cache/MMIO RW accepted before cache response retired");
+  dut.seq();
+  ++sim_time;
+
+  for (int retry = 0; retry < 160; ++retry) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    const bool accepted_now = dut.llc_invalidate_line_accepted();
+    dut.seq();
+    ++sim_time;
+    if (accepted_now) {
+      trace.accepted_after_resp_retire = true;
+      dut.set_llc_invalidate_line(false, 0);
+      return trace;
+    }
+  }
+  dut.debug_print();
+  require(false,
+          "C++ invline cache/MMIO RW did not accept after responses retired");
+  return trace;
+}
+
 DirtyVictimMmioWriteTrace run_mode1_dirty_victim_mmio_write_trace() {
   axi_interconnect::AXI_Interconnect dut;
   init_cache_trace_dut(dut);
@@ -9051,6 +9324,32 @@ void emit_invalidate_all_cache_mmio_read_write(
      << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
 }
 
+void emit_invalidate_line_cache_mmio_read_write(
+    std::ostream &os, const InvalidateLineCacheMmioReadWriteTrace &trace) {
+  emit_overlap_read(os, trace.overlap);
+  emit_write(os, trace.mmio_write);
+  os << "localparam integer " << trace.mmio_write.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.mmio_write_master) << ";\n";
+  os << "localparam [31:0] " << trace.prefix
+     << "_INVALIDATE_ADDR = 32'h" << std::hex << std::setw(8)
+     << std::setfill('0') << trace.invalidate_addr << std::dec
+     << std::setfill(' ') << ";\n";
+  os << "localparam " << trace.mmio_write.prefix << "_BREADY_STALLED = 1'b"
+     << (trace.mmio_bready_while_invalidate_pending ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_MMIO_RREADY_PENDING = 1'b"
+     << (trace.mmio_rready_while_invalidate_pending ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_MMIO_BREADY_PENDING = 1'b"
+     << (trace.mmio_bready_while_invalidate_pending ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_DDR_RREADY_MMIO_HELD = 1'b"
+     << (trace.ddr_rready_while_mmio_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_BLOCKED_MMIO_HELD = 1'b"
+     << (trace.blocked_while_mmio_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_BLOCKED_CACHE_HELD = 1'b"
+     << (trace.blocked_while_cache_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_ACCEPTED_AFTER_RETIRE = 1'b"
+     << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
+}
+
 void emit_invalidate_all_mmio_read_write(
     std::ostream &os, const InvalidateAllMmioReadWriteTrace &trace) {
   emit_read(os, trace.read);
@@ -9165,6 +9464,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_invalidate_all_cache_mmio_write_trace();
   const auto mode1_invalidate_line_cache_mmio_write =
       run_mode1_invalidate_line_cache_mmio_write_trace();
+  const auto mode1_invalidate_line_cache_mmio_read_write =
+      run_mode1_invalidate_line_cache_mmio_read_write_trace();
   const auto mode1_invalidate_all_cache_mmio_read_write =
       run_mode1_invalidate_all_cache_mmio_read_write_trace();
   const auto mode1_dirty_victim_mmio_write =
@@ -9321,6 +9622,8 @@ void emit_vectors(std::ostream &os) {
       os, mode1_invalidate_all_cache_mmio_write);
   emit_invalidate_line_cache_mmio_write(
       os, mode1_invalidate_line_cache_mmio_write);
+  emit_invalidate_line_cache_mmio_read_write(
+      os, mode1_invalidate_line_cache_mmio_read_write);
   emit_invalidate_all_cache_mmio_read_write(
       os, mode1_invalidate_all_cache_mmio_read_write);
   emit_dirty_victim_mmio_write(os, mode1_dirty_victim_mmio_write);
