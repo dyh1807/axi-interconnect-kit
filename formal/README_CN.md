@@ -20,7 +20,7 @@ formal/run_passed_hw_cbmc.sh
 ```
 
 该入口当前默认设置 `HW_CBMC_TIMEOUT_SEC=600`，只包含已能返回
-`VERIFICATION SUCCESSFUL` 的项目。2026-05-06 当前 stable manifest 为 78 项；
+`VERIFICATION SUCCESSFUL` 的项目。2026-05-06 当前 stable manifest 为 79 项；
 其中前 71 项已有 split-run 证据：
 `local_debug/run_passed_hw_cbmc_manifest71_20260505_144134.log` 完成前 20 项，
 并在第 21 项本体已 `VERIFICATION SUCCESSFUL` 后因旧 240s wrapper timeout 退出；
@@ -33,8 +33,11 @@ formal/run_passed_hw_cbmc.sh
 新增第 74 项 `formal/dual_bridge_prod_helper_write_issue_shape` 的 targeted log 为
 `local_debug/hw_cbmc_dual_bridge_prod_helper_write_issue_shape_20260505_220230.log`。
 2026-05-06 后续又把 `subsystem_dual_mode0_ddr_bypass_read_response_8b` 以及
-3 个 `subsystem_dual_cache_dirty_evict_*` 入口纳入 stable manifest。当前
-`formal/*/run_hw_cbmc.sh` 共有 80 个入口，未纳入 stable manifest 的 2 个入口
+3 个 `subsystem_dual_cache_dirty_evict_*` 入口纳入 stable manifest。当前又新增
+`formal/cache_ctrl_table_oracle_write_then_read`，作为首个 cache-control table-oracle
+shadow row proof 原型，targeted log 为
+`local_debug/hw_cbmc_cache_ctrl_table_oracle_write_then_read_20260506_233439.log`。当前
+`formal/*/run_hw_cbmc.sh` 共有 81 个入口，未纳入 stable manifest 的 2 个入口
 已明确归类为 experimental/non-stable，见下方“非稳定实验入口”。它们不作为当前生产
 RTL 失败结论，也不应在未收敛前加入 `formal/run_passed_hw_cbmc.sh`。
 
@@ -1467,6 +1470,39 @@ formal/cache_ctrl_partial_write_hit_merge/run_hw_cbmc.sh
 
 - 不实例化完整 native dual top 和 DDR AXI bridge。
 - partial write miss refill/merge 由 `formal/cache_ctrl_partial_write_miss_refill` 覆盖。
+
+### `formal/cache_ctrl_table_oracle_write_then_read`
+
+状态：已通过，并已计入 `formal/run_passed_hw_cbmc.sh`。
+
+运行：
+
+```sh
+formal/cache_ctrl_table_oracle_write_then_read/run_hw_cbmc.sh
+```
+
+实际生产对象：
+
+- `rtl/src/llc_cache_ctrl.v`
+- 消费者：`rtl/src/axi_llc_subsystem_core.v`
+
+覆盖范围：
+
+- 直接实例化生产 cache-control FSM，formal top 在 data/meta/valid/repl 表边界提供
+  一个 tracked set 的 shadow row oracle。
+- 初始 tracked set 中 way0 为 clean valid hit；partial write hit 被接受后，proof
+  观测实际 data/meta/valid/repl 写表端口并更新 shadow row。
+- 后续同地址 read 必须从 shadow row 命中并返回 merge 后的 line，且不得误发 lower
+  memory request。
+- 该 proof 验证 table write intent 与后续 read-after-write 可观察结果的一致性，
+  不需要把整张 cache table 展开为 PI/PO。
+
+明确不覆盖：
+
+- 不证明 store primitive 自身的 latency、mask 和同 set read/write corner；这些应由
+  独立 store proof 或 VCS contract 负责。
+- 不实例化完整 native dual top 和 DDR AXI bridge。
+- 不替代 C++/RTL trace-based 功能 EC，只补强真实 RTL table 边界的形式 cutpoint。
 
 ### `formal/cache_ctrl_invalidate_line_hit`
 

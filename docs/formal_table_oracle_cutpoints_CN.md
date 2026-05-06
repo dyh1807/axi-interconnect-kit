@@ -175,10 +175,21 @@ Table-oracle proof 仍必须避免“按理解重写一份 spec”。
 - 对应 store primitive proof 或 VCS contract 已存在。
 - 至少一个 actual-top smoke 覆盖该 cutpoint 到生产 top 的连接。
 
+## 当前已落地原型
+
+- `formal/cache_ctrl_table_oracle_write_then_read` 已通过 targeted hw-cbmc，并已纳入
+  stable manifest。它直接实例化实际 `rtl/src/llc_cache_ctrl.v`，formal top 只在
+  data/meta/valid/repl 表边界维护一个 tracked set 的 shadow row，证明 partial write
+  hit 的写表意图会被后续同地址 read 观察到，且不误发 lower memory request。
+- 该 proof 不改变生产 RTL/C++，也不替代 store primitive latency/mask proof；它只是
+  table-oracle/state-IO cutpoint 的首个可复现样例。
+- targeted log：
+  `local_debug/hw_cbmc_cache_ctrl_table_oracle_write_then_read_20260506_233439.log`。
+
 ## 当前建议顺序
 
-1. 先补 `llc_cache_ctrl` 的 table-oracle README/小 proof 原型，优先选择 read-hit 或
-   partial-write-hit，因为它们不需要 lower memory 多阶段闭环。
+1. 基于 `cache_ctrl_table_oracle_write_then_read` 继续补 `llc_cache_ctrl` 的相邻
+   table-oracle proof，例如 read-hit 或 partial-write-miss refill+install 后再读。
 2. 再做 dirty-victim proof 的拆分：victim detect、writeback issue、writeback response、
    install/post-B hit 分开证明。
 3. 对 compat 另开 state-IO plan，不把 queue proof 和 table proof 混在一起。

@@ -122,7 +122,11 @@ data/meta/valid/repl 表作为 PI/PO 展开，而应采用 table-oracle / state-
 - store primitive 的 latency/mask 行为仍由独立 proof 或 VCS contract 负责。
 
 具体规划见 [formal_table_oracle_cutpoints_CN.md](formal_table_oracle_cutpoints_CN.md)。
-该方向是后续结构化补强，不是重新打开 directed case 笛卡尔积。
+2026-05-06 已落地首个原型 `formal/cache_ctrl_table_oracle_write_then_read`：直接实例化
+实际 `llc_cache_ctrl.v`，在 table 边界用 tracked set shadow row 证明 partial write
+hit 后同地址 read 返回 merge 后数据，targeted log 为
+`local_debug/hw_cbmc_cache_ctrl_table_oracle_write_then_read_20260506_233439.log`。该方向是
+后续结构化补强，不是重新打开 directed case 笛卡尔积。
 
 ## Linux / Performance Gate
 
