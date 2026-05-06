@@ -383,8 +383,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   最新 targeted VCS 目录：`rtl/local_debug/vcs_llc_cache_cpp_trace_dvpw_20260504_081121`。
   该项是 trace-based 功能 EC，meta/valid/repl 只做 C++ 抽象表项到 RTL row encoding
   的接口适配。
-- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 79 项；
-  `formal/*/run_hw_cbmc.sh` 当前共有 81 个入口，其中 2 个实验/未收敛入口暂未纳入
+- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 78 项；
+  `formal/*/run_hw_cbmc.sh` 当前共有 80 个入口，其中 2 个实验/未收敛入口暂未纳入
   稳定 manifest。原 68/68 已有 split-run 通过证据。前 20 项见
   `local_debug/run_passed_hw_cbmc_after_ddr_write_mmio_read_20260504_202454.log`；
   该 log 在 `dual_bridge_prod_width_ddr_read_mmio_write_independent` 处因默认 240s
@@ -962,15 +962,17 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `axi_llc_subsystem_core.v` 并通过；已有 `cache_ctrl` 与 `subsystem_dual`
   dirty-evict proof 分担 dirty victim 主链路覆盖；后续若继续推进 core-alone formal，
   应拆成两路 dirty fill、dirty writeback issue、dirty writeback response 等小入口。
-- [ ] 更完整 `axi_llc_axi_bridge.v` 组合场景仍可继续扩展：生产宽度 64B cacheline
+- [tracked] 更完整 `axi_llc_axi_bridge.v` 组合场景已按 freeze policy 收敛为可选增强：
+  生产宽度 64B cacheline
   read/write 的 `AR/AW`、两拍 `W` payload、两拍 `R` payload/response 已分别由
   `bridge_prod_width_cacheline_*` 覆盖；4B read/write route、unsupported MMIO 大
   read/write 阻断、`R/B` response 基础回收、
   同构 2-beat DDR cacheline read/write、same-line hazard、mode2 aligned data
   packing/slicing、不同 line read-read outstanding、不同 line read/write 混合 outstanding
-  已由 `dual_bridge_*` smoke 覆盖。后续如要继续加强，应优先补 production-width
-  dual-bridge DDR/MMIO 组合流，而不是再验证单个 pack helper。
-- [ ] `axi_llc_subsystem_dual.v` 顶层 formal 已开始覆盖 MMIO read/write direct route、
+  已由 `dual_bridge_*` smoke 覆盖。后续如要继续加强，只在真实 bug、production helper
+  重构或明确的新不变量出现时补 production-width dual-bridge DDR/MMIO 组合流，不再作为
+  短期 open directed 项。
+- [tracked] `axi_llc_subsystem_dual.v` 顶层 formal 已开始覆盖 MMIO read/write direct route、
   top 接受面对 unsupported MMIO 大 read/write 的阻断、
   MMIO read/write response 回收、DDR-read/MMIO-write 独立发射和 DDR cache-refill/MMIO-read
   独立发射、DDR cache-refill/MMIO-write 独立发射、cache-refill response 回收和
@@ -980,12 +982,14 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   read miss/refill response、partial write miss/refill merge 与 partial write hit merge 已先在生产
   `llc_cache_ctrl.v` 边界覆盖。`formal/subsystem_core_dirty_evict_writeback` 已作为
   core-level 实验入口落地，但当前未通过，失败集中在 core-alone startup/reconfig idle
-  收敛约束；生产宽度 cacheable 场景仍需继续拆分补齐。
-- [ ] C++ reference 与 RTL 的 hw-cbmc EC 仍未完成端到端接线：当前稳定集覆盖生产
+  收敛约束；monolithic top formal 不作为短期 gate，后续归入底部“长期探索：
+  C++ reference 与 RTL 端到端形式 EC”。
+- [long-term] C++ reference 与 RTL 的 hw-cbmc EC 仍未完成端到端接线：当前稳定集覆盖生产
   C helper/RTL helper 等价和实际 RTL bounded smoke，但还没有把实际 C++ LLC/AXI
   reference 与实际 RTL top 放入同一个形式化 harness。后续应先选小 top（route/beat
   shape/read-pack/write-pack 或桥接子集），再逐步接到 `axi_llc_subsystem_dual.v`。
-- [ ] Linux/image 级长期性能与 difftest 回归仍需作为功能验证补项：当前不是本 checklist
+  该项由底部长期探索 gate 统一计数，不在中间段落重复作为 open checkbox。
+- [long-term] Linux/image 级长期性能与 difftest 回归仍需作为功能验证补项：当前不是本 checklist
   的每轮必跑项，需在较大功能合并或关键语义改动后单独补跑。
 
 ## 剩余验证拆分
@@ -1209,7 +1213,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `WDATA/WSTRB/WLAST` 按 byte offset pack。READ1/READ2 使用高字节非零的
   C++ DDR beat seed，避免只比较到 0 数据。最新 targeted VCS 目录：
   `rtl/local_debug/vcs_dual_cpp_trace_size_corners_nonzero_20260504_224613`。
-- [ ] 实际 C++ `AXI_Interconnect` trace-based EC 的剩余功能场景：MODE_CACHE
+- [x] 实际 C++ `AXI_Interconnect` trace-based EC 的剩余功能场景已按短期 freeze policy
+  收敛：MODE_CACHE
   dirty victim writeback 与 MMIO write direct-bypass 已补齐并通过 actual C++ trace
   + actual RTL subsystem contract；MODE_MAPPED local-window write/read 第一组已补；
   MODE_MAPPED 窗口外 MMIO 上/下边界 read/write 双向边界已补，mapped-window
@@ -1353,7 +1358,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   全量 RTL contract 目录：
   `rtl/local_debug/vcs_all_contracts_invline_multimaster_recovery_20260506_185136_eda-10`；
   后续不再开放式手写新增 case，改按 `docs/dual_axi_ec_closure_plan_CN.md`
-  的固定矩阵、随机 seed suite 和形式化不变量 gate 收敛。
+  的固定矩阵、随机 seed suite 和形式化不变量 gate 收敛；因此该项不再作为短期
+  open directed 缺口。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
   已补 DDR/MMIO read/write 同时在途、MMIO `R/B` 先返回、上游 response stall 下外部
   `RREADY/BREADY` 不被回压，并按实际 C++ trace 检查原 upstream ID/data/code 回收。
@@ -1408,14 +1414,15 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   bypass-write hazard。log 位于 `/tmp/axi_interconnect_llc_axi4_test_20260506_164634.log`。
   该项证明当前实际 C++ golden reference 自身语义自洽，但不替代下一项 C++/RTL 同
   harness EC。
-- [ ] 实际 C++ request/response 状态机 vs RTL bridge/subsystem 的 hw-cbmc 同 harness
+- [long-term] 实际 C++ request/response 状态机 vs RTL bridge/subsystem 的 hw-cbmc 同 harness
   bounded EC：当前已有 trace-based 功能 EC，但还没有把实际 C++ 对象和实际 RTL top
   放进同一个 hw-cbmc harness；后续需要解决 C++ 标准库/frontend 接入或建立可复用的
   production-thin C wrapper，避免验证对象与实际使用对象分叉。本轮已补两条
   production-thin C wrapper 切片：`dual_bridge_prod_helper_read_issue_shape`
   和 `dual_bridge_prod_helper_write_issue_shape` 使用实际生产 C helper 与实际
   dual bridge，分别证明 bypass read/write issue shape 一致；
-  但这还不是完整 C++ class / RTL top 端到端 EC，因此本项保持 open。
+  但这还不是完整 C++ class / RTL top 端到端 EC；本项由底部长期探索 gate 统一计数，
+  不在中间段落重复作为 open checkbox。
 - [x] 实际 C++ LLC cache 行为 vs RTL cache-control 的 trace-based bounded
   functional EC 第一组：`axi_llc_cache_trace_vectors` +
   `tb_llc_cache_ctrl_cpp_trace_contract` 已覆盖 partial write hit merge、read miss
@@ -1425,9 +1432,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   暴露并修复了 RTL invalidate lookup 时 valid/repl 表 set 选择未跟随 invalidate 地址的问题；
   dirty-partial 路径也澄清了实际语义不是“先写回 victim 再 refill”，而是 refill 先返回，
   install/response 时 dirty victim snapshot 已外部化并继续写回。
-- [ ] 实际 C++ LLC cache 行为 vs RTL subsystem/core 的剩余 bounded EC：继续按
+- [tracked] 实际 C++ LLC cache 行为 vs RTL subsystem/core 的剩余 bounded EC：继续按
   bypass/direct-mapped、更完整 maintenance/drain 与 subsystem/core 边界拆分；优先扩展到
-  `llc_cache_ctrl.v`，再逐步上移到 subsystem/core，避免一次性证明大 top。
+  `llc_cache_ctrl.v`，再逐步上移到 subsystem/core，避免一次性证明大 top。短期
+  trace/category gate 已由 closure plan 冻结，后续只在发现真实 bug、production helper
+  重构或新的不变量需求时继续拆分。
 - [x] production-width dual bridge response mux 竞争与外部 ready 不回压 smoke：
   `tb_axi_llc_axi_bridge_dual_contract` 已覆盖 DDR/MMIO `R` 同拍返回且上游
   `cache_resp_ready=0` 时，外部 DDR/MMIO `RREADY` 仍拉高并先缓存 response；也覆盖
@@ -1557,7 +1566,7 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   2026-05-06 起后续 EC 按 `docs/dual_axi_ec_closure_plan_CN.md` 收敛，不再无限追加
   手写 case；本轮已建立初始固定 32 seed maintenance/recovery suite，剩余短期缺口明确
   为实际模块形式化不变量 gate，以及必要时再扩展更宽随机 seed 维度。
-- [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
+- [tracked] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
   DC/VCS 统一读入、关键新增 helper 保持寄存器边界清晰；最终仍需要使用 SMIC12
@@ -1944,7 +1953,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   write response 都 retire 后才 accepted；本轮继续补齐 cacheable write miss/refill +
   pending MMIO read/write + `invalidate_all` 组合，要求同样不回压 MMIO `RREADY/BREADY`
   或 DDR refill `RREADY`，且三类 response 都 retire 后仍因 dirty resident line 保持
-  blocked。
+  blocked。该详细项由底部“工程签核：RTL 可综合性与 1GHz pre-DC/full DC timing gate”
+  统一计数，不在中间段落重复作为 open checkbox。
 - [ ] 长期探索：C++ reference 与 RTL 端到端形式 EC；当前已有 production-helper read issue
   shape 切片，但完整 C++ class / RTL top 同 harness 仍未完成。
 - [ ] 工程签核：RTL 可综合性与 1GHz pre-DC/full DC timing gate。
