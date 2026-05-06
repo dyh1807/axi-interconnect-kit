@@ -1926,7 +1926,9 @@ void AXI_Interconnect::comb_read_arbiter() {
           !req_supported) {
         continue;
       }
-      if (request_uses_mmio_port(req_addr, req_total_size) && req_supported &&
+      const bool direct_mmio_read =
+          request_uses_mmio_port(req_addr, req_total_size) && req_supported;
+      if (direct_mmio_read &&
           can_issue_external_read(req_addr) &&
           !port_busy[port_index(DownstreamPort::MMIO)] &&
           can_accept_read_master_comb(static_cast<uint8_t>(master))) {
@@ -1976,6 +1978,9 @@ void AXI_Interconnect::comb_read_arbiter() {
         if (port_busy[0] && port_busy[1]) {
           break;
         }
+        continue;
+      }
+      if (direct_mmio_read) {
         continue;
       }
       const bool allow_same_cycle_accept = (master == MASTER_DCACHE_R);
