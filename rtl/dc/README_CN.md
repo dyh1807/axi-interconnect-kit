@@ -44,6 +44,18 @@
 充足，优先用于下一轮长 DC；`eda-05` 可用但负载很高且已有旧 DC 任务；
 `eda-08` 当前 license vendor daemon 不可用，不应作为 DC 首选。
 
+当前拆分 link sanity 证据：
+
+- `axi_llc_axi_bridge_dual` 已通过 link sanity，日志
+  `rtl/dc/runs/link_sanity_bridge_dual_current_20260504_222137.log`，CPU 约 `0.23h`。
+- `axi_llc_subsystem_core` 已通过 link sanity，日志
+  `rtl/dc/runs/link_sanity_core_current_20260505_230513.log`，CPU 约 `1.01h`。
+- full top / strict-template probe 的未完成点均落在 building
+  `axi_llc_subsystem_compat` 阶段；2026-05-06 live full DC 也仍停在该阶段但进程高 CPU
+  活跃。因此若后续 full DC 被确认失败或无法接受地长时间无进展，下一步优先做
+  `AXI_LLC_DC_TOP=axi_llc_subsystem_compat` 的限时 link sanity/compile 诊断，而不是
+  直接重复 full top。
+
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
 dc_shell -x 'echo DC_SMOKE_OK; quit'
