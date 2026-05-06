@@ -118,11 +118,18 @@
   `rtl/dc/runs/full_compile_1g_9t20_622b6e4_20260506_104636_eda07`。该 run 基于旧
   `622b6e4`，console log 最后更新时间停在 10:47 CST，只到 `elaborate_start` /
   building `axi_llc_subsystem_compat`，已跑近 11 小时且不能代表当前 RTL。
-  同时在 `eda-07` 重新启动当前 `c98464a` clean full DC，run root 为
+  随后在 `eda-07` 重新启动当前 `c98464a` clean full DC，run root 为
   `rtl/dc/runs/full_compile_1g_strict_template_9t20_c98464a_20260506_2147_eda07`，
   launcher PID `2692139`，DC PID `2692359`。早期日志已完成 9T20 RVT/LVT、
   data/meta SRAM `.db` 加载和 42 个 RTL analyze，进入 `elaborate_start` /
-  building `axi_llc_subsystem_compat`；当前尚无 compile/QoR/timing/netlist 结果。
+  building `axi_llc_subsystem_compat`；该 run 已在 21:51 CST 停止，因为 `eda-07`
+  可用内存快速降到约 17GiB 且 swap 已满，主要由其它用户 simulator 进程占用。
+  停止前尚无 compile/QoR/timing/netlist 结果。
+- 2026-05-06 21:53 CST 在 `eda-09` 启动当前 `5274f9d` clean full DC，run root 为
+  `rtl/dc/runs/full_compile_1g_strict_template_9t20_5274f9d_20260506_2154_eda09`，
+  launcher PID `3230090`，DC PID `3230092`。启动时 `eda-09` 约有 `588GiB`
+  available memory，无正在运行的我方 DC；早期日志已完成 data/meta SRAM `.db`
+  读取并进入 RTL analyze，当前尚无 compile/QoR/timing/netlist 结果。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
