@@ -5810,6 +5810,241 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_invalidate_line_multi_read_and_check;
+        integer timeout;
+        reg accepted_seen;
+        reg [AXI_ID_BITS-1:0] first_arid;
+        reg [AXI_ID_BITS-1:0] second_arid;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            ddr_axi_arready = 1'b0;
+            invalidate_line_valid = 1'b0;
+            invalidate_line_addr = CPP_MODE1_INVLINE_MULTI_READ_INVALIDATE_ADDR;
+
+            read_req_addr[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_INVLINE_MULTI_READ_FIRST_REQ_ADDR;
+            read_req_total_size[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * 8) +: 8] =
+                CPP_MODE1_INVLINE_MULTI_READ_FIRST_REQ_SIZE;
+            read_req_id[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_INVLINE_MULTI_READ_FIRST_REQ_ID;
+            read_req_bypass[CPP_MODE1_INVLINE_MULTI_READ_MASTER] = 1'b0;
+            read_req_valid[CPP_MODE1_INVLINE_MULTI_READ_MASTER] = 1'b1;
+            timeout = 240;
+            accepted_seen = 1'b0;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[CPP_MODE1_INVLINE_MULTI_READ_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0 || !accepted_seen) begin
+                fail_now("C++ trace invline multi-read first AR timeout");
+            end
+            #1;
+            if (ddr_axi_araddr != CPP_MODE1_INVLINE_MULTI_READ_FIRST_ARADDR ||
+                ddr_axi_arlen != CPP_MODE1_INVLINE_MULTI_READ_FIRST_ARLEN ||
+                ddr_axi_arsize != CPP_MODE1_INVLINE_MULTI_READ_FIRST_ARSIZE ||
+                ddr_axi_arburst != CPP_MODE1_INVLINE_MULTI_READ_FIRST_ARBURST ||
+                ddr_axi_arid != CPP_MODE1_INVLINE_MULTI_READ_FIRST_ARID ||
+                mmio_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid) begin
+                fail_now("C++ trace invline multi-read first AR mismatch");
+            end
+            first_arid = ddr_axi_arid;
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+            read_req_valid[CPP_MODE1_INVLINE_MULTI_READ_MASTER] = 1'b0;
+
+            read_req_addr[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_INVLINE_MULTI_READ_SECOND_REQ_ADDR;
+            read_req_total_size[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * 8) +: 8] =
+                CPP_MODE1_INVLINE_MULTI_READ_SECOND_REQ_SIZE;
+            read_req_id[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_INVLINE_MULTI_READ_SECOND_REQ_ID;
+            read_req_bypass[CPP_MODE1_INVLINE_MULTI_READ_MASTER] = 1'b0;
+            read_req_valid[CPP_MODE1_INVLINE_MULTI_READ_MASTER] = 1'b1;
+            timeout = 240;
+            accepted_seen = 1'b0;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[CPP_MODE1_INVLINE_MULTI_READ_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0 || !accepted_seen) begin
+                fail_now("C++ trace invline multi-read second AR timeout");
+            end
+            #1;
+            if (ddr_axi_araddr != CPP_MODE1_INVLINE_MULTI_READ_SECOND_ARADDR ||
+                ddr_axi_arlen != CPP_MODE1_INVLINE_MULTI_READ_SECOND_ARLEN ||
+                ddr_axi_arsize != CPP_MODE1_INVLINE_MULTI_READ_SECOND_ARSIZE ||
+                ddr_axi_arburst != CPP_MODE1_INVLINE_MULTI_READ_SECOND_ARBURST ||
+                ddr_axi_arid != CPP_MODE1_INVLINE_MULTI_READ_SECOND_ARID ||
+                mmio_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid) begin
+                fail_now("C++ trace invline multi-read second AR mismatch");
+            end
+            second_arid = ddr_axi_arid;
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+            read_req_valid[CPP_MODE1_INVLINE_MULTI_READ_MASTER] = 1'b0;
+
+            invalidate_line_valid = 1'b1;
+            ddr_axi_rid = first_arid;
+            ddr_axi_rdata = CPP_MODE1_INVLINE_MULTI_READ_FIRST_RBEAT0;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b0;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVLINE_MULTI_READ_FIRST_RREADY_PENDING ||
+                invalidate_line_accepted) begin
+                fail_now("C++ trace invline multi-read first R beat0 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+
+            ddr_axi_rid = first_arid;
+            ddr_axi_rdata = CPP_MODE1_INVLINE_MULTI_READ_FIRST_RBEAT1;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVLINE_MULTI_READ_FIRST_RREADY_PENDING ||
+                invalidate_line_accepted) begin
+                fail_now("C++ trace invline multi-read first R beat1 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 260;
+            while (!read_resp_valid[CPP_MODE1_INVLINE_MULTI_READ_MASTER] &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (invalidate_line_accepted) begin
+                    fail_now("C++ trace invline multi-read accepted before first response");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace invline multi-read first response timeout");
+            end
+            #1;
+            if (read_resp_id[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVLINE_MULTI_READ_FIRST_RESP_ID ||
+                read_resp_data[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    CPP_MODE1_INVLINE_MULTI_READ_FIRST_RESP_DATA ||
+                (!invalidate_line_accepted) !== CPP_MODE1_INVLINE_MULTI_READ_BLOCKED_FIRST_HELD) begin
+                fail_now("C++ trace invline multi-read first response mismatch");
+            end
+
+            ddr_axi_rid = second_arid;
+            ddr_axi_rdata = CPP_MODE1_INVLINE_MULTI_READ_SECOND_RBEAT0;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b0;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVLINE_MULTI_READ_SECOND_RREADY_FIRST_HELD ||
+                invalidate_line_accepted) begin
+                fail_now("C++ trace invline multi-read second R beat0 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+
+            ddr_axi_rid = second_arid;
+            ddr_axi_rdata = CPP_MODE1_INVLINE_MULTI_READ_SECOND_RBEAT1;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVLINE_MULTI_READ_SECOND_RREADY_FIRST_HELD ||
+                invalidate_line_accepted) begin
+                fail_now("C++ trace invline multi-read second R beat1 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            read_resp_ready[CPP_MODE1_INVLINE_MULTI_READ_MASTER] = 1'b1;
+            #1;
+            if (read_resp_id[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVLINE_MULTI_READ_FIRST_RESP_ID ||
+                read_resp_data[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    CPP_MODE1_INVLINE_MULTI_READ_FIRST_RESP_DATA ||
+                invalidate_line_accepted) begin
+                fail_now("C++ trace invline multi-read first retire mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            read_resp_ready[CPP_MODE1_INVLINE_MULTI_READ_MASTER] = 1'b0;
+
+            timeout = 260;
+            while (!read_resp_valid[CPP_MODE1_INVLINE_MULTI_READ_MASTER] &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (invalidate_line_accepted) begin
+                    fail_now("C++ trace invline multi-read accepted before second response");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace invline multi-read second response timeout");
+            end
+            #1;
+            if (read_resp_id[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVLINE_MULTI_READ_SECOND_RESP_ID ||
+                read_resp_data[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    CPP_MODE1_INVLINE_MULTI_READ_SECOND_RESP_DATA ||
+                (!invalidate_line_accepted) !== CPP_MODE1_INVLINE_MULTI_READ_BLOCKED_SECOND_HELD) begin
+                fail_now("C++ trace invline multi-read second response mismatch");
+            end
+
+            read_resp_ready[CPP_MODE1_INVLINE_MULTI_READ_MASTER] = 1'b1;
+            #1;
+            if (read_resp_id[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVLINE_MULTI_READ_SECOND_RESP_ID ||
+                read_resp_data[(CPP_MODE1_INVLINE_MULTI_READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    CPP_MODE1_INVLINE_MULTI_READ_SECOND_RESP_DATA ||
+                invalidate_line_accepted) begin
+                fail_now("C++ trace invline multi-read second retire mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            read_resp_ready[CPP_MODE1_INVLINE_MULTI_READ_MASTER] = 1'b0;
+
+            timeout = 10000;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                #1;
+                if (invalidate_line_accepted) begin
+                    accepted_seen = 1'b1;
+                end
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (accepted_seen !== CPP_MODE1_INVLINE_MULTI_READ_ACCEPTED_AFTER_RETIRE) begin
+                fail_now("C++ trace invline multi-read final accept mismatch");
+            end
+            @(negedge clk);
+            invalidate_line_valid = 1'b0;
+        end
+    endtask
+
     task issue_mode1_invalidate_line_cache_mmio_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -9676,6 +9911,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         issue_mode1_invalidate_all_recovery_cache_read_and_check();
         issue_mode1_invalidate_all_recovery_cache_write_and_check();
         issue_mode1_invalidate_all_multi_read_and_check();
+        issue_mode1_invalidate_line_multi_read_and_check();
         issue_mode1_invalidate_line_cache_mmio_read_and_check();
         issue_mode1_same_line_read_pending_write_and_check();
         issue_mode1_same_line_mmio_read_pending_write_and_check();

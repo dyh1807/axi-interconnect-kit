@@ -4,7 +4,11 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=202 / open=2。本轮新增 MODE_CACHE two-outstanding cache read +
+当前计数：done=203 / open=2。本轮新增 MODE_CACHE two-outstanding cache read +
+target-line `invalidate_line` drain 检查：同一 DCache read master 连续发两笔 cache miss，
+第二笔使用独立 DDR `ARID`；`invalidate_line` pending 时两笔 DDR `RREADY` 都不能被
+held response 回压，两个 upstream response 都 retire 后才允许 target-line maintenance
+accepted。本轮此前新增 MODE_CACHE two-outstanding cache read +
 `invalidate_all` drain 检查：同一 DCache read master 连续发两笔 cache miss，第二笔
 使用独立 DDR `ARID`；`invalidate_all` pending 时两笔 DDR `RREADY` 都不能被 held
 response 回压，两个 upstream response 都 retire 后才允许 maintenance accepted。
@@ -364,8 +368,14 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `rtl/local_debug/vcs_all_contracts_inval_all_multi_read_20260506_154625_eda-10`。
+  `rtl/local_debug/vcs_all_contracts_invline_multi_read_20260506_155608_eda-10`。
   本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE
+  two-outstanding cache read + target-line `invalidate_line` drain trace：同一 DCache
+  read master 连续发两笔 cache miss，第二笔使用独立 DDR `ARID`；first response held
+  时第二笔 DDR `R` 仍必须 ready，两个 response 都 retire 后才允许 target-line
+  maintenance accepted。targeted 目录为
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_multi_read_20260506_155554_eda-10`。
+  此前本项新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE
   two-outstanding cache read + `invalidate_all` drain trace：同一 DCache read master
   连续发两笔 cache miss，第二笔使用独立 DDR `ARID`；first response held 时第二笔
   DDR `R` 仍必须 ready，两个 response 都 retire 后才允许 `invalidate_all` accepted。
@@ -1124,6 +1134,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_inval_all_multi_read_20260506_154612_eda-10`，
   全量 RTL contract 目录：
   `rtl/local_debug/vcs_all_contracts_inval_all_multi_read_20260506_154625_eda-10`；
+  本轮继续补齐 two-outstanding cache read + target-line `invalidate_line` drain：
+  同一 DCache read master 连续发两笔 miss，第二笔分配独立 DDR `ARID=1`；
+  first response held 时 second DDR `RREADY` 仍为 1，两个 response 均 retire 后目标
+  line maintenance 才 accepted。最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_multi_read_20260506_155554_eda-10`，
+  全量 RTL contract 目录：
+  `rtl/local_debug/vcs_all_contracts_invline_multi_read_20260506_155608_eda-10`；
   后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
   maintenance/recovery 组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
@@ -1270,6 +1287,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_inval_all_multi_read_20260506_154612_eda-10`，
   latest 全量 RTL contract 53/53 目录为
   `rtl/local_debug/vcs_all_contracts_inval_all_multi_read_20260506_154625_eda-10`。
+  继续新增 two-outstanding cache read + target-line `invalidate_line` drain trace 后，
+  C++ regression 24/24 通过；latest targeted VCS 为
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_multi_read_20260506_155554_eda-10`，
+  latest 全量 RTL contract 53/53 目录为
+  `rtl/local_debug/vcs_all_contracts_invline_multi_read_20260506_155608_eda-10`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
@@ -1495,7 +1517,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   重新跑 300k/5M 并报告 cycles/IPC delta。
   后续继续新增 two-outstanding cache read maintenance trace 仍只改测试向量、
   RTL TB 和文档，不改变 production simulator/RTL 路径；下一次生产路径改动后仍必须
-  重新跑 300k/5M 并报告 cycles/IPC delta。
+  重新跑 300k/5M 并报告 cycles/IPC delta。本轮新增 target-line `invalidate_line`
+  two-outstanding cache read drain trace 同样只修改 trace generator、generated TB
+  include、RTL contract TB 和文档，不改变 production simulator/RTL 路径，因此仍沿用
+  上述 cycle delta=0、IPC delta=0 结论；如果下一轮修改 production C++/RTL，则 Linux
+  5M 结论必须同时报告 error/difftest、cycles、IPC、相对 baseline delta 和是否可接受。
 
 ## Multi-Agent 并行推进边界
 
