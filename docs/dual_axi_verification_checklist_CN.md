@@ -4,7 +4,12 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=185 / open=6。本轮新增 MODE_OFF 同一 upstream write master 两笔
+当前计数：done=186 / open=5。本轮新增 MODE_CACHE cacheable read miss/refill +
+MMIO read + MMIO write 同时在途时拉起 `invalidate_all` 的 actual C++ trace 到实际
+RTL subsystem 一致性检查，要求 MMIO `RREADY/BREADY` 与 DDR `RREADY` 不被
+maintenance/held upstream response 回压，且只有 MMIO read/write response 与 cache
+response 均 retire 后才允许 maintenance accepted。本轮此前新增 MODE_OFF 同一
+upstream write master 两笔
 DDR direct write 的多 ID / out-of-order `B` response actual C++ trace 到实际 RTL
 subsystem 一致性检查，并将 C++ direct write response 路径改为按 master queue
 buffer 外部 `B` response，避免上游 write response 被 hold 时无谓反压外部 `BREADY`；
@@ -89,7 +94,7 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 
 - [x] C++ regression：`ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`
   当前通过 24/24；最近一次复跑目录：
-  `local_debug/ctest_after_same_master_write_queue_20260506_020413.log`。
+  `local_debug/ctest_inval_cache_mmio_rw_20260506_122940.log`。
 - [x] 2026-05-06 same-master write response queue 复核：targeted VCS
   `tb_axi_llc_subsystem_dual_cpp_trace_contract` 通过，目录
   `rtl/local_debug/vcs_dual_cpp_trace_same_master_write_20260506_020403_eda07`；
@@ -902,6 +907,18 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   targeted VCS 目录：
   `rtl/local_debug/vcs_dual_cpp_trace_invalidate_all_cache_mmio_20260505_211212`。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE `invalidate_all`
+  cache-refill + MMIO read/write drain 组合：已补 cacheable read miss/refill、
+  另一 read master 的 MMIO 4B read、另一 write master 的 MMIO 4B write 同时在途后
+  拉起 `invalidate_all` 的场景；actual C++ 与实际 RTL subsystem 均要求外部
+  MMIO `RREADY/BREADY` 和 DDR refill `RREADY` 不因 maintenance pending 或 held
+  upstream response 被回压，且 MMIO read response、MMIO write response、cache
+  read response 均 retire 之前 `invalidate_all_accepted=0`，三者均 retire 后才允许
+  maintenance accepted。该 trace 刻意让 MMIO read/write 落在不同 64B hazard
+  granule；同 granule AR/AW hazard 已由独立 same-line 测试覆盖。最新 targeted
+  VCS 目录：`rtl/local_debug/vcs_cpp_trace_inval_cache_mmio_rw_20260506_122639`；
+  全量 RTL contract 复跑目录：
+  `rtl/local_debug/vcs_all_contracts_20260506_122656_inval_cache_mmio_rw`。
+- [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE `invalidate_all`
   pre-handshake external MMIO drain 第一组：已补外部 MMIO read `ARVALID` 已拉起
   但 `ARREADY=0`、外部 MMIO write `AWVALID/WVALID` 已拉起但 `AWREADY/WREADY=0`
   时拉起 `invalidate_all` 的场景；actual C++ 与实际 RTL subsystem 均要求
@@ -938,9 +955,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   起点与末端 line 写后读边界；本轮继续补齐 pending direct MMIO write drain
   与 external MMIO `AR/AW/W` pre-handshake drain；本轮继续补齐 cache write
   miss/refill + pending MMIO write + `invalidate_all` pending 下的 dirty-line blocked
-  组合；
-  后续主要剩更长随机 trace，以及 multi-master/multi-outstanding
-  maintenance/recovery 并发组合。
+  组合；本轮继续补齐 cacheable read miss/refill + MMIO read/write 同时在途时的
+  `invalidate_all` drain/recovery 组合；
+  后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
+  maintenance/recovery 组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
   已补 DDR/MMIO read/write 同时在途、MMIO `R/B` 先返回、上游 response stall 下外部
   `RREADY/BREADY` 不被回压，并按实际 C++ trace 检查原 upstream ID/data/code 回收。
@@ -1047,7 +1065,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   24/24 通过；targeted VCS
   `rtl/local_debug/vcs_cpp_trace_inval_cache_mmio_write_20260506_121103` 通过；全量
   RTL contract 53/53 通过，out_dir 为
-  `rtl/local_debug/vcs_all_contracts_20260506_121125_inval_cache_mmio_write`。
+  `rtl/local_debug/vcs_all_contracts_20260506_121125_inval_cache_mmio_write`。随后新增
+  cache read miss/refill + pending MMIO read + pending MMIO write + `invalidate_all`
+  drain/recovery 组合 trace 后，C++ regression 24/24 通过，log 为
+  `local_debug/ctest_inval_cache_mmio_rw_20260506_122940.log`；targeted VCS
+  `rtl/local_debug/vcs_cpp_trace_inval_cache_mmio_rw_20260506_122639` 通过；全量
+  RTL contract 53/53 通过，out_dir 为
+  `rtl/local_debug/vcs_all_contracts_20260506_122656_inval_cache_mmio_rw`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被

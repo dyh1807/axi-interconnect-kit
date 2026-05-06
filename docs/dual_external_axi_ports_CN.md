@@ -573,6 +573,12 @@ difftest reference 和 oracle 灌入上述参数；否则 Linux 可能在缺少 
 
 已通过的 simulator smoke tests：
 
+Linux boot smoke 不能只按退出码、`Difftest: error` 或 `DEADLOCK` 判定通过；每轮
+5M commit gate 都应同时记录并比较 `sim-time(cycle)`、`ipc`、commit/load/store
+计数和关键 memory latency。对 deterministic boot quick gate，若本轮改动理论上不应
+影响性能，则 cycle/IPC 应尽量一致；任何 cycle 上升或 IPC 下降都需要给出百分比和
+原因，超过约 1% 或无法解释时按性能回归处理。
+
 - `make default BUILD_DIR=build_dual_axi_default_20260428 -j8`
 - `./build_dual_axi_default_20260428/simulator -c 1000 baremetal/sha-test.bin`
 - `make large BUILD_DIR=build_dual_axi_large_20260428 -j8`
