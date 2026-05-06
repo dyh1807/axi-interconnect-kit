@@ -779,6 +779,20 @@ struct InvalidateAllMultiMasterReadTrace {
   bool accepted_after_resp_retire = false;
 };
 
+struct InvalidateLineMultiMasterReadTrace {
+  ReadTrace first;
+  ReadTrace second;
+  std::string prefix;
+  uint8_t first_master = 0;
+  uint8_t second_master = 0;
+  uint32_t invalidate_addr = 0;
+  bool first_rready_while_invalidate_pending = false;
+  bool second_rready_while_first_resp_held = false;
+  bool blocked_while_first_resp_held = false;
+  bool blocked_while_second_resp_held = false;
+  bool accepted_after_resp_retire = false;
+};
+
 struct InvalidateLineMultiReadTrace {
   ReadTrace first;
   ReadTrace second;
@@ -4182,6 +4196,241 @@ run_mode1_invalidate_all_multi_master_read_trace() {
   }
   require(false,
           "C++ invall multi-master did not accept after responses retired");
+  return trace;
+}
+
+InvalidateLineMultiMasterReadTrace
+run_mode1_invalidate_line_multi_master_read_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  StatefulLlcTableDriver table_driver(dut.get_llc_config());
+
+  InvalidateLineMultiMasterReadTrace trace{};
+  trace.prefix = "CPP_MODE1_INVLINE_MULTI_MASTER_READ";
+  trace.first_master = axi_interconnect::MASTER_ICACHE;
+  trace.second_master = axi_interconnect::MASTER_DCACHE_R;
+  trace.first.prefix = "CPP_MODE1_INVLINE_MULTI_MASTER_READ_FIRST";
+  trace.first.req_addr = 0x40002204u;
+  trace.first.req_size = 3;
+  trace.first.req_id = 0xAu;
+  trace.first.beat_count = 2;
+  trace.second.prefix = "CPP_MODE1_INVLINE_MULTI_MASTER_READ_SECOND";
+  trace.second.req_addr = 0x40002244u;
+  trace.second.req_size = 3;
+  trace.second.req_id = 0xBu;
+  trace.second.beat_count = 2;
+  trace.invalidate_addr = trace.second.req_addr;
+
+  auto issue_read_ar_only = [&](ReadTrace &read_trace, uint8_t master,
+                                const char *label) {
+    bool accepted = false;
+    bool ar_seen = false;
+    bool request_active = true;
+    bool ready_seen = false;
+    for (int cycle = 0; cycle < 240 && !ar_seen; ++cycle) {
+      clear_inputs(dut);
+      set_downstream_ready(dut);
+      table_driver.drive(dut);
+      if (request_active) {
+        auto &req = dut.read_ports[master].req;
+        req.valid = true;
+        req.addr = read_trace.req_addr;
+        req.total_size = read_trace.req_size;
+        req.id = read_trace.req_id;
+        req.bypass = false;
+      }
+      dut.comb_outputs();
+      dut.comb_inputs();
+      table_driver.observe(dut);
+      if (request_active && dut.read_ports[master].req.ready) {
+        if (master == axi_interconnect::MASTER_DCACHE_R || ready_seen) {
+          accepted = true;
+          request_active = false;
+        } else {
+          ready_seen = true;
+        }
+      }
+      if (dut.axi_ddr_io.ar.arvalid) {
+        require(!dut.axi_mmio_io.ar.arvalid,
+                "C++ invline multi-master read DDR AR overlapped with MMIO AR");
+        read_trace.araddr =
+            static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr);
+        read_trace.arlen = static_cast<uint8_t>(dut.axi_ddr_io.ar.arlen);
+        read_trace.arsize = static_cast<uint8_t>(dut.axi_ddr_io.ar.arsize);
+        read_trace.arburst =
+            static_cast<uint8_t>(dut.axi_ddr_io.ar.arburst);
+        read_trace.arid = static_cast<uint8_t>(dut.axi_ddr_io.ar.arid);
+        ar_seen = true;
+      }
+      dut.seq();
+      ++sim_time;
+    }
+    require(accepted, label);
+    require(ar_seen, "C++ invline multi-master read did not issue DDR AR");
+    require(read_trace.beat_count ==
+                static_cast<uint32_t>(read_trace.arlen) + 1u,
+            "C++ invline multi-master read beat count mismatch");
+  };
+
+  issue_read_ar_only(trace.first, trace.first_master,
+                     "C++ invline multi-master first request not accepted");
+  issue_read_ar_only(trace.second, trace.second_master,
+                     "C++ invline multi-master second request not accepted");
+
+  trace.first_rready_while_invalidate_pending = true;
+  for (uint32_t beat = 0; beat < trace.first.beat_count; ++beat) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.axi_ddr_io.r.rvalid = true;
+    dut.axi_ddr_io.r.rid = trace.first.arid;
+    dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+    dut.axi_ddr_io.r.rlast = beat == trace.first.beat_count - 1u;
+    dut.axi_ddr_io.r.rdata = ddr_read_beat(0xd00d3400u + beat * 0x100u);
+    trace.first.rbeats[beat] = axi_words(dut.axi_ddr_io.r.rdata);
+    dut.comb_outputs();
+    trace.first_rready_while_invalidate_pending =
+        trace.first_rready_while_invalidate_pending &&
+        dut.axi_ddr_io.r.rready;
+    require(dut.axi_ddr_io.r.rready,
+            "C++ invline multi-master first DDR R was backpressured");
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_line_accepted(),
+            "C++ invline multi-master accepted during first R");
+    dut.seq();
+    ++sim_time;
+  }
+
+  bool first_resp_seen = false;
+  for (int cycle = 0; cycle < 240 && !first_resp_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.comb_outputs();
+    auto &resp = dut.read_ports[trace.first_master].resp;
+    if (resp.valid) {
+      first_resp_seen = true;
+      trace.first.resp_id = static_cast<uint8_t>(resp.id);
+      trace.first.resp_data = wide_read_words(resp.data);
+      trace.blocked_while_first_resp_held =
+          !dut.llc_invalidate_line_accepted();
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_line_accepted(),
+            "C++ invline multi-master accepted while first response pending");
+    dut.seq();
+    ++sim_time;
+  }
+  require(first_resp_seen,
+          "C++ invline multi-master first response timeout");
+
+  trace.second_rready_while_first_resp_held = true;
+  for (uint32_t beat = 0; beat < trace.second.beat_count; ++beat) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.axi_ddr_io.r.rvalid = true;
+    dut.axi_ddr_io.r.rid = trace.second.arid;
+    dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+    dut.axi_ddr_io.r.rlast = beat == trace.second.beat_count - 1u;
+    dut.axi_ddr_io.r.rdata = ddr_read_beat(0xd00d3600u + beat * 0x100u);
+    trace.second.rbeats[beat] = axi_words(dut.axi_ddr_io.r.rdata);
+    dut.comb_outputs();
+    require(dut.read_ports[trace.first_master].resp.valid,
+            "C++ invline multi-master first response dropped while held");
+    trace.second_rready_while_first_resp_held =
+        trace.second_rready_while_first_resp_held &&
+        dut.axi_ddr_io.r.rready;
+    require(dut.axi_ddr_io.r.rready,
+            "C++ invline multi-master second DDR R was backpressured");
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_line_accepted(),
+            "C++ invline multi-master accepted during second R");
+    dut.seq();
+    ++sim_time;
+  }
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.read_ports[trace.first_master].resp.ready = true;
+  dut.comb_outputs();
+  require(dut.read_ports[trace.first_master].resp.valid,
+          "C++ invline multi-master first response not valid at retire");
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline multi-master accepted before first response retire");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  dut.seq();
+  ++sim_time;
+
+  bool second_resp_seen = false;
+  for (int cycle = 0; cycle < 240 && !second_resp_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.comb_outputs();
+    auto &resp = dut.read_ports[trace.second_master].resp;
+    if (resp.valid) {
+      second_resp_seen = true;
+      trace.second.resp_id = static_cast<uint8_t>(resp.id);
+      trace.second.resp_data = wide_read_words(resp.data);
+      trace.blocked_while_second_resp_held =
+          !dut.llc_invalidate_line_accepted();
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_line_accepted(),
+            "C++ invline multi-master accepted while second response pending");
+    dut.seq();
+    ++sim_time;
+  }
+  require(second_resp_seen,
+          "C++ invline multi-master second response timeout");
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+  dut.read_ports[trace.second_master].resp.ready = true;
+  dut.comb_outputs();
+  require(dut.read_ports[trace.second_master].resp.valid,
+          "C++ invline multi-master second response not valid at retire");
+  require(!dut.llc_invalidate_line_accepted(),
+          "C++ invline multi-master accepted before second response retire");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  dut.seq();
+  ++sim_time;
+
+  for (int retry = 0; retry < 10000; ++retry) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    const bool accepted_now = dut.llc_invalidate_line_accepted();
+    dut.seq();
+    ++sim_time;
+    if (accepted_now) {
+      trace.accepted_after_resp_retire = true;
+      dut.set_llc_invalidate_line(false, 0);
+      return trace;
+    }
+  }
+  require(false,
+          "C++ invline multi-master did not accept after responses retired");
   return trace;
 }
 
@@ -10298,6 +10547,30 @@ void emit_invalidate_all_multi_master_read(
      << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
 }
 
+void emit_invalidate_line_multi_master_read(
+    std::ostream &os, const InvalidateLineMultiMasterReadTrace &trace) {
+  emit_read(os, trace.first);
+  emit_read(os, trace.second);
+  os << "localparam integer " << trace.prefix
+     << "_FIRST_MASTER = " << static_cast<unsigned>(trace.first_master)
+     << ";\n";
+  os << "localparam integer " << trace.prefix
+     << "_SECOND_MASTER = " << static_cast<unsigned>(trace.second_master)
+     << ";\n";
+  os << "localparam [31:0] " << trace.prefix
+     << "_INVALIDATE_ADDR = " << hex_u32(trace.invalidate_addr) << ";\n";
+  os << "localparam " << trace.prefix << "_FIRST_RREADY_PENDING = 1'b"
+     << (trace.first_rready_while_invalidate_pending ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_SECOND_RREADY_FIRST_HELD = 1'b"
+     << (trace.second_rready_while_first_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_BLOCKED_FIRST_HELD = 1'b"
+     << (trace.blocked_while_first_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_BLOCKED_SECOND_HELD = 1'b"
+     << (trace.blocked_while_second_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_ACCEPTED_AFTER_RETIRE = 1'b"
+     << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
+}
+
 void emit_invalidate_line_multi_read(
     std::ostream &os, const InvalidateLineMultiReadTrace &trace) {
   emit_read(os, trace.first);
@@ -10696,6 +10969,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_invalidate_all_multi_read_trace();
   const auto mode1_invalidate_all_multi_master_read =
       run_mode1_invalidate_all_multi_master_read_trace();
+  const auto mode1_invalidate_line_multi_master_read =
+      run_mode1_invalidate_line_multi_master_read_trace();
   const auto mode1_invalidate_line_multi_read =
       run_mode1_invalidate_line_multi_read_trace();
   const auto mode1_invalidate_line_cache_read_write =
@@ -10870,6 +11145,8 @@ void emit_vectors(std::ostream &os) {
   emit_invalidate_all_multi_read(os, mode1_invalidate_all_multi_read);
   emit_invalidate_all_multi_master_read(
       os, mode1_invalidate_all_multi_master_read);
+  emit_invalidate_line_multi_master_read(
+      os, mode1_invalidate_line_multi_master_read);
   emit_invalidate_line_multi_read(os, mode1_invalidate_line_multi_read);
   emit_invalidate_line_cache_read_write(
       os, mode1_invalidate_line_cache_read_write);
