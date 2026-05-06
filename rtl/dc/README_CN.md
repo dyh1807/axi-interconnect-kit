@@ -114,6 +114,15 @@
   `rtl/dc/runs/cache_ctrl_link_sanity_helper_slim_unsigned_wip_20260506_212515_eda10`，
   `LINK_SANITY_PASS`，`Memory usage for this session 6567 Mbytes`，CPU `0.14h`，
   且未再出现该文件新增的 signedness warning。
+- 2026-05-06 21:45 CST 停止 `eda-07` 上旧的
+  `rtl/dc/runs/full_compile_1g_9t20_622b6e4_20260506_104636_eda07`。该 run 基于旧
+  `622b6e4`，console log 最后更新时间停在 10:47 CST，只到 `elaborate_start` /
+  building `axi_llc_subsystem_compat`，已跑近 11 小时且不能代表当前 RTL。
+  同时在 `eda-07` 重新启动当前 `c98464a` clean full DC，run root 为
+  `rtl/dc/runs/full_compile_1g_strict_template_9t20_c98464a_20260506_2147_eda07`，
+  launcher PID `2692139`，DC PID `2692359`。早期日志已完成 9T20 RVT/LVT、
+  data/meta SRAM `.db` 加载和 42 个 RTL analyze，进入 `elaborate_start` /
+  building `axi_llc_subsystem_compat`；当前尚无 compile/QoR/timing/netlist 结果。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
