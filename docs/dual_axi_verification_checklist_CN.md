@@ -1046,7 +1046,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   改为 9TC20 RVT/LVT list，当前已经启动且使用旧默认库的 eda-10 长跑不能作为最终
   signoff 结论，只能作为调试参考。随后在 `eda-09` 做 DC library setup smoke，
   默认加载 9TC20 RVT/LVT、data SRAM 和 meta SRAM `.db` 并打印 `DC_LIB_SETUP_PASS`；
-  run root 为 `rtl/dc/runs/lib_setup_smoke_9t20_20260506_104253_eda09`。
+  run root 为 `rtl/dc/runs/lib_setup_smoke_9t20_20260506_104253_eda09`。同日已停止
+  旧 7p5t eda-10 长跑，并在 `eda-07` 启动新的 9T20 clean full 1GHz DC，PID
+  `2673318`，run root 为
+  `rtl/dc/runs/full_compile_1g_9t20_622b6e4_20260506_104636_eda07`；早期日志显示
+  已完成 analyze，进入 elaborate/build `axi_llc_subsystem_compat` 阶段。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
   `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
   后最新全量 RTL contract 53/53 目录为
