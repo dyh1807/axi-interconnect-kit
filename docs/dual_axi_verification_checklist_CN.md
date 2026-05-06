@@ -4,7 +4,12 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=209 / open=2。本轮继续新增 MODE_CACHE dirty victim writeback
+当前计数：done=210 / open=2。本轮继续收敛 C++ reference 的 `invalidate_line`
+compat-local drain 语义：`invalidate_line` 现在与 RTL/文档一致，必须等 compat-local
+queue / inflight / response slot 全排空后才向 LLC core 前推，同时保留 same-line
+write/read hazard 作为额外过滤；新增 unrelated target-line `invalidate_line` + cache
+read miss + MMIO read/write 三路并发 trace，确认不是只阻塞同一 cacheline，而是覆盖
+外层 compat drain。本轮继续新增 MODE_CACHE dirty victim writeback
 与 MMIO read/write 同时在途下的 `invalidate_all` drain/dirty-blocked 检查：
 full-line write miss 发出 DDR victim `AW/W`，MMIO read/write 分别发出 MMIO
 `AR/AW/W`；`invalidate_all` pending 时同周期返回的 MMIO `RREADY/BREADY` 和 held
@@ -400,7 +405,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `rtl/local_debug/vcs_all_contracts_invall_cache_rw_20260506_162215_eda-10`。
+  `rtl/local_debug/vcs_all_contracts_invline_quiescent_20260506_180234_eda-10`。
+  本轮修正 C++ `invalidate_line` compat-local drain 门控并新增 unrelated target-line
+  cache/MMIO read/write trace 后，targeted
+  `tb_axi_llc_subsystem_dual_cpp_trace_contract` 通过，目录为
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_other_cache_mmio_rw_20260506_180217_eda-10`。
   本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE cache read
   miss + cache write miss 混合并发下的 `invalidate_all` drain/dirty-blocked trace：
   read/write 各自发出不同 cache line 的 DDR refill `AR`，read response held 时
@@ -1542,6 +1551,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 	  该 trace 同时确认 write response retire 后 dirty resident line 继续阻塞 reconfig。
 	  随后复跑全量 RTL contract 53/53 通过，目录为
 	  `rtl/local_debug/vcs_all_contracts_reconfig_cache_write_20260506_144759_eda10`。
+  2026-05-06 修正 C++ `invalidate_line` compat-local drain 门控并新增 unrelated
+  target-line cache/MMIO read/write trace 后，targeted VCS 目录为
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_other_cache_mmio_rw_20260506_180217_eda-10`；
+  随后复跑全量 RTL contract 53/53 通过，目录为
+  `rtl/local_debug/vcs_all_contracts_invline_quiescent_20260506_180234_eda-10`。
 - [x] 受 `axi_llc_subsystem_compat.v` 影响的 actual dual-subsystem hw-cbmc 子集：
   compat signedness cleanup 后已复跑稳定 manifest 中 16 个 `subsystem_dual_*`
   proof，全部通过，覆盖 MMIO read/write route/response、DDR/MMIO independent、
@@ -1567,7 +1581,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 	  trace 后再次复跑同一 ctest 命令，24/24 通过；继续补入 pending cacheable read
 	  miss/refill 期间请求 MODE_MAPPED 的 trace 后再次复跑同一 ctest 命令，24/24 通过；
 	  继续补入 pending cacheable write miss/refill 期间请求 MODE_MAPPED 的 trace 后再次
-	  复跑同一 ctest 命令，24/24 通过。
+	  复跑同一 ctest 命令，24/24 通过。2026-05-06 修正 production C++
+  `AXI_Interconnect::prepare_llc_inputs()` 的 `invalidate_line` compat-local drain
+  门控，并新增 unrelated target-line `invalidate_line` + cache/MMIO read/write trace 后，
+  重新生成 `rtl/include/axi_dual_cpp_trace_vectors.vh` 并复跑同一 ctest 命令，24/24
+  通过。
 - [x] Linux/image 级 300k/5M 功能与性能 sanity：父仓库临时适配 cacheability/MMIO
   分类后，large + `CONFIG_BPU` + `../img/linux.bin` 已补跑 300k 与 5M commit。
   该 gate 不能只看退出码或 difftest/error；每轮都必须同时记录并比较
@@ -1661,6 +1679,20 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   trace 同样只改 trace generator、generated include、RTL contract TB 和文档，不改变
   production simulator/RTL 路径，因此不重跑 Linux，继续沿用上述 5M cycle delta=0、
   IPC delta=0 的结论。
+  2026-05-06 本轮修正 production C++ `invalidate_line` compat-local drain 门控后，
+  重新构建 large + `CONFIG_BPU` binary：
+  `../local_logs/dual_axi_ec_20260506/build_build_dual_axi_ec_20260506_large_bpu_invline_quiescent_180553_20260506_180553.log`。
+  300k log：
+  `../local_logs/dual_axi_ec_20260506/linux_large_bpu_300k_invline_quiescent_20260506_180629.log`，
+  对照 `../local_logs/dual_axi_ec_20260506/linux_large_bpu_300k_0397b98_prodeq_0dce8d4_20260506_133657.log`，
+  两者同为退出码 0、300001 commit、120687 cycles、IPC 2.485777、load/store
+  40586/51609，cycle delta=0、IPC delta=0。5M log：
+  `../local_logs/dual_axi_ec_20260506/linux_large_bpu_5m_invline_quiescent_20260506_180710.log`，
+  对照 `../local_logs/dual_axi_ec_20260506/linux_large_bpu_5m_0397b98_prodeq_0dce8d4_20260506_133746.log`，
+  两者同为退出码 0、5000005 commit、2078844 cycles、IPC 2.405185、load/store
+  530423/921658；L1D AMAT 2.373202、L1D miss penalty 61.364674 cycles、
+  Avg AXI Read Latency 59.327137 cycles、LLC->DDR read avg 52.000000 cycles 也完全
+  一致，因此该 production C++ 语义修复没有可观测性能回退，差异可接受。
   如果下一轮修改 production C++/RTL，则 Linux
   5M 结论必须同时报告 error/difftest、cycles、IPC、相对 baseline delta 和是否可接受。
 

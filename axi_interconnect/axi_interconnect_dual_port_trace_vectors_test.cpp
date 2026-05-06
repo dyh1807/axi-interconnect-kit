@@ -6926,36 +6926,44 @@ run_mode1_invalidate_all_cache_mmio_read_write_trace() {
 }
 
 InvalidateLineCacheMmioReadWriteTrace
-run_mode1_invalidate_line_cache_mmio_read_write_trace() {
+run_mode1_invalidate_line_cache_mmio_read_write_trace(
+    const std::string &prefix = "CPP_MODE1_INVLINE_CACHE_MMIO_RW",
+    uint32_t ddr_req_addr = 0x40000f04u, uint8_t ddr_req_id = 0xBu,
+    uint32_t mmio_read_addr = 0x100001f0u, uint8_t mmio_read_id = 0xCu,
+    uint32_t mmio_read_word = 0xcafe01f0u,
+    uint32_t mmio_write_addr = 0x10000240u, uint8_t mmio_write_id = 0xDu,
+    uint32_t mmio_write_word = 0xface0240u,
+    uint32_t invalidate_addr = 0u, uint32_t ddr_beat_seed = 0xd00d0f00u) {
   axi_interconnect::AXI_Interconnect dut;
   init_cache_trace_dut(dut);
   clear_inputs(dut);
   InvalidLlcTableDriver table_driver(dut.get_llc_config());
 
   InvalidateLineCacheMmioReadWriteTrace trace{};
-  trace.prefix = "CPP_MODE1_INVLINE_CACHE_MMIO_RW";
-  trace.overlap.ddr.prefix = "CPP_MODE1_INVLINE_CACHE_MMIO_RW_DDR";
-  trace.overlap.ddr.req_addr = 0x40000f04u;
+  trace.prefix = prefix;
+  trace.overlap.ddr.prefix = prefix + "_DDR";
+  trace.overlap.ddr.req_addr = ddr_req_addr;
   trace.overlap.ddr.req_size = 3;
-  trace.overlap.ddr.req_id = 0xBu;
+  trace.overlap.ddr.req_id = ddr_req_id;
   trace.overlap.ddr.beat_count = 2;
-  trace.overlap.mmio.prefix = "CPP_MODE1_INVLINE_CACHE_MMIO_RW_MMIO_READ";
-  trace.overlap.mmio.req_addr = 0x100001f0u;
+  trace.overlap.mmio.prefix = prefix + "_MMIO_READ";
+  trace.overlap.mmio.req_addr = mmio_read_addr;
   trace.overlap.mmio.req_size = 3;
-  trace.overlap.mmio.req_id = 0xCu;
+  trace.overlap.mmio.req_id = mmio_read_id;
   trace.overlap.mmio.beat_count = 1;
   trace.overlap.ddr_master = axi_interconnect::MASTER_DCACHE_R;
   trace.overlap.mmio_master = axi_interconnect::MASTER_UNCORE_LSU_R;
-  trace.mmio_write.prefix = "CPP_MODE1_INVLINE_CACHE_MMIO_RW_MMIO_WRITE";
-  trace.mmio_write.req_addr = 0x10000240u;
+  trace.mmio_write.prefix = prefix + "_MMIO_WRITE";
+  trace.mmio_write.req_addr = mmio_write_addr;
   trace.mmio_write.req_size = 3;
-  trace.mmio_write.req_id = 0xDu;
-  const auto write_data = single_word_data(0xface0240u);
+  trace.mmio_write.req_id = mmio_write_id;
+  const auto write_data = single_word_data(mmio_write_word);
   const auto write_strobe = byte_strobe(0xfu);
   trace.mmio_write.req_wdata = wide_write_words(write_data);
   trace.mmio_write.req_wstrb = write_strobe_mask(write_strobe);
   trace.mmio_write_master = axi_interconnect::MASTER_UNCORE_LSU_W;
-  trace.invalidate_addr = trace.overlap.ddr.req_addr;
+  trace.invalidate_addr =
+      (invalidate_addr == 0u) ? trace.overlap.ddr.req_addr : invalidate_addr;
 
   bool accepted = false;
   bool ar_seen = false;
@@ -7017,7 +7025,7 @@ run_mode1_invalidate_line_cache_mmio_read_write_trace() {
   dut.axi_mmio_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
   dut.axi_mmio_io.r.rlast = true;
   dut.axi_mmio_io.r.rdata = {};
-  axi_compat::set_u32(dut.axi_mmio_io.r.rdata, 0, 0xcafe01f0u);
+  axi_compat::set_u32(dut.axi_mmio_io.r.rdata, 0, mmio_read_word);
   trace.overlap.mmio.rbeats[0] = axi_words(dut.axi_mmio_io.r.rdata);
   dut.axi_mmio_io.b.bvalid = true;
   dut.axi_mmio_io.b.bid = trace.mmio_write.awid;
@@ -7065,7 +7073,7 @@ run_mode1_invalidate_line_cache_mmio_read_write_trace() {
     dut.axi_ddr_io.r.rid = trace.overlap.ddr.arid;
     dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
     dut.axi_ddr_io.r.rlast = beat == trace.overlap.ddr.beat_count - 1u;
-    dut.axi_ddr_io.r.rdata = ddr_read_beat(0xd00d0f00u + beat * 0x100u);
+    dut.axi_ddr_io.r.rdata = ddr_read_beat(ddr_beat_seed + beat * 0x100u);
     trace.overlap.ddr.rbeats[beat] = axi_words(dut.axi_ddr_io.r.rdata);
     dut.comb_outputs();
     trace.ddr_rready_while_mmio_resp_held =
@@ -10437,6 +10445,11 @@ void emit_vectors(std::ostream &os) {
       run_mode1_invalidate_line_cache_mmio_write_trace();
   const auto mode1_invalidate_line_cache_mmio_read_write =
       run_mode1_invalidate_line_cache_mmio_read_write_trace();
+  const auto mode1_invalidate_line_other_cache_mmio_read_write =
+      run_mode1_invalidate_line_cache_mmio_read_write_trace(
+          "CPP_MODE1_INVLINE_OTHER_CACHE_MMIO_RW", 0x40001f04u, 0x9u,
+          0x10000380u, 0xAu, 0xcafe0380u, 0x100003c0u, 0xBu,
+          0xface03c0u, 0x40003f04u, 0xd00d1f00u);
   const auto mode1_invalidate_line_cache_write_mmio_read_write =
       run_mode1_invalidate_line_cache_write_mmio_read_write_trace();
   const auto mode1_invalidate_all_cache_write_mmio_read_write =
@@ -10601,6 +10614,8 @@ void emit_vectors(std::ostream &os) {
       os, mode1_invalidate_line_cache_mmio_write);
   emit_invalidate_line_cache_mmio_read_write(
       os, mode1_invalidate_line_cache_mmio_read_write);
+  emit_invalidate_line_cache_mmio_read_write(
+      os, mode1_invalidate_line_other_cache_mmio_read_write);
   emit_invalidate_line_cache_write_mmio_read_write(
       os, mode1_invalidate_line_cache_write_mmio_read_write);
   emit_invalidate_all_cache_write_mmio_read_write(

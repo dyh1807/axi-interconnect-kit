@@ -440,6 +440,11 @@ core 内部 hazard 遮掉。
   maintenance hazard：DDR refill R beat 在途时外部 `RREADY` 不能被维护请求反压，
   upstream read response 被 hold 时 `invalidate_line` 仍不能 accepted，response
   被消费后才允许 accepted
+- 覆盖 MODE_CACHE 下 cacheable read miss/refill、MMIO read/write 与 unrelated target-line
+  `invalidate_line` 同时存在的 compat-local drain：即使 target line 与在途 cache read
+  不是同一 cacheline，也必须等 compat-local queue / inflight / response slot 全排空后
+  才允许 maintenance accepted；同时 MMIO `RREADY/BREADY` 与 DDR refill `RREADY`
+  不能被 maintenance 或 held upstream response 反压
 - 覆盖 MODE_CACHE 下 cacheable read miss/refill、MMIO read direct-bypass 与
   `invalidate_all` 同时存在的 drain/recovery：MMIO `R` 先返回并被 upstream hold 时，
   DDR refill `RREADY` 仍不能被 held response 或 maintenance pending 反压；MMIO/cache

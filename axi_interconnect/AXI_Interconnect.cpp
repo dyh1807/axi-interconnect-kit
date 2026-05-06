@@ -1484,16 +1484,20 @@ void AXI_Interconnect::prepare_llc_inputs(bool sample_upstream_ready) {
   const bool llc_external_write_busy =
       external_write_busy() || llc_mem_write_resp_valid_ ||
       llc_mem_ignored_b_count_ != 0;
+  // Match RTL compat: maintenance enters the LLC core only after local
+  // queueing, inflight ownership, and held upstream responses drain.
+  const bool llc_maintenance_quiescent =
+      reconfig_path_quiescent() && !llc_external_write_busy;
   llc.io.ext_in.mem.invalidate_all =
-      invalidate_all_requested() && reconfig_path_quiescent() &&
-      !llc_external_write_busy;
+      invalidate_all_requested() && llc_maintenance_quiescent;
   const bool line_hazard =
       llc_invalidate_line_valid_ &&
       (has_same_line_write_hazard(invalidate_line_addr) ||
        llc_external_read_line_pending(invalidate_line_addr) ||
        llc_external_write_busy);
   llc.io.ext_in.mem.invalidate_line_valid =
-      llc_invalidate_line_valid_ && !line_hazard;
+      llc_invalidate_line_valid_ && llc_maintenance_quiescent &&
+      !line_hazard;
   llc.io.ext_in.mem.invalidate_line_addr = llc_invalidate_line_addr_;
   bool any_upstream_capture_pending = false;
   bool any_upstream_req_visible = llc_core_req_stage_.valid;
