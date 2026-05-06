@@ -1907,12 +1907,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] MMIO 口只支持 32-bit / 1 beat：C++ direct test 覆盖 unsupported MMIO 大请求阻塞；
   bridge-level 与 native dual top formal 均覆盖 unsupported MMIO 大 read/write 不被接受、
   不逃逸到外部 AXI。
-- [x] mode2 mapped window aligned read/write；全量 RTL contract 已覆盖 legacy single-AXI
-  mode2 下起始地址命中 MMIO、但请求尾部越过 MMIO 末端时仍保持 MMIO passthrough，
-  不误走 DDR aligned `AR/AW`；本轮补齐 dual-subsystem actual C++ trace 下 mapped
-  local-window write/read 不逃逸到外部 DDR/MMIO AXI 口且写后读数据一致，同时补齐
-  当前 RTL contract 窗口内起点/末端 line 写后读边界，以及 mapped-window
-  下边界外 MMIO read 和上边界外 MMIO write 路由。
+- [x] mode2 mapped window aligned read/write；dual-subsystem actual C++ trace 已覆盖
+  mapped local-window write/read 不逃逸到外部 DDR/MMIO AXI 口且写后读数据一致；
+  当前 RTL contract 覆盖窗口内起点/末端 line 写后读边界，以及 mapped-window
+  下边界外 MMIO read 和上边界外 MMIO write 路由。旧 single-AXI mode2 passthrough
+  边界也保留在 legacy contract 覆盖中，避免兼容 top 回归。
 - [x] MODE_CACHE 到 MODE_MAPPED reconfig drain：MMIO read `AR` 已发且 `R`/upstream
   response 尚未 retire 时，请求 MODE_MAPPED 不得回压外部 MMIO `RREADY`，也不得提前
   完成 active mode 切换；对称地，MMIO write `AW/W` 已发且 `B`/upstream response

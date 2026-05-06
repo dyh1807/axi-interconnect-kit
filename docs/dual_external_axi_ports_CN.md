@@ -117,7 +117,7 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 
 当前 RTL 状态：
 
-- `axi_llc_subsystem_dual.v` 已作为 native 双外部 AXI 顶层候选接入；
+- `axi_llc_subsystem_dual.v` 已作为当前 native 双外部 AXI 主线顶层接入；
   `axi_llc_subsystem.v` 仍保留为旧单 AXI 兼容顶层。
 - 上游原始事务 ID 和内部 slot/MSHR/lower response ID 已通过 `SLOT_ID_BITS`
   解耦；当前 upstream ID 仍为 4-bit，内部 lower/source slot ID 为 6-bit。
@@ -192,16 +192,16 @@ ID/response 归属与握手，但不把它作为性能最终路径。
 - targeted test 也覆盖同 line hazard 的两个方向：AR 发出后同 line AW 必须等待 R
   返回，AW/写事务发出后同 line AR 必须等待 B/写事务完成；不同 port/不同 line 的
   DDR 与 MMIO 流量不应被这些 hazard gate 串行化。
-- read/write outstanding 仍维持全局共享上限；后续工作应把同等 native dual-port
-  语义迁移到最终 RTL 顶层，并接入 EC harness。
+- read/write outstanding 仍维持全局共享上限；后续工作重点转向 native dual top 与
+  C++ reference 的 EC/formal 覆盖、性能回归和 DC 时序复核。
 
 当前 RTL 已开始承接同等语义：
 
-- `axi_llc_subsystem_dual.v` 新增为 native 双外部 AXI 顶层候选；旧
+- `axi_llc_subsystem_dual.v` 是当前 native 双外部 AXI 主线顶层；旧
   `axi_llc_subsystem.v` 仍保留为单 AXI 兼容顶层，避免打断既有 testbench。
-- `axi_llc_subsystem_compat.v` 的 mode1 MMIO 分类已改为 direct lower bypass：
-  32-bit MMIO read/write 不再进入 LLC core resident lookup，也不会更新 LLC
-  data/meta。
+- `axi_llc_subsystem_compat.v` / dual bridge 的 MMIO 分类按 `DDR_BASE` 冻结：
+  `addr < 0x4000_0000` 且非 mode2 mapped-window 命中的 32-bit MMIO read/write
+  走 direct lower path，不进入 LLC core resident lookup，也不会更新 LLC data/meta。
 - `SLOT_ID_BITS` 已加入 RTL 顶层/compat 连接，用于把 upstream request ID 与内部
   core slot / lower request ID 解耦；当前内部 slot 为 6-bit，outstanding 预算已扩到
   32。

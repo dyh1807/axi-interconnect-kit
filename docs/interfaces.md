@@ -3,7 +3,10 @@
 This document lists:
 
 1. Interconnect upstream interfaces
-2. AXI4 channel signals
+2. Dual external AXI4 channel signals
+
+For the current architecture diagram and constraints, see
+[submodule_architecture_CN.md](submodule_architecture_CN.md).
 
 ## 1) Interconnect Upstream Interfaces
 
@@ -129,14 +132,22 @@ Implementation note:
   `AXI_SUBMODULE_MODE` / `AXI_SUBMODULE_OFFSET`. That is only a simulation
   bring-up path; the datapath semantics still follow the live inputs.
 
-## 2) AXI4 Channel Signals
+## 2) Dual External AXI4 Channel Signals
 
 Defined in `sim_ddr/include/SimDDR_IO.h`.
 
-AXI4 in this project uses:
+The current mainline has two external AXI master ports:
 
-- `ID`: 4 bits
-- Data: `32-bit` bus at the downstream AXI4 channel
+- DDR/SDRAM: `axi_ddr_io` in C++ and `ddr_axi_*` in RTL
+  - 6-bit ID profile
+  - 256-bit data, 32B beat
+  - requests <=32B are aligned to one 32B beat; 64B cache-line traffic uses two beats
+- MMIO: `axi_mmio_io` in C++ and `mmio_axi_*` in RTL
+  - 6-bit ID profile
+  - 32-bit data, 4B beat
+  - only 4B single-beat reads/writes are supported
+
+The old C++ `axi_io` field is a legacy alias to the DDR port.
 
 ### 2.1 Write Address Channel (`AW`)
 
@@ -144,7 +155,7 @@ AXI4 in this project uses:
 |---|---:|---|---|
 | `awvalid` | 1 | M->S | Address valid |
 | `awready` | 1 | S->M | Address ready |
-| `awid` | 4 | M->S | Write transaction ID |
+| `awid` | DDR 6 / MMIO 6 | M->S | Write transaction ID |
 | `awaddr` | 32 | M->S | Byte address |
 | `awlen` | 8 | M->S | Burst length minus 1 |
 | `awsize` | 3 | M->S | `log2(bytes_per_beat)` |
@@ -156,8 +167,8 @@ AXI4 in this project uses:
 |---|---:|---|---|
 | `wvalid` | 1 | M->S | Data valid |
 | `wready` | 1 | S->M | Data ready |
-| `wdata` | 32 | M->S | Write payload |
-| `wstrb` | 4 | M->S | Byte enable bits |
+| `wdata` | DDR 256 / MMIO 32 | M->S | Write payload |
+| `wstrb` | DDR 32 / MMIO 4 | M->S | Byte enable bits |
 | `wlast` | 1 | M->S | Last beat |
 
 ### 2.3 Write Response Channel (`B`)
@@ -166,7 +177,7 @@ AXI4 in this project uses:
 |---|---:|---|---|
 | `bvalid` | 1 | S->M | Response valid |
 | `bready` | 1 | M->S | Response ready |
-| `bid` | 4 | S->M | Response ID |
+| `bid` | DDR 6 / MMIO 6 | S->M | Response ID |
 | `bresp` | 2 | S->M | Response code |
 
 ### 2.4 Read Address Channel (`AR`)
@@ -175,7 +186,7 @@ AXI4 in this project uses:
 |---|---:|---|---|
 | `arvalid` | 1 | M->S | Address valid |
 | `arready` | 1 | S->M | Address ready |
-| `arid` | 4 | M->S | Read transaction ID |
+| `arid` | DDR 6 / MMIO 6 | M->S | Read transaction ID |
 | `araddr` | 32 | M->S | Byte address |
 | `arlen` | 8 | M->S | Burst length minus 1 |
 | `arsize` | 3 | M->S | `log2(bytes_per_beat)` |
@@ -187,7 +198,7 @@ AXI4 in this project uses:
 |---|---:|---|---|
 | `rvalid` | 1 | S->M | Data valid |
 | `rready` | 1 | M->S | Data ready |
-| `rid` | 4 | S->M | Response ID |
-| `rdata` | 32 | S->M | Read payload |
+| `rid` | DDR 6 / MMIO 6 | S->M | Response ID |
+| `rdata` | DDR 256 / MMIO 32 | S->M | Read payload |
 | `rresp` | 2 | S->M | Response code |
 | `rlast` | 1 | S->M | Last beat |

@@ -12,7 +12,7 @@
   - 上游是 C++ 风格多 `read_masters[] / write_masters[]`
   - 下游是一组 AXI4 `AW/W/B/AR/R`
 - `src/axi_llc_subsystem_dual.v`
-  - 当前双外部 AXI 顶层候选
+  - 当前双外部 AXI 主线顶层
   - 上游接口保持不变
   - 下游直接拆成 DDR 256-bit AXI 口和 MMIO 32-bit AXI 口
 - `src/axi_llc_subsystem_compat.v`
@@ -37,7 +37,7 @@
 
 建议阅读顺序：
 
-1. `src/axi_llc_subsystem_dual.v`（双外部 AXI 顶层候选）
+1. `src/axi_llc_subsystem_dual.v`（当前双外部 AXI 主线顶层）
 2. `src/axi_llc_subsystem.v`（旧单 AXI 顶层）
 3. `src/axi_llc_subsystem_compat.v`
 4. `src/axi_llc_subsystem_core.v`
@@ -75,7 +75,16 @@ axi_llc_subsystem_dual
 
 更详细的层次、文件职责和 IO 分层见：
 
+- [../docs/submodule_architecture_CN.md](../docs/submodule_architecture_CN.md)
 - [rtl_hierarchy_CN.md](docs/rtl_hierarchy_CN.md)
+
+当前主线接口规格：
+
+- 上游保持 4 read master / 2 write master 的简化 CPU-side 接口。
+- 下游 DDR/SDRAM 口为 256-bit AXI beat。
+- 下游 MMIO 口为 32-bit AXI beat，仅支持 4B / 1 beat read/write。
+- `valid/repl` 保持 regfile；`data/meta` 默认使用 SMIC12 SRAM macro。
+- `USE_SMIC12_STORES=1` 是 RTL 默认值，full DC signoff 不应退回 generic store。
 
 ## IO 快速定位
 
@@ -103,12 +112,15 @@ axi_llc_subsystem_dual
 
 - `mode=1`：正常 LLC cache path
 - `mode=2`：direct-mapped 本地 LLC window
-- `mode=0/3`：请求仍先进入 LLC resident lookup，但按 bypass 语义处理
-- `mode=1` 命中 `MMIO_BASE/MMIO_SIZE` 窗口的请求仍进入 core，但按 bypass 语义处理
+- `mode=0/3`：不新分配 LLC line，请求按 direct lower path 处理
+- dual top 下地址分类由 `DDR_BASE` 冻结：`addr >= 0x4000_0000` 走 DDR/SDRAM
+  256-bit 口，其它地址走 MMIO 32-bit 口；mode2 mapped-window 命中优先进入本地 LLC
+  window
 - 模式切换统一走 `block accepts -> drain -> valid-sweep invalidate -> activate`
 - `invalidate_all` 只有在 cache 已 quiescent 且没有 dirty resident line 时才会被接受，
   不主动触发 dirty flush
-- MMIO 分类当前按请求起始地址冻结；上游不得发出跨 MMIO / 非 MMIO 边界的单次请求
+- 上游不得发出跨 DDR/MMIO 边界或跨 mode2 mapped-window 边界的单次请求；MMIO 外部口
+  只支持 4B / 1 beat read/write
 
 当前目录是**自包含**的，不接入根 CMake，也不影响现有 C++/CTest 构建。
 
@@ -149,9 +161,10 @@ axi_llc_subsystem_dual
 - `src/axi_llc_subsystem_core.v`
   - 单流核心：
     - 集成 reconfig + shared data/meta/valid/repl store
-    - cacheable `mode=1` 与 `mode=2` 本地窗口请求进入内建 `llc_cache_ctrl` / mapped
-      window 路径；mode1 MMIO、`mode=0/3`、以及 `mode=2` 窗口外请求由 compat
-      direct-bypass side path 处理
+    - cacheable `mode=1` 与 `mode=2` 本地窗口请求进入内建 `llc_cache_ctrl` /
+      mapped-window 路径
+    - 不应取得 LLC ownership 的请求通过 compat/direct lower path 推进；dual top 下
+      MMIO 外部流量不会写入 LLC
     - `cache_*` 口现在承载 line-memory miss/refill/writeback
     - `bypass_*` 口承载 core 发出的 lower bypass read/write
     - 当前已接入 `up_req_total_size`、`cache_req_size`、`bypass_req_size`
@@ -168,16 +181,13 @@ axi_llc_subsystem_dual
     支持多个 read miss 同时在 core / lower AXI 中挂起
   - 同一 read master 也支持多笔在途 read response，通过前台 response slot +
     per-master response queue 依次回传
-  - 非 MMIO 的 `mode=1` bypass 请求会进入 core，保留 resident-hit /
-    write-hit shadow-update 语义
-  - mode1 MMIO、`mode=0/3`、以及 `mode=2` 窗口外请求会走 compat 的 direct
-    bypass side path
-  - 非 MMIO 的 `mode=1 bypass miss / write-through` 在 core 判定出需要 lower
-    bypass 后，就会先 handoff 到 compat 的 direct slot；后续由 compat 自己等待
-    lower ready、发出 lower request、再等待 lower completion
-  - 因此 core 不再被 `ST_BYPASS_WAIT` 或 lower-ready backpressure 长时间串住
-  - `mode=2` 窗口外且起始地址不在 MMIO 区间内的 direct-bypass 请求，会额外带
-    `bypass_req_mode2_ddr_aligned`
+  - `mode=1` bypass 请求会进入 core 做 resident-hit / write-hit shadow-update；
+    miss 或 write-through 需要访问下游时再 handoff 到 compat direct slot
+  - `mode=0/3`、`mode=2` 窗口外、以及 dual top 下的 MMIO direct 请求走 direct side
+    path，不占用 LLC ownership
+  - handoff 之后由 compat direct slot 等待 lower ready、发出 lower request、等待
+    lower completion；core 不再被 lower-ready backpressure 长时间串住
+  - direct lower 请求的 DDR/MMIO 分类由后级 dual bridge 按 `DDR_BASE` 完成
   - reconfig / `invalidate_all` 会先在 compat 层排空本地 queue / inflight / response slot，
     之后再把维护请求交给 core
   - `MASTER_DCACHE_R` 保留 same-cycle accept；其它 read master 仍保持 ready-first
@@ -187,24 +197,34 @@ axi_llc_subsystem_dual
   - `ready` 采用 sticky-grant 语义：一次只对一个 read master、一个 write master
     给出 ready，并在握手或请求撤销前保持
 - `src/axi_llc_axi_bridge.v`
-  - 把内部 `cache_* / bypass_*` lower 请求统一转换成单组 AXI4 `AW/W/B/AR/R`
-  - 当前对齐 C++ 原型的下游打包合同：
+  - 单口 AXI packer：用于旧 `axi_llc_subsystem.v`，也作为 dual bridge 内部 per-port
+    packer 复用
+  - 不负责 DDR/MMIO 地址分类；dual-port 分类在 `axi_llc_axi_bridge_dual.v`
+  - 下游打包合同：
     - `len = ceil((total_size + 1) / beat_bytes) - 1`
     - `size` 固定等于下游 AXI beat 宽度
     - `burst` 固定为 `INCR`
     - beat `data/strb` 按低地址连续切片
-  - `mode=2` 窗口外 direct-bypass 的 DDR 请求会在 bridge 内改写成：
-    - 整个请求落在 1 个 32B beat 内：发 32B 对齐单 beat
-    - 跨 32B：退回 64B line / 2 beat
-    - 读响应按原始地址低位重新抽取到低字节
-    - 写请求按原始地址低位平移 `wdata/wstrb`
-    - 起始地址命中 MMIO 区间的请求不做这组改写
-    - 该 MMIO 分类合同与当前 C++ 原型一致，按请求起始地址冻结
+- `src/axi_llc_axi_bridge_dual.v`
+  - 当前主线 lower bridge wrapper
+  - 按 `DDR_BASE` 做外部口分类：`addr >= 0x4000_0000` 走 DDR/SDRAM，其它地址走 MMIO
+  - DDR/SDRAM 口固定 256-bit beat：`<=32B` 请求对齐成单 beat，64B cacheline 请求为
+    同一 transaction 的 2 beat
+  - MMIO 口固定 32-bit beat，只允许 4B / 1 beat read/write
+  - 内部 response mux 只做响应归属与回传，不应错误回压外部 `R/B` 导致“等 B 清
+    buffer 后才收 R”的依赖
+  - same-line hazard scoreboard 阻止同一 line 上 `AR` 未完成又发 `AW`，或 `AW`
+    未完成又发 `AR`
 - `src/axi_llc_subsystem.v`
-  - 当前对外 RTL 子模块顶层
+  - 旧单 AXI 对外 RTL 子模块顶层
   - 上游保持 C++ 风格的多 read/write master 自定义接口
   - 下游收敛成一组 AXI4 master 五通道
-  - 不在本层再分出独立 DDR/MMIO 两组 AXI；地址分流留给外部系统
+  - 保留给既有 testbench / bring-up；当前性能/时序主线应使用
+    `axi_llc_subsystem_dual.v`
+- `src/axi_llc_subsystem_dual.v`
+  - 当前对外 RTL 主线顶层
+  - 上游保持 C++ 风格的多 read/write master 自定义接口
+  - 下游直接暴露 DDR/SDRAM 与 MMIO 两组 AXI4 master 五通道
 
 ## 当前实现结构
 

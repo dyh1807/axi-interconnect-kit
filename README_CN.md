@@ -2,12 +2,26 @@
 
 这是从原模拟器中抽离出的独立 AXI4 内存子系统。
 
+## 当前主线
+
+当前主线是 integrated dual external AXI port：
+
+- CPU core 侧仍使用 `read_ports[4]` / `write_ports[2]` 简化上游接口。
+- 下游直接拆成 DDR/SDRAM AXI 口和 MMIO AXI 口。
+- DDR/SDRAM 口使用 256-bit beat，支持 64B cacheline 的 2 beat 传输。
+- MMIO 口使用 32-bit beat，只支持 4B / 1 beat read/write。
+- 读 outstanding 和写 outstanding 各自共享全局预算，dual-port profile 目标值均为 32。
+
+旧单 AXI 口和 `AXI_Router_AXI4` 仍保留给历史测试、demo 和 bring-up，但不再是当前
+性能/时序主线。更完整结构图见
+[docs/submodule_architecture_CN.md](docs/submodule_architecture_CN.md)。
+
 ## 范围
 
 - 一套 AXI4 interconnect，对外提供简化上游端口：
   - `read_ports[4]`：`icache`、`dcache_r`、`uncore_lsu_r`、`extra_r`
   - `write_ports[2]`：`dcache_w`、`uncore_lsu_w`
-- AXI4 router、SimDDR 下游内存模型、MMIO bus、UART16550
+- 双外部 AXI 口、AXI4 router legacy/demo、SimDDR 下游内存模型、MMIO bus、UART16550
 - AXI4 路径上的可选共享统一 LLC
 
 本仓库已经删除 AXI3 支持，现在是 AXI4-only。
@@ -27,27 +41,30 @@
 | AXI_LLC（可选）      |
 +----------------------+
       |
-      v
-+----------------------+
-| AXI_Router_AXI4      |
-+----------------------+
-    |            |
-    | DDR区间    | MMIO区间
-    v            v
-+----------+   +---------------------+
-| SimDDR   |   | MMIO_Bus + UART16550|
-+----------+   +---------------------+
+      +---------------------+
+      |                     |
+      v                     v
++--------------+     +---------------------+
+| DDR/SDRAM AXI|     | MMIO AXI            |
+| 256-bit beat |     | 32-bit beat         |
++--------------+     +---------------------+
+      |                     |
+      v                     v
++----------+         +---------------------+
+| SimDDR   |         | MMIO_Bus + UART16550|
++----------+         +---------------------+
 ```
 
-`AXI_Router_AXI4` 是显式层次：interconnect 负责仲裁和上游响应路由，
-router 负责 AXI 侧地址译码。
+当前 integrated dual-port 主线在 interconnect/bridge 内完成 DDR/MMIO 地址分流。
+`AXI_Router_AXI4` 是历史单口/示例路径中的显式层次：interconnect 负责仲裁和上游响应
+路由，router 负责 AXI 侧地址译码。
 
 本仓库中的术语约定：
 
 - `upstream`：连接到 `read_ports[]` / `write_ports[]` 的请求来源，以及返回给这些
   master 的响应路径
 - `downstream`：位于 interconnect 之下、面向 DDR 或 MMIO 的接口与设备，包括
-  `AXI_Router_AXI4`、`SimDDR`、MMIO 设备
+  `axi_ddr_io`、`axi_mmio_io`、legacy `AXI_Router_AXI4`、`SimDDR`、MMIO 设备
 
 ## LLC 概要
 
@@ -58,8 +75,8 @@ router 负责 AXI 侧地址译码。
 - `8MB`
 - `64B` cache line
 - `16-way`
-- `4` 个 MSHR
-- lookup latency `8`
+- 默认 `8` 个 MSHR
+- lookup latency `3`
 - `PIPT`、`unified`、`NINE`
 - 默认关闭 prefetch
 
@@ -72,8 +89,9 @@ router 负责 AXI 侧地址译码。
   - `0`（默认）：miss 回填后安装进 LLC
   - `1`：保持 no-allocate 路径，只把回填数据返回给上游，不在 LLC 中安装
 - AXI4 interconnect 的读上游侧支持 multiple outstanding：
-  - 全局上限 `8`
-  - 单个读 master 上限 `4`
+  - dual-port profile 全局上限 `32`
+  - dual-port profile 单个读 master 上限 `32`
+  - standalone CMake 默认值可较小，需按目标 profile 显式配置
 - LLC 内部对 cacheable demand miss 的推进仍然更严格：
   - 同一个读 master 同时最多只能有一个由 LLC 正在处理的 cacheable miss
   - 其它 master 仍然可以继续占用剩余的全局读资源
@@ -101,13 +119,13 @@ router 负责 AXI 侧地址译码。
   - `mode=1`：LLC_ON
   - `mode=2`：`[offset, offset + 4MB)` 映射为 direct-mapped 的本地 LLC 存储窗口；
     窗口内访问不分配 MSHR、也不会从 DDR refill，窗口外访问强制 `bypass`
-  - `mode=2` 窗口外若继续走 DDR：
-    - 非 MMIO 且请求规模 `<= 256-bit` 时，interconnect 会把它改写成
-      `256-bit` 对齐的单 beat AXI 访问
-    - MMIO 排除当前按“请求起始地址是否命中 MMIO 区间”判断
-    - 读响应会在 interconnect 处按原始地址低位重新截断/对齐后，再回给上游
-    - 写请求会在对齐后的单 beat 内按地址低位平移 `data/wstrb`
-    - 若请求规模暂时大于 `256-bit`，当前仍按原有 `64B/2 beat` 路径处理
+    并继续按 dual-port 地址分类下发
+  - `mode=2` 窗口外访问分类：
+    - `addr >= 0x4000_0000` 走 DDR/SDRAM 口
+    - 其它地址走 MMIO 口
+    - DDR/SDRAM 口使用 `256-bit` beat；小于等于 `32B` 的读写对齐到单
+      beat，`64B` cacheline 读写拆成同一事务的 2 个 beat
+    - MMIO 口只支持 `4B / 1 beat` 读写
   - `mode=0/3`：LLC_OFF，所有请求强制 `bypass`
   - `mode` / `offset` 变化遵循 `drain -> invalidate_all -> activate`：
     切换期间不再接收新的上游请求，旧模式下已在途的 LLC/AXI 工作先排空，
@@ -170,9 +188,11 @@ router 负责 AXI 侧地址译码。
 
 ## 接口文档
 
+- [docs/submodule_architecture_CN.md](docs/submodule_architecture_CN.md)
 - [docs/interfaces.md](docs/interfaces.md)
 - [docs/interfaces_CN.md](docs/interfaces_CN.md)
 - [docs/llc_design_CN.md](docs/llc_design_CN.md)
+- [docs/dual_external_axi_ports_CN.md](docs/dual_external_axi_ports_CN.md)
 - [rtl/README_CN.md](rtl/README_CN.md)
 
 ## 主要文件
