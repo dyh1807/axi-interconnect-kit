@@ -405,8 +405,14 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `rtl/local_debug/vcs_all_contracts_multimaster_recovery_20260506_184426_eda-10`。
+  `rtl/local_debug/vcs_all_contracts_invline_multimaster_recovery_20260506_185136_eda-10`。
   本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE
+  `ICACHE` + `DCACHE_R` multi-master target-line `invalidate_line` recovery/scope
+  trace：两个 read master 先各自填充 clean cache line，只 invalidate second-master
+  line；second-master 后续必须重新 DDR miss/refill，first-master survivor 后续必须
+  hit 且不外发 AXI。targeted 目录为
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_multimaster_recovery_20260506_185122_eda-10`。
+  上一轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE
   `ICACHE` + `DCACHE_R` multi-master `invalidate_all` recovery trace：两个 read
   master 先各自填充 clean cache line，`invalidate_all` accepted 后，同两个 master
   再读相同行都必须重新走 DDR miss/refill，不能错误命中 stale resident line。
@@ -1284,7 +1290,15 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_multimaster_recovery_20260506_184413_eda-10`，
   全量 RTL contract 目录：
   `rtl/local_debug/vcs_all_contracts_multimaster_recovery_20260506_184426_eda-10`；
-  后续主要剩更长随机 trace，以及更复杂的 dirty/recovery 组合。
+  本轮继续补齐 `ICACHE` + `DCACHE_R` multi-master target-line `invalidate_line`
+  recovery/scope：两个 read master 先各自填充 clean cache line，只 invalidate
+  second-master line；second-master 后续必须重新 DDR miss/refill，first-master survivor
+  后续必须 hit 且不外发 AXI。最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_multimaster_recovery_20260506_185122_eda-10`，
+  全量 RTL contract 目录：
+  `rtl/local_debug/vcs_all_contracts_invline_multimaster_recovery_20260506_185136_eda-10`；
+  后续不再开放式手写新增 case，改按 `docs/dual_axi_ec_closure_plan_CN.md`
+  的固定矩阵、随机 seed suite 和形式化不变量 gate 收敛。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
   已补 DDR/MMIO read/write 同时在途、MMIO `R/B` 先返回、上游 response stall 下外部
   `RREADY/BREADY` 不被回压，并按实际 C++ trace 检查原 upstream ID/data/code 回收。
@@ -1480,6 +1494,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_multimaster_recovery_20260506_184413_eda-10`，
   latest 全量 RTL contract 53/53 目录为
   `rtl/local_debug/vcs_all_contracts_multimaster_recovery_20260506_184426_eda-10`。
+  继续新增 `ICACHE` + `DCACHE_R` multi-master target-line `invalidate_line`
+  recovery/scope trace 后，C++ regression 24/24 通过；latest targeted VCS 为
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_multimaster_recovery_20260506_185122_eda-10`，
+  latest 全量 RTL contract 53/53 目录为
+  `rtl/local_debug/vcs_all_contracts_invline_multimaster_recovery_20260506_185136_eda-10`。
+  2026-05-06 起后续 EC 按 `docs/dual_axi_ec_closure_plan_CN.md` 收敛，不再无限追加
+  手写 case；剩余短期缺口明确为固定随机 seed suite 和实际模块形式化不变量 gate。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
@@ -1756,9 +1777,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   Linux 5M 继续沿用上述 cycle delta=0、IPC delta=0 的结论。
   本轮继续新增 multi-master `invalidate_all` recovery trace，仍只修改测试生成器、
   generated include、RTL contract TB 和文档，不改变 production simulator/RTL 路径；
-  Linux 5M 继续沿用上述 cycle delta=0、IPC delta=0 的结论。下一次 production
-  C++/RTL 路径改动后必须重新跑 300k/5M，并报告 error/difftest、cycles、IPC、delta
-  和差异是否可接受。
+  Linux 5M 继续沿用上述 cycle delta=0、IPC delta=0 的结论。本轮继续新增
+  multi-master target-line `invalidate_line` recovery/scope trace 与
+  `docs/dual_axi_ec_closure_plan_CN.md`，仍只修改测试生成器、generated include、RTL
+  contract TB 和文档，不改变 production simulator/RTL 路径；Linux 5M 继续沿用上述
+  cycle delta=0、IPC delta=0 的结论。下一次 production C++/RTL 路径改动后必须重新跑
+  300k/5M，并报告 error/difftest、cycles、IPC、delta 和差异是否可接受。
 
 ## Multi-Agent 并行推进边界
 

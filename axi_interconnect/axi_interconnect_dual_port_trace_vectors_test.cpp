@@ -732,6 +732,19 @@ struct InvalidateLineScopeReadTrace {
   bool survivor_hit_no_external = false;
 };
 
+struct InvalidateLineMultiMasterRecoveryReadTrace {
+  ReadTrace first_fill;
+  ReadTrace second_fill;
+  ReadTrace target_after;
+  ReadTrace survivor_after;
+  std::string prefix;
+  uint8_t first_master = 0;
+  uint8_t second_master = 0;
+  uint32_t invalidate_addr = 0;
+  bool invalidate_accepted = false;
+  bool survivor_hit_no_external = false;
+};
+
 struct InvalidateAllRecoveryReadTrace {
   ReadTrace first_fill;
   ReadTrace second_fill;
@@ -3535,6 +3548,78 @@ run_mode1_invalidate_line_scope_read_trace() {
                                          trace.survivor_hit_no_external);
   require(trace.survivor_hit_no_external,
           "C++ invalidate_line scope survivor hit escaped to external AXI");
+  return trace;
+}
+
+InvalidateLineMultiMasterRecoveryReadTrace
+run_mode1_invalidate_line_multi_master_recovery_read_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  StatefulLlcTableDriver table_driver(dut.get_llc_config());
+
+  InvalidateLineMultiMasterRecoveryReadTrace trace{};
+  trace.prefix = "CPP_MODE1_INVLINE_MULTI_MASTER_RECOVERY";
+  trace.first_master = axi_interconnect::MASTER_ICACHE;
+  trace.second_master = axi_interconnect::MASTER_DCACHE_R;
+  trace.first_fill.prefix =
+      "CPP_MODE1_INVLINE_MULTI_MASTER_RECOVERY_FIRST_FILL";
+  trace.first_fill.req_addr = 0x40002604u;
+  trace.first_fill.req_size = 3;
+  trace.first_fill.req_id = 0x1u;
+  trace.first_fill.beat_count = 2;
+  trace.second_fill.prefix =
+      "CPP_MODE1_INVLINE_MULTI_MASTER_RECOVERY_SECOND_FILL";
+  trace.second_fill.req_addr = 0x40002644u;
+  trace.second_fill.req_size = trace.first_fill.req_size;
+  trace.second_fill.req_id = 0x2u;
+  trace.second_fill.beat_count = 2;
+  trace.target_after.prefix =
+      "CPP_MODE1_INVLINE_MULTI_MASTER_RECOVERY_TARGET_AFTER";
+  trace.target_after.req_addr = trace.second_fill.req_addr;
+  trace.target_after.req_size = trace.second_fill.req_size;
+  trace.target_after.req_id = 0x3u;
+  trace.target_after.beat_count = 2;
+  trace.survivor_after.prefix =
+      "CPP_MODE1_INVLINE_MULTI_MASTER_RECOVERY_SURVIVOR_AFTER";
+  trace.survivor_after.req_addr = trace.first_fill.req_addr;
+  trace.survivor_after.req_size = trace.first_fill.req_size;
+  trace.survivor_after.req_id = 0x4u;
+  trace.invalidate_addr = trace.second_fill.req_addr;
+
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.first_fill,
+                                          trace.first_master, 0xd00d4000u);
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.second_fill,
+                                          trace.second_master, 0xd00d4200u);
+
+  for (int cycle = 0; cycle < 240 && !trace.invalidate_accepted; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (dut.llc_invalidate_line_accepted()) {
+      trace.invalidate_accepted = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  if (!trace.invalidate_accepted) {
+    dut.debug_print();
+  }
+  require(trace.invalidate_accepted,
+          "C++ invalidate_line multi-master recovery trace did not accept");
+  dut.set_llc_invalidate_line(false, 0);
+
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.target_after,
+                                          trace.second_master, 0xd00d4400u);
+  issue_cache_read_hit_and_wait_response(
+      dut, table_driver, trace.survivor_after, trace.first_master,
+      trace.survivor_hit_no_external);
+  require(trace.survivor_hit_no_external,
+          "C++ invalidate_line multi-master survivor escaped to external AXI");
   return trace;
 }
 
@@ -9174,6 +9259,7 @@ void issue_cache_read_hit_and_wait_response(
   no_external_issue = true;
   bool accepted = false;
   bool request_active = true;
+  bool ready_seen = false;
   bool resp_seen = false;
   for (int cycle = 0; cycle < 240 && !resp_seen; ++cycle) {
     clear_inputs(dut);
@@ -9196,8 +9282,12 @@ void issue_cache_read_hit_and_wait_response(
         !dut.axi_mmio_io.ar.arvalid && !dut.axi_mmio_io.aw.awvalid &&
         !dut.axi_mmio_io.w.wvalid;
     if (request_active && dut.read_ports[master].req.ready) {
-      accepted = true;
-      request_active = false;
+      if (master == axi_interconnect::MASTER_DCACHE_R || ready_seen) {
+        accepted = true;
+        request_active = false;
+      } else {
+        ready_seen = true;
+      }
     }
     auto &resp = dut.read_ports[master].resp;
     if (resp.valid) {
@@ -10563,6 +10653,26 @@ void emit_invalidate_line_scope_read(
      << (trace.survivor_hit_no_external ? 1 : 0) << ";\n";
 }
 
+void emit_invalidate_line_multi_master_recovery_read(
+    std::ostream &os, const InvalidateLineMultiMasterRecoveryReadTrace &trace) {
+  emit_read(os, trace.first_fill);
+  emit_read(os, trace.second_fill);
+  emit_read(os, trace.target_after);
+  emit_read(os, trace.survivor_after);
+  os << "localparam integer " << trace.prefix
+     << "_FIRST_MASTER = " << static_cast<unsigned>(trace.first_master)
+     << ";\n";
+  os << "localparam integer " << trace.prefix
+     << "_SECOND_MASTER = " << static_cast<unsigned>(trace.second_master)
+     << ";\n";
+  os << "localparam [31:0] " << trace.prefix
+     << "_INVALIDATE_ADDR = " << hex_u32(trace.invalidate_addr) << ";\n";
+  os << "localparam " << trace.prefix << "_INVALIDATE_ACCEPTED = 1'b"
+     << (trace.invalidate_accepted ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_SURVIVOR_HIT_NO_EXTERNAL = 1'b"
+     << (trace.survivor_hit_no_external ? 1 : 0) << ";\n";
+}
+
 void emit_invalidate_all_recovery_cache_read(
     std::ostream &os, const InvalidateAllRecoveryReadTrace &trace) {
   emit_read(os, trace.first_fill);
@@ -11062,6 +11172,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_invalidate_line_recovery_read_trace();
   const auto mode1_invalidate_line_scope_read =
       run_mode1_invalidate_line_scope_read_trace();
+  const auto mode1_invalidate_line_multi_master_recovery_read =
+      run_mode1_invalidate_line_multi_master_recovery_read_trace();
   const auto mode1_invalidate_all_recovery_cache_read =
       run_mode1_invalidate_all_recovery_cache_read_trace();
   const auto mode1_invalidate_all_multi_master_recovery_cache_read =
@@ -11241,6 +11353,8 @@ void emit_vectors(std::ostream &os) {
   emit_invalidate_line_recovery_read(os,
                                      mode1_invalidate_line_recovery_read);
   emit_invalidate_line_scope_read(os, mode1_invalidate_line_scope_read);
+  emit_invalidate_line_multi_master_recovery_read(
+      os, mode1_invalidate_line_multi_master_recovery_read);
   emit_invalidate_all_recovery_cache_read(
       os, mode1_invalidate_all_recovery_cache_read);
   emit_invalidate_all_multi_master_recovery_cache_read(

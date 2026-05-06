@@ -458,6 +458,10 @@ core 内部 hazard 遮掉。
   两个 read master 先各自填充 clean cache line，`invalidate_all` 被 accepted 后，
   同两个 master 再读相同行都必须重新走 DDR miss/refill，不能命中维护前的 stale
   resident line
+- 覆盖 MODE_CACHE 下 `ICACHE` + `DCACHE_R` multi-master target-line `invalidate_line`
+  recovery/scope：两个 read master 先各自填充 clean cache line，只 invalidate
+  second-master line；second-master 后续必须重新 DDR miss/refill，first-master survivor
+  后续必须 hit 且不外发 AXI
 - 覆盖 MODE_CACHE 下 cacheable read miss/refill、MMIO read direct-bypass 与
   `invalidate_all` 同时存在的 drain/recovery：MMIO `R` 先返回并被 upstream hold 时，
   DDR refill `RREADY` 仍不能被 held response 或 maintenance pending 反压；MMIO/cache

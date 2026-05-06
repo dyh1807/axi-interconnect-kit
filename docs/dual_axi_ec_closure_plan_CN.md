@@ -1,0 +1,94 @@
+# Dual AXI EC 收敛计划
+
+本文档用于冻结后续 C++ reference / RTL EC 的收敛边界，避免继续按“想到一个
+case 就补一个”的开放式方式扩展。目标不是枚举所有交叉组合，而是用有限矩阵、
+固定随机种子和形式化不变量覆盖需求中的关键风险。
+
+## 收敛原则
+
+- 不做完整笛卡尔积枚举。`mode`、master、DDR/MMIO、maintenance、dirty/victim、
+  response-held 等维度组合过多，继续手写单点 case 会无穷展开。
+- 每个需求必须至少有一个正向路径和一个阻断/回压路径。例：合法 DDR 64B read
+  要能发出两拍 256-bit `AR/R`，非法 MMIO 8B 要 ready=0 且不发任一外部 AXI。
+- 每类 drain 不变量只用代表性组合覆盖。例：`invalidate_all` / `invalidate_line`
+  都必须覆盖 pending lower response、held upstream response、dirty resident blocked
+  和 retire 后恢复。
+- 多 master 不再继续按所有 master 组合枚举。当前固定代表组合为
+  `ICACHE + DCACHE_R`，因为它覆盖 ready-first 与 same-cycle accept 的差异。
+- 后续新增 case 必须满足以下条件之一：补齐矩阵缺口、复现真实 bug、或验证一个尚未
+  被形式化/随机 seed 覆盖的不变量。
+
+## Deterministic Trace Matrix
+
+| 类别 | 必须覆盖的行为 | 当前状态 |
+| --- | --- | --- |
+| 地址分类 | DDR/SDRAM `>=0x4000_0000`，MMIO 其它地址，mapped local window | 已覆盖 |
+| DDR 形状 | 4B/8B/16B/32B/64B read/write，DDR 固定 256-bit beat，64B 为 2 beat | 已覆盖 |
+| MMIO 形状 | 仅 32-bit / 1 beat，unsupported wider MMIO ready=0 且不外发 AXI | 已覆盖 |
+| outstanding/ID | read/write 独立，ID reuse/release，response route 不串线 | 已覆盖 |
+| 同地址 AR/AW hazard | pending read/write 下相同 hazard granule 不允许相反方向提前 accepted | 已覆盖 |
+| response 不回压 lower | upstream response held 时 DDR/MMIO `RREADY/BREADY` 不被错误拉低 | 已覆盖代表场景 |
+| `invalidate_all` drain | pending MMIO/cache read/write、held response、dirty resident blocked、retire 后恢复 | 已覆盖代表场景 |
+| `invalidate_line` drain | target-line pending read/write、unrelated line compat-local drain、scope survivor hit | 已覆盖代表场景 |
+| multi-master maintenance | `ICACHE + DCACHE_R` drain 与 recovery，覆盖 ready-first / same-cycle accept 差异 | 已覆盖代表场景 |
+| reconfig drain | MODE_CACHE -> MODE_MAPPED 下 pending MMIO/cache read/write drain | 已覆盖代表场景 |
+| dirty victim | dirty victim writeback 与 MMIO read/write 并发时 drain/blocked | 已覆盖代表场景 |
+| production-width smoke | production-size mapped window / direct DDR read smoke | 已覆盖 smoke，仍非 full EC |
+
+## 固定随机 Seed Suite
+
+后续不再继续手写大量相似组合，而应补一个固定 seed suite：
+
+- 目标：随机产生 read/write/MMIO/cacheable/maintenance/reconfig 序列，C++ 产生 trace，
+  RTL TB 消费同一 trace，比较所有可观察外部 AXI 和 upstream response 事件。
+- 初始规模：`32` 个短 seed，每个 seed 控制在仿真可接受范围内。
+- 必选扰动：response held、DDR/MMIO 返回乱序但合法、maintenance pending、same-line
+  AR/AW hazard、dirty victim、multi-master read。
+- 固定准入：seed 失败必须保存 JSON/trace；修复后 seed 进入回归集，不再丢弃。
+
+## 形式化/不变量 Gate
+
+形式化不用于替代全系统 EC，但用于卡住不适合靠枚举发现的错误：
+
+- address classifier/router：同一请求不得同时走 DDR/MMIO，unsupported MMIO 不外发。
+- hazard scoreboard：同一 hazard granule 上 pending AR/AW 约束必须保持。
+- response mux：upstream held response 不应对 lower `RREADY/BREADY` 产生非法依赖。
+- maintenance gate：有 pending lower response、held upstream response 或 dirty resident
+  line 时，maintenance accepted 必须为 0。
+
+形式化 harness 必须引用实际会使用的 RTL/C++ 文件，不接受另写一个“按理解重做”的
+模型作为替代。
+
+## Linux / Performance Gate
+
+只要 production C++/RTL 路径发生修改，就必须重新跑：
+
+- large + `CONFIG_BPU` Linux 300k quick gate。
+- 300k 正常后跑 5M gate。
+- 结论不能只写 pass/error；必须报告 cycles、IPC、commit/load/store、相对 baseline
+  delta，以及差异是否可接受。
+- 若改动理论上不应影响性能，优先要求 `--require-exact`；允许抖动时暂用
+  `--max-cycle-delta-pct 1.0 --max-ipc-drop-pct 1.0`。
+
+## DC / Timing Gate
+
+DC 不作为 EC 完成的替代信号。EC freeze 后再进入长期 DC：
+
+- 使用 9T20 标准单元库和 SMIC12 SRAM macro。
+- 保留完整 console log、report、qor/timing/area/power、netlist、ddc/svf。
+- 若 full top 长期停在 elaborate 且无新日志，需要记录状态后考虑在可用 EDA
+  服务器启动 clean DC，而不是无限等待单一 run。
+
+## Stop Criteria
+
+短期 EC 可认为收敛的条件：
+
+- Deterministic trace matrix 中所有“必须覆盖”项均为已覆盖或明确 out-of-scope。
+- C++ `ctest` 全通过。
+- RTL `run_all_contracts.sh` 全通过。
+- 固定随机 seed suite 建立并通过初始 `32` seeds。
+- 已有 hw-cbmc/formal manifest 中的实际模块 harness 全通过。
+- 若有 production 路径修改，Linux 300k/5M perf gate 通过且 cycles/IPC delta 可接受。
+
+未满足上述条件前，不应宣称 C++/RTL EC 完成；但满足后也不再继续手工新增零散 case，
+除非发现真实 bug 或矩阵/不变量缺口。
