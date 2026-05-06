@@ -445,6 +445,11 @@ core 内部 hazard 遮掉。
   不是同一 cacheline，也必须等 compat-local queue / inflight / response slot 全排空后
   才允许 maintenance accepted；同时 MMIO `RREADY/BREADY` 与 DDR refill `RREADY`
   不能被 maintenance 或 held upstream response 反压
+- 覆盖 MODE_CACHE 下 `ICACHE` + `DCACHE_R` multi-master cache read miss 与
+  `invalidate_all` 同时存在的 drain：`ICACHE` 按 ready-first 两拍握手进入实际
+  C++/RTL LLC 路径，两个 read master 各自分配独立 DDR `ARID`；first-master upstream
+  response 被 hold 时，second DDR refill `RREADY` 仍必须保持 ready，两个 master 的
+  response 都 retire 后才允许 `invalidate_all_accepted`
 - 覆盖 MODE_CACHE 下 cacheable read miss/refill、MMIO read direct-bypass 与
   `invalidate_all` 同时存在的 drain/recovery：MMIO `R` 先返回并被 upstream hold 时，
   DDR refill `RREADY` 仍不能被 held response 或 maintenance pending 反压；MMIO/cache
