@@ -299,9 +299,9 @@ module llc_cache_ctrl #(
             merge_line = base_line;
             line_off = addr_value[LINE_OFFSET_BITS-1:0];
             for (dst_idx = 32'd0; dst_idx < LINE_BYTES; dst_idx = dst_idx + 32'd1) begin
-                for (src_idx = 32'd0; src_idx < LINE_BYTES; src_idx = src_idx + 32'd1) begin
-                    if (write_strb[src_idx] &&
-                        ((line_off + src_idx) == dst_idx)) begin
+                if (dst_idx >= line_off) begin
+                    src_idx = dst_idx - line_off;
+                    if ((src_idx < LINE_BYTES) && write_strb[src_idx]) begin
                         merge_line[(dst_idx * 8) +: 8] =
                             write_data[(src_idx * 8) +: 8];
                     end
@@ -417,11 +417,10 @@ module llc_cache_ctrl #(
             extract_read_response = {READ_RESP_BITS{1'b0}};
             start_word = addr_value[LINE_OFFSET_BITS-1:2];
             for (dst_idx = 32'd0; dst_idx < RESP_WORDS; dst_idx = dst_idx + 32'd1) begin
-                for (src_idx = 32'd0; src_idx < LINE_WORDS; src_idx = src_idx + 32'd1) begin
-                    if (src_idx == (start_word + dst_idx)) begin
-                        extract_read_response[(dst_idx * RESP_WORD_BITS) +: RESP_WORD_BITS] =
-                            line_value[(src_idx * RESP_WORD_BITS) +: RESP_WORD_BITS];
-                    end
+                src_idx = start_word + dst_idx;
+                if (src_idx < LINE_WORDS) begin
+                    extract_read_response[(dst_idx * RESP_WORD_BITS) +: RESP_WORD_BITS] =
+                        line_value[(src_idx * RESP_WORD_BITS) +: RESP_WORD_BITS];
                 end
             end
         end

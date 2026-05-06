@@ -94,6 +94,26 @@
   DC elaborate 早期暴露的新增 pool-index signedness warning 已通过 8-bit pool index
   类型 cleanup 消除。该修改 supersede 此前所有 compat link sanity；下一轮 sanity/DC
   必须基于包含 response-pool 和 signedness cleanup 的 current HEAD 启动。
+- 2026-05-06 20:45 CST 的 compat link sanity OOM 不是 valid/repl regfile 必然导致
+  的单进程极限。`dmesg -T` 显示该事件是 `global_oom`，OOM killer 记录中同时存在大量
+  其它用户的 `simulator` 进程，单个 RSS 为数 GB 量级；被杀的 `common_shell_ex`
+  当时 `anon-rss` 约 `35150324 kB`。因此直接触发因素是全机内存压力。不过该日志也
+  说明旧 RTL 在 `llc_cache_ctrl` elaborate 前内存已升至 35GB 量级，仍应降低组合展开
+  复杂度以减少被共享服务器挤掉的风险。
+- 2026-05-06 21:17 CST 当前 RTL 上的
+  `AXI_LLC_DC_TOP=axi_llc_subsystem_compat` link sanity 已通过，目录为
+  `rtl/dc/runs/compat_link_sanity_cache_helper_slim_wip_20260506_205627_eda10`，
+  使用 SMIC12 9T20 RVT/LVT 标准单元与 data/meta SRAM `.db`，`LINK_SANITY_PASS`，
+  `Memory usage for this session 9351 Mbytes`，CPU `0.42h`。该 run 证明
+  data/meta macro link 正常，`valid_mem_reg`/`repl_mem_reg` 仍按预期保持 regfile。
+- 2026-05-06 21:32 CST 为避免新增 signedness 噪声，对 `llc_cache_ctrl` 的
+  `merge_line` 和 `extract_read_response` 保持单层循环但使用无符号 `reg [31:0]`
+  loop/index 变量。全量 RTL contract 53/53 已通过，目录为
+  `rtl/local_debug/vcs_all_contracts_cache_helper_slim_unsigned_20260506_212255_eda10`；
+  `AXI_LLC_DC_TOP=llc_cache_ctrl` link sanity 也已通过，目录为
+  `rtl/dc/runs/cache_ctrl_link_sanity_helper_slim_unsigned_wip_20260506_212515_eda10`，
+  `LINK_SANITY_PASS`，`Memory usage for this session 6567 Mbytes`，CPU `0.14h`，
+  且未再出现该文件新增的 signedness warning。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
