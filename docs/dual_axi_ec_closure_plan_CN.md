@@ -110,6 +110,20 @@ RTL contract `local_debug/vcs_all_contracts_seeded_maintenance_20260506_190155_e
   maintenance/recovery suite 和 RTL contract 覆盖；不再通过 monolithic top formal
   强行证明，除非后续把 maintenance accepted 条件拆成生产 helper。
 
+## Table-Oracle / State-IO Cutpoint 方向
+
+长期端到端形式 EC 的主要风险是 monolithic top 会同时拉入 compat queue、core MSHR、
+store table、bridge pending、hazard scoreboard 和宽 payload。后续不应把整张 LLC
+data/meta/valid/repl 表作为 PI/PO 展开，而应采用 table-oracle / state-IO cutpoint：
+
+- table read 只输入本次查询 set/row 的返回值。
+- table write 只输出本次写表意图：`wr_en/wr_set/wr_data/wr_mask`。
+- 同一 tracked set 的 read-after-write 由 harness shadow row 保证一致。
+- store primitive 的 latency/mask 行为仍由独立 proof 或 VCS contract 负责。
+
+具体规划见 [formal_table_oracle_cutpoints_CN.md](formal_table_oracle_cutpoints_CN.md)。
+该方向是后续结构化补强，不是重新打开 directed case 笛卡尔积。
+
 ## Linux / Performance Gate
 
 只要 production C++/RTL 路径发生修改，就必须重新跑：

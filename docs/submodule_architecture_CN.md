@@ -258,4 +258,5 @@ RTL 当前默认：
 4. `rtl/README_CN.md`。
 5. `docs/dual_external_axi_ports_CN.md`。
 6. `docs/dual_axi_ec_closure_plan_CN.md`。
-7. `rtl/dc/README_CN.md`。
+7. `docs/formal_table_oracle_cutpoints_CN.md`。
+8. `rtl/dc/README_CN.md`。

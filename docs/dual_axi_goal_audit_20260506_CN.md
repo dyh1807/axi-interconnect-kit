@@ -145,6 +145,11 @@ contract 已通过 `53/53`，目录为
 - 2026-05-06 22:06 CST 复查：仍在 `DC_STAGE elaborate_start` / building
   `axi_llc_subsystem_compat`，RSS 约 `5.2GB`，`eda-09` 约 `582GiB` available memory；
   当前仍无 compile/QoR/timing/netlist 结果，因此不能 signoff
+- 2026-05-06 23:26 CST 复查：`elaborate_done` 已在 22:32 CST 完成，`LINK_SANITY_PASS`
+  已出现，并已写出 `outputs/ddc/axi_llc_subsystem_dual_post_link.ddc`。当前进程仍在运行，
+  RSS 约 `88.9GB`，`eda-09` available memory 约 `502GiB`；已生成
+  `reports/axi_llc_subsystem_dual_qor_precompile.rpt`，但尚未进入/完成 postcompile
+  QoR/timing/area/netlist 产物阶段，因此仍不能 signoff，也不需要重开 clean DC。
 
 DC 脚本产物审计：
 

@@ -2231,6 +2231,10 @@ formal/dual_port_hazard_scoreboard/run_hw_cbmc.sh
 
 ## 后续推进顺序
 
+0. 对 LLC table 相关 proof，优先采用
+   [../docs/formal_table_oracle_cutpoints_CN.md](../docs/formal_table_oracle_cutpoints_CN.md)
+   中的 table-oracle / state-IO cutpoint：只输入本次查询 row、只输出写表意图，
+   不展开整张 data/meta/valid/repl 表。
 1. 继续把实际 bridge 的 route/issue 组合层抽成生产子模块，但必须让生产 bridge 使用
    该子模块。
 2. 继续拆 actual bridge 生产宽度 64B/256-bit 小范围 bounded 复核；当前 `AR/AW`

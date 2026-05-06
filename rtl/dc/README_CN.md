@@ -130,6 +130,10 @@
   launcher PID `3230090`，DC PID `3230092`。启动时 `eda-09` 约有 `588GiB`
   available memory，无正在运行的我方 DC；早期日志已完成 data/meta SRAM `.db`
   读取并进入 RTL analyze，当前尚无 compile/QoR/timing/netlist 结果。
+- 2026-05-06 23:26 CST 复查该 `eda-09` run：`elaborate_done` 已在 22:32 CST 完成，
+  link sanity 通过，post-link DDC 已写出；进程仍在运行，RSS 约 `88.9GB`，`eda-09`
+  available memory 约 `502GiB`。当前已有 precompile QoR report，但尚无 postcompile
+  QoR/timing/area/netlist signoff 产物。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
