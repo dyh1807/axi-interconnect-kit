@@ -697,6 +697,14 @@ struct ReconfigCacheReadTrace {
   bool rready_while_reconfig_pending = false;
 };
 
+struct ReconfigCacheWriteTrace {
+  WriteTrace write;
+  ReadTrace refill;
+  uint8_t write_master = 0;
+  bool rready_while_reconfig_pending = false;
+  bool blocked_after_resp_retire = false;
+};
+
 struct InvalidateLineCacheMmioReadTrace {
   OverlapReadTrace overlap;
   std::string prefix;
@@ -2597,6 +2605,181 @@ ReconfigCacheReadTrace run_mode1_to_mode2_pending_cache_read_trace() {
   }
   require(false,
           "C++ mode transition did not complete after cache response retired");
+  return trace;
+}
+
+ReconfigCacheWriteTrace run_mode1_to_mode2_pending_cache_write_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  InvalidLlcTableDriver table_driver(dut.get_llc_config());
+
+  ReconfigCacheWriteTrace trace{};
+  trace.write.prefix = "CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE";
+  trace.write.req_addr = 0x40000d04u;
+  trace.write.req_size = 3;
+  trace.write.req_id = 0xAu;
+  const auto write_data = single_word_data(0x24681357u);
+  const auto write_strobe = byte_strobe(0xfu);
+  trace.write.req_wdata = wide_write_words(write_data);
+  trace.write.req_wstrb = write_strobe_mask(write_strobe);
+  trace.refill.prefix = "CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REFILL";
+  trace.refill.req_addr = trace.write.req_addr;
+  trace.refill.req_size = 63;
+  trace.refill.req_id = 0;
+  trace.refill.beat_count = 2;
+  trace.refill.resp_data.assign(axi_interconnect::MAX_READ_TRANSACTION_WORDS, 0);
+  trace.write_master = axi_interconnect::MASTER_DCACHE_W;
+
+  bool accepted = false;
+  bool ar_seen = false;
+  bool request_active = true;
+  for (int cycle = 0; cycle < 120 && !ar_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    const bool ready_snapshot = dut.write_ports[trace.write_master].req.ready;
+    if (request_active) {
+      auto &req = dut.write_ports[trace.write_master].req;
+      req.valid = true;
+      req.addr = trace.write.req_addr;
+      req.total_size = trace.write.req_size;
+      req.id = trace.write.req_id;
+      req.wdata = write_data;
+      req.wstrb = write_strobe;
+      req.bypass = false;
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (request_active && ready_snapshot) {
+      accepted = true;
+      request_active = false;
+    }
+    if (dut.axi_ddr_io.ar.arvalid) {
+      require(!dut.axi_mmio_io.ar.arvalid,
+              "C++ mode1-to-mode2 cache write refill escaped to MMIO AR");
+      trace.refill.araddr = static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr);
+      trace.refill.arlen = static_cast<uint8_t>(dut.axi_ddr_io.ar.arlen);
+      trace.refill.arsize = static_cast<uint8_t>(dut.axi_ddr_io.ar.arsize);
+      trace.refill.arburst = static_cast<uint8_t>(dut.axi_ddr_io.ar.arburst);
+      trace.refill.arid = static_cast<uint8_t>(dut.axi_ddr_io.ar.arid);
+      ar_seen = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  require(accepted, "C++ mode1-to-mode2 cache write was not accepted");
+  require(ar_seen, "C++ mode1-to-mode2 cache write did not issue DDR AR");
+  require(trace.refill.beat_count ==
+              static_cast<uint32_t>(trace.refill.arlen) + 1u,
+          "C++ mode1-to-mode2 cache write refill beat count mismatch");
+
+  dut.mode = 2u;
+  dut.llc_mapped_offset = 0x30000000u;
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(dut.active_mode() != 2u,
+            "C++ mode transition completed while cache write was pending");
+    dut.seq();
+    ++sim_time;
+  }
+
+  trace.rready_while_reconfig_pending = true;
+  for (uint32_t beat = 0; beat < trace.refill.beat_count; ++beat) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.axi_ddr_io.r.rvalid = true;
+    dut.axi_ddr_io.r.rid = trace.refill.arid;
+    dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+    dut.axi_ddr_io.r.rlast = beat == trace.refill.beat_count - 1u;
+    dut.axi_ddr_io.r.rdata = ddr_read_beat(0xd00d1000u + beat * 0x100u);
+    trace.refill.rbeats[beat] = axi_words(dut.axi_ddr_io.r.rdata);
+    dut.comb_outputs();
+    trace.rready_while_reconfig_pending =
+        trace.rready_while_reconfig_pending && dut.axi_ddr_io.r.rready;
+    require(dut.axi_ddr_io.r.rready,
+            "C++ mode1-to-mode2 cache write DDR R was backpressured");
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(dut.active_mode() != 2u,
+            "C++ mode transition completed in cache write DDR R handshake");
+    dut.seq();
+    ++sim_time;
+  }
+
+  bool cache_resp_seen = false;
+  for (int cycle = 0; cycle < 180 && !cache_resp_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    auto &resp = dut.write_ports[trace.write_master].resp;
+    if (resp.valid) {
+      cache_resp_seen = true;
+      trace.write.resp_id = static_cast<uint8_t>(resp.id);
+      trace.write.resp_code = static_cast<uint8_t>(resp.resp);
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(dut.active_mode() != 2u,
+            "C++ mode transition completed before cache write response retired");
+    dut.seq();
+    ++sim_time;
+  }
+  require(cache_resp_seen,
+          "C++ mode1-to-mode2 cache write response timeout");
+
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    require(dut.write_ports[trace.write_master].resp.valid,
+            "C++ mode1-to-mode2 cache write response was not held");
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(dut.active_mode() != 2u,
+            "C++ mode transition completed while cache write response held");
+    dut.seq();
+    ++sim_time;
+  }
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.write_ports[trace.write_master].resp.ready = true;
+  dut.comb_outputs();
+  require(dut.write_ports[trace.write_master].resp.valid,
+          "C++ mode1-to-mode2 cache write response not valid at retire");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(dut.active_mode() != 2u,
+          "C++ mode transition completed before cache write response retire edge");
+  dut.seq();
+  ++sim_time;
+
+  trace.blocked_after_resp_retire = true;
+  for (int retry = 0; retry < 16; ++retry) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    trace.blocked_after_resp_retire =
+        trace.blocked_after_resp_retire && dut.active_mode() != 2u;
+    require(dut.active_mode() != 2u,
+            "C++ mode transition completed with dirty cache write resident");
+    dut.seq();
+    ++sim_time;
+  }
   return trace;
 }
 
@@ -6979,6 +7162,18 @@ void emit_reconfig_cache_read(std::ostream &os,
      << (trace.rready_while_reconfig_pending ? 1 : 0) << ";\n";
 }
 
+void emit_reconfig_cache_write(std::ostream &os,
+                               const ReconfigCacheWriteTrace &trace) {
+  emit_cache_write_req_resp(os, trace.write);
+  os << "localparam integer " << trace.write.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.write_master) << ";\n";
+  emit_read(os, trace.refill);
+  os << "localparam " << trace.refill.prefix << "_RREADY_PENDING = 1'b"
+     << (trace.rready_while_reconfig_pending ? 1 : 0) << ";\n";
+  os << "localparam " << trace.write.prefix << "_BLOCKED_AFTER_RETIRE = 1'b"
+     << (trace.blocked_after_resp_retire ? 1 : 0) << ";\n";
+}
+
 void emit_invalidate_line_cache_mmio_read(
     std::ostream &os, const InvalidateLineCacheMmioReadTrace &trace) {
   emit_overlap_read(os, trace.overlap);
@@ -7306,6 +7501,8 @@ void emit_vectors(std::ostream &os) {
           single_word_data(0xface0128u), byte_strobe(0xfu));
   const auto mode1_to_mode2_pending_cache_read =
       run_mode1_to_mode2_pending_cache_read_trace();
+  const auto mode1_to_mode2_pending_cache_write =
+      run_mode1_to_mode2_pending_cache_write_trace();
 
   os << "`ifndef AXI_DUAL_CPP_TRACE_VECTORS_VH\n";
   os << "`define AXI_DUAL_CPP_TRACE_VECTORS_VH\n";
@@ -7387,6 +7584,7 @@ void emit_vectors(std::ostream &os) {
   emit_read(os, mode1_to_mode2_pending_mmio_read_write.read);
   emit_write(os, mode1_to_mode2_pending_mmio_read_write.write);
   emit_reconfig_cache_read(os, mode1_to_mode2_pending_cache_read);
+  emit_reconfig_cache_write(os, mode1_to_mode2_pending_cache_write);
   os << "\n`endif\n";
 }
 

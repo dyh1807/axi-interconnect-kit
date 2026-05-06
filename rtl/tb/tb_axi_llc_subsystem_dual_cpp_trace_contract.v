@@ -2997,6 +2997,164 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_to_mode2_pending_cache_write_and_check;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            write_resp_ready = {NUM_WRITE_MASTERS{1'b0}};
+            ddr_axi_arready = 1'b0;
+            ddr_axi_awready = 1'b0;
+            ddr_axi_wready = 1'b0;
+
+            write_req_addr[(CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REQ_ADDR;
+            write_req_total_size[(CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER * 8) +: 8] =
+                CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REQ_SIZE;
+            write_req_id[(CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REQ_ID;
+            write_req_wdata[(CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER * LINE_BITS) +: LINE_BITS] =
+                CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REQ_WDATA;
+            write_req_wstrb[(CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER * LINE_BYTES) +: LINE_BYTES] =
+                CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REQ_WSTRB[LINE_BYTES-1:0];
+            write_req_bypass[CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER] = 1'b0;
+            write_req_valid[CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER] = 1'b1;
+
+            timeout = 180;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (write_req_accepted[CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (!accepted_seen) begin
+                fail_now("C++ trace mode1-to-mode2 cache write accept timeout");
+            end
+            write_req_valid[CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER] = 1'b0;
+            @(negedge clk);
+
+            timeout = 260;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace mode1-to-mode2 cache write refill AR timeout");
+            end
+            #1;
+            if (ddr_axi_araddr != CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REFILL_ARADDR ||
+                ddr_axi_arlen != CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REFILL_ARLEN ||
+                ddr_axi_arsize != CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REFILL_ARSIZE ||
+                ddr_axi_arburst != CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REFILL_ARBURST ||
+                ddr_axi_arid != CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REFILL_ARID ||
+                mmio_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid) begin
+                fail_now("C++ trace mode1-to-mode2 cache write refill AR mismatch");
+            end
+            seen_ddr_arid = ddr_axi_arid;
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+
+            mode_req = MODE_MAPPED;
+            repeat (4) begin
+                @(posedge clk);
+                #1;
+                if (active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed while cache write pending");
+                end
+            end
+
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REFILL_RBEAT0;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b0;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !==
+                    CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REFILL_RREADY_PENDING ||
+                active_mode == MODE_MAPPED) begin
+                fail_now("C++ trace mode1-to-mode2 cache write R beat0 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REFILL_RBEAT1;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !==
+                    CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_REFILL_RREADY_PENDING ||
+                active_mode == MODE_MAPPED) begin
+                fail_now("C++ trace mode1-to-mode2 cache write R beat1 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 260;
+            while (!write_resp_valid[CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER] &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed before cache write response");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace mode1-to-mode2 cache write response timeout");
+            end
+            #1;
+            if (write_resp_id[(CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_RESP_ID ||
+                write_resp_code[(CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER * 2) +: 2] !=
+                    CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_RESP_CODE) begin
+                fail_now("C++ trace mode1-to-mode2 cache write response mismatch");
+            end
+
+            repeat (4) begin
+                @(posedge clk);
+                #1;
+                if (active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed while cache write response held");
+                end
+            end
+
+            @(negedge clk);
+            write_resp_ready[CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER] = 1'b1;
+            #1;
+            if (write_resp_id[(CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_RESP_ID ||
+                write_resp_code[(CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER * 2) +: 2] !=
+                    CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_RESP_CODE ||
+                active_mode == MODE_MAPPED) begin
+                fail_now("C++ trace mode1-to-mode2 cache write retire mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            write_resp_ready[CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_MASTER] = 1'b0;
+
+            repeat (16) begin
+                @(posedge clk);
+                #1;
+                if (CPP_MODE1_TO_MODE2_PENDING_CACHE_WRITE_BLOCKED_AFTER_RETIRE &&
+                    active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed with dirty cache write resident");
+                end
+            end
+        end
+    endtask
+
     task issue_overlapped_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -8902,6 +9060,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
             CPP_MODE1_TO_MODE2_PENDING_MMIO_WRITE_RESP_CODE);
         issue_mode1_to_mode2_pending_mmio_rw_and_check();
         issue_mode1_to_mode2_pending_cache_read_and_check();
+        issue_mode1_to_mode2_pending_cache_write_and_check();
 
         $display("tb_axi_llc_subsystem_dual_cpp_trace_contract PASS");
         $finish(0);
