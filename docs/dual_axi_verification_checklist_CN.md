@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=191 / open=2。本轮新增 actual `llc_cache_ctrl.v`
+当前计数：done=192 / open=2。本轮新增 actual `llc_cache_ctrl.v`
 `invalidate_line` hit bounded formal，证明 accepted 后在 bounded window 内出现与 C++
 trace 对齐的 valid clear payload；side-effect safety 仍由实际 RTL VCS trace contract
 覆盖。本轮新增 MODE_CACHE `invalidate_line` 与 cacheable
@@ -1024,6 +1024,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   同时存在时的 drain/blocked 组合；本轮继续补齐同一路径 drain 后 targeted dirty
   resident line `invalidate_line` 可被 accepted 的 C++/RTL 对齐检查，最新 targeted VCS
   目录：`rtl/local_debug/vcs_dual_cpp_trace_dirty_victim_invline_20260506_134755_eda10`；
+  本轮继续补齐 dirty victim writeback + pending MMIO read + `invalidate_all` 同时存在时
+  的 drain/blocked 组合，要求 MMIO `RREADY` 与 DDR victim `BREADY` 均不被 pending
+  maintenance 或 held response 回压，并在 drain 后确认 targeted dirty resident line
+  `invalidate_line` 可被 accepted；最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_dirty_victim_mmio_read_20260506_135823_eda10`；
   后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
   maintenance/recovery 组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
@@ -1057,7 +1062,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   writeback + MMIO direct-bypass 并发第一组：已补两条同 set dirty line setup 后第三笔
   full-line write miss 触发 DDR victim `AW/W`，victim `B` pending 期间另一 write master
   的 MMIO 4B write 仍可独立发出并回收/hold response；held MMIO response 不回压 DDR
-  victim `BREADY`，DDR `B` 后 cache write response 与实际 C++ trace 一致。
+  victim `BREADY`，DDR `B` 后 cache write response 与实际 C++ trace 一致。随后补齐
+  对称的 MMIO read direct-bypass：victim `B` pending 期间另一 read master 的 MMIO
+  4B read 可独立发出，pending maintenance 下 MMIO `RREADY` 与 DDR victim `BREADY`
+  均不被 held response 回压，MMIO/cache response retire 前不接受 `invalidate_all`，
+  drain 后 targeted `invalidate_line` 可 accepted。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的剩余并发场景：DDR 64B 两拍
   read/write 与 MMIO 同时在途、同一 upstream read master 多 ID response out-of-order
   完成与 held response 稳定性、同一 upstream write master 多 ID `B` response
