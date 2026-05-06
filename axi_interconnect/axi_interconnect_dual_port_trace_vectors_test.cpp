@@ -742,6 +742,17 @@ struct InvalidateAllRecoveryReadTrace {
   bool invalidate_accepted = false;
 };
 
+struct InvalidateAllMultiMasterRecoveryReadTrace {
+  ReadTrace first_fill;
+  ReadTrace second_fill;
+  ReadTrace first_after;
+  ReadTrace second_after;
+  std::string prefix;
+  uint8_t first_master = 0;
+  uint8_t second_master = 0;
+  bool invalidate_accepted = false;
+};
+
 struct InvalidateAllRecoveryWriteTrace {
   ReadTrace fill;
   WriteTrace write_after;
@@ -3588,6 +3599,75 @@ run_mode1_invalidate_all_recovery_cache_read_trace() {
                                           trace.read_master, 0xd00d2000u);
   issue_cache_read_miss_and_wait_response(dut, table_driver, trace.second_after,
                                           trace.read_master, 0xd00d2200u);
+  return trace;
+}
+
+InvalidateAllMultiMasterRecoveryReadTrace
+run_mode1_invalidate_all_multi_master_recovery_read_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  StatefulLlcTableDriver table_driver(dut.get_llc_config());
+
+  InvalidateAllMultiMasterRecoveryReadTrace trace{};
+  trace.prefix = "CPP_MODE1_INVALL_MULTI_MASTER_RECOVERY";
+  trace.first_master = axi_interconnect::MASTER_ICACHE;
+  trace.second_master = axi_interconnect::MASTER_DCACHE_R;
+  trace.first_fill.prefix =
+      "CPP_MODE1_INVALL_MULTI_MASTER_RECOVERY_FIRST_FILL";
+  trace.first_fill.req_addr = 0x40002404u;
+  trace.first_fill.req_size = 3;
+  trace.first_fill.req_id = 0xCu;
+  trace.first_fill.beat_count = 2;
+  trace.second_fill.prefix =
+      "CPP_MODE1_INVALL_MULTI_MASTER_RECOVERY_SECOND_FILL";
+  trace.second_fill.req_addr = 0x40002444u;
+  trace.second_fill.req_size = trace.first_fill.req_size;
+  trace.second_fill.req_id = 0xDu;
+  trace.second_fill.beat_count = 2;
+  trace.first_after.prefix =
+      "CPP_MODE1_INVALL_MULTI_MASTER_RECOVERY_FIRST_AFTER";
+  trace.first_after.req_addr = trace.first_fill.req_addr;
+  trace.first_after.req_size = trace.first_fill.req_size;
+  trace.first_after.req_id = 0xEu;
+  trace.first_after.beat_count = 2;
+  trace.second_after.prefix =
+      "CPP_MODE1_INVALL_MULTI_MASTER_RECOVERY_SECOND_AFTER";
+  trace.second_after.req_addr = trace.second_fill.req_addr;
+  trace.second_after.req_size = trace.second_fill.req_size;
+  trace.second_after.req_id = 0xFu;
+  trace.second_after.beat_count = 2;
+
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.first_fill,
+                                          trace.first_master, 0xd00d3800u);
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.second_fill,
+                                          trace.second_master, 0xd00d3a00u);
+
+  for (int cycle = 0; cycle < 10000 && !trace.invalidate_accepted; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (dut.llc_invalidate_all_accepted()) {
+      trace.invalidate_accepted = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  if (!trace.invalidate_accepted) {
+    dut.debug_print();
+  }
+  require(trace.invalidate_accepted,
+          "C++ invalidate_all multi-master recovery trace did not accept");
+  dut.set_llc_invalidate_all(false);
+
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.first_after,
+                                          trace.first_master, 0xd00d3c00u);
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.second_after,
+                                          trace.second_master, 0xd00d3e00u);
   return trace;
 }
 
@@ -8984,6 +9064,7 @@ void issue_cache_read_miss_and_wait_response(
   bool accepted = false;
   bool ar_seen = false;
   bool request_active = true;
+  bool ready_seen = false;
   for (int cycle = 0; cycle < 240 && !ar_seen; ++cycle) {
     clear_inputs(dut);
     set_downstream_ready(dut);
@@ -9000,8 +9081,12 @@ void issue_cache_read_miss_and_wait_response(
     dut.comb_inputs();
     table_driver.observe(dut);
     if (request_active && dut.read_ports[master].req.ready) {
-      accepted = true;
-      request_active = false;
+      if (master == axi_interconnect::MASTER_DCACHE_R || ready_seen) {
+        accepted = true;
+        request_active = false;
+      } else {
+        ready_seen = true;
+      }
     }
     if (dut.axi_ddr_io.ar.arvalid) {
       require(!dut.axi_mmio_io.ar.arvalid,
@@ -10490,6 +10575,22 @@ void emit_invalidate_all_recovery_cache_read(
      << (trace.invalidate_accepted ? 1 : 0) << ";\n";
 }
 
+void emit_invalidate_all_multi_master_recovery_cache_read(
+    std::ostream &os, const InvalidateAllMultiMasterRecoveryReadTrace &trace) {
+  emit_read(os, trace.first_fill);
+  emit_read(os, trace.second_fill);
+  emit_read(os, trace.first_after);
+  emit_read(os, trace.second_after);
+  os << "localparam integer " << trace.prefix
+     << "_FIRST_MASTER = " << static_cast<unsigned>(trace.first_master)
+     << ";\n";
+  os << "localparam integer " << trace.prefix
+     << "_SECOND_MASTER = " << static_cast<unsigned>(trace.second_master)
+     << ";\n";
+  os << "localparam " << trace.prefix << "_INVALIDATE_ACCEPTED = 1'b"
+     << (trace.invalidate_accepted ? 1 : 0) << ";\n";
+}
+
 void emit_invalidate_all_recovery_cache_write(
     std::ostream &os, const InvalidateAllRecoveryWriteTrace &trace) {
   emit_read(os, trace.fill);
@@ -10963,6 +11064,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_invalidate_line_scope_read_trace();
   const auto mode1_invalidate_all_recovery_cache_read =
       run_mode1_invalidate_all_recovery_cache_read_trace();
+  const auto mode1_invalidate_all_multi_master_recovery_cache_read =
+      run_mode1_invalidate_all_multi_master_recovery_read_trace();
   const auto mode1_invalidate_all_recovery_cache_write =
       run_mode1_invalidate_all_recovery_cache_write_trace();
   const auto mode1_invalidate_all_multi_read =
@@ -11140,6 +11243,8 @@ void emit_vectors(std::ostream &os) {
   emit_invalidate_line_scope_read(os, mode1_invalidate_line_scope_read);
   emit_invalidate_all_recovery_cache_read(
       os, mode1_invalidate_all_recovery_cache_read);
+  emit_invalidate_all_multi_master_recovery_cache_read(
+      os, mode1_invalidate_all_multi_master_recovery_cache_read);
   emit_invalidate_all_recovery_cache_write(
       os, mode1_invalidate_all_recovery_cache_write);
   emit_invalidate_all_multi_read(os, mode1_invalidate_all_multi_read);
