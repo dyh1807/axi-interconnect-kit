@@ -479,6 +479,18 @@ core 内部 hazard 遮掉。
 - 该 bench 是 trace-based 功能 EC；它用于缩小实际 C++/RTL 语义差距，但不替代
   后续 hw-cbmc 同 harness 端到端形式 EC
 
+### `tb_axi_llc_subsystem_dual_cpp_perf_contract.v`
+
+- 直接面向实际 `axi_llc_subsystem_dual.v`，但只作为手动 performance diagnostic。
+- 期望 cycle 由 `axi_interconnect/axi_interconnect_dual_port_perf_vectors_test.cpp`
+  调用实际 `AXI_Interconnect` comb/seq 路径生成到
+  `rtl/include/axi_dual_cpp_perf_vectors.vh`。
+- 运行入口是 `rtl/run_cpp_perf_contract.sh`，flist 为
+  `rtl/flist/perf_axi_llc_subsystem_dual_cpp_perf_contract.f`。
+- 该 flist 故意不命名为 `tb_*.f`，不会被 `rtl/run_all_contracts.sh` 自动纳入默认功能回归。
+- 当前 direct DDR/MMIO microbench 已发现 RTL 比 C++ 多 1-5 cycle；该结果记录在
+  `docs/rtl_cpp_performance_contract_CN.md`，不能作为默认 PASS gate。
+
 ### `tb_axi_llc_subsystem_dual_mapped_window_prod_contract.v`
 
 - 直接实例化实际 `axi_llc_subsystem_dual.v`

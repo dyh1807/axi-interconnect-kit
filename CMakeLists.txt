@@ -344,6 +344,15 @@ if(AXI_KIT_BUILD_TESTS)
       COMMAND axi_interconnect_dual_port_trace_vectors
               ${CMAKE_CURRENT_BINARY_DIR}/axi_dual_cpp_trace_vectors.vh)
 
+  add_executable(axi_interconnect_dual_port_perf_vectors
+      axi_interconnect/axi_interconnect_dual_port_perf_vectors_test.cpp
+  )
+  target_compile_definitions(axi_interconnect_dual_port_perf_vectors PRIVATE ${AXI_KIT_MMIO_TEST_DEFS})
+  target_link_libraries(axi_interconnect_dual_port_perf_vectors PRIVATE axi_kit_axi4_test_dual_port)
+  add_test(NAME axi_interconnect_dual_port_perf_vectors
+      COMMAND axi_interconnect_dual_port_perf_vectors
+              ${CMAKE_CURRENT_BINARY_DIR}/axi_dual_cpp_perf_vectors.vh)
+
   add_executable(axi_llc_cache_trace_vectors
       axi_interconnect/axi_llc_cache_trace_vectors_test.cpp
   )

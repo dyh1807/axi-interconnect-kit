@@ -242,6 +242,9 @@ RTL 当前默认：
   contract testbench 消费。
 - RTL VCS contracts：覆盖 top/compat/core/bridge 的 directed 行为。
 - hw-cbmc stable manifest：覆盖生产 helper 和若干 actual RTL bounded smoke。
+- RTL/C++ performance diagnostic：testbench-only，对比 C++ 预测事件 cycle 与 RTL
+  实际事件 cycle；当前发现 direct path 仍存在 latency mismatch，见
+  `docs/rtl_cpp_performance_contract_CN.md`。
 - Linux quick perf/difftest：large + `CONFIG_BPU` 的 300k/5M gate，检查功能和
   cycles/IPC 是否退化。
 - DC/timing：使用 9T20 + SMIC12 SRAM 的 full/top 1GHz signoff。
@@ -259,5 +262,6 @@ RTL 当前默认：
 5. `docs/dual_external_axi_ports_CN.md`。
 6. `docs/dual_axi_ec_closure_plan_CN.md`。
 7. `docs/rtl_cpp_equivalence_status_CN.md`。
-8. `docs/formal_table_oracle_cutpoints_CN.md`。
-9. `rtl/dc/README_CN.md`。
+8. `docs/rtl_cpp_performance_contract_CN.md`。
+9. `docs/formal_table_oracle_cutpoints_CN.md`。
+10. `rtl/dc/README_CN.md`。
