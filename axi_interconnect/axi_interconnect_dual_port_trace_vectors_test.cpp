@@ -700,6 +700,18 @@ struct InvalidateLineRecoveryReadTrace {
   bool invalidate_accepted = false;
 };
 
+struct InvalidateLineScopeReadTrace {
+  ReadTrace victim_fill;
+  ReadTrace survivor_fill;
+  ReadTrace victim_after;
+  ReadTrace survivor_after;
+  std::string prefix;
+  uint8_t read_master = 0;
+  uint32_t invalidate_addr = 0;
+  bool invalidate_accepted = false;
+  bool survivor_hit_no_external = false;
+};
+
 struct ReconfigCacheReadTrace {
   ReadTrace read;
   uint8_t read_master = 0;
@@ -814,6 +826,10 @@ void issue_mapped_read_and_wait_response(
 void issue_cache_read_miss_and_wait_response(
     axi_interconnect::AXI_Interconnect &dut, StatefulLlcTableDriver &table_driver,
     ReadTrace &trace, uint8_t master, uint32_t beat_seed);
+
+void issue_cache_read_hit_and_wait_response(
+    axi_interconnect::AXI_Interconnect &dut, StatefulLlcTableDriver &table_driver,
+    ReadTrace &trace, uint8_t master, bool &no_external_issue);
 
 void issue_read_and_capture_ar(axi_interconnect::AXI_Interconnect &dut,
                                ReadTrace &trace, uint8_t master,
@@ -3275,6 +3291,75 @@ run_mode1_invalidate_line_recovery_read_trace() {
 
   issue_cache_read_miss_and_wait_response(dut, table_driver, trace.second,
                                           trace.read_master, 0xd00d1400u);
+  return trace;
+}
+
+InvalidateLineScopeReadTrace
+run_mode1_invalidate_line_scope_read_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  StatefulLlcTableDriver table_driver(dut.get_llc_config());
+
+  const auto &cfg = dut.get_llc_config();
+  const uint32_t same_set_stride = cfg.set_count() * cfg.line_bytes;
+
+  InvalidateLineScopeReadTrace trace{};
+  trace.prefix = "CPP_MODE1_INVLINE_SCOPE";
+  trace.read_master = axi_interconnect::MASTER_DCACHE_R;
+  trace.victim_fill.prefix = "CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL";
+  trace.victim_fill.req_addr = 0x40001204u;
+  trace.victim_fill.req_size = 3;
+  trace.victim_fill.req_id = 0x8u;
+  trace.victim_fill.beat_count = 2;
+  trace.survivor_fill.prefix = "CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL";
+  trace.survivor_fill.req_addr = trace.victim_fill.req_addr + same_set_stride;
+  trace.survivor_fill.req_size = trace.victim_fill.req_size;
+  trace.survivor_fill.req_id = 0x9u;
+  trace.survivor_fill.beat_count = 2;
+  trace.victim_after.prefix = "CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER";
+  trace.victim_after.req_addr = trace.victim_fill.req_addr;
+  trace.victim_after.req_size = trace.victim_fill.req_size;
+  trace.victim_after.req_id = 0xAu;
+  trace.victim_after.beat_count = 2;
+  trace.survivor_after.prefix = "CPP_MODE1_INVLINE_SCOPE_SURVIVOR_AFTER";
+  trace.survivor_after.req_addr = trace.survivor_fill.req_addr;
+  trace.survivor_after.req_size = trace.survivor_fill.req_size;
+  trace.survivor_after.req_id = 0xBu;
+  trace.invalidate_addr = trace.victim_fill.req_addr;
+
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.victim_fill,
+                                          trace.read_master, 0xd00d1600u);
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.survivor_fill,
+                                          trace.read_master, 0xd00d1800u);
+
+  for (int cycle = 0; cycle < 240 && !trace.invalidate_accepted; ++cycle) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (dut.llc_invalidate_line_accepted()) {
+      trace.invalidate_accepted = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  if (!trace.invalidate_accepted) {
+    dut.debug_print();
+  }
+  require(trace.invalidate_accepted,
+          "C++ invalidate_line scope trace did not accept");
+  dut.set_llc_invalidate_line(false, 0);
+
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.victim_after,
+                                          trace.read_master, 0xd00d1a00u);
+  issue_cache_read_hit_and_wait_response(dut, table_driver, trace.survivor_after,
+                                         trace.read_master,
+                                         trace.survivor_hit_no_external);
+  require(trace.survivor_hit_no_external,
+          "C++ invalidate_line scope survivor hit escaped to external AXI");
   return trace;
 }
 
@@ -6056,6 +6141,76 @@ void issue_cache_read_miss_and_wait_response(
   require(resp_retired, "C++ cache read miss response did not retire");
 }
 
+void issue_cache_read_hit_and_wait_response(
+    axi_interconnect::AXI_Interconnect &dut,
+    StatefulLlcTableDriver &table_driver, ReadTrace &trace, uint8_t master,
+    bool &no_external_issue) {
+  no_external_issue = true;
+  bool accepted = false;
+  bool request_active = true;
+  bool resp_seen = false;
+  for (int cycle = 0; cycle < 240 && !resp_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    if (request_active) {
+      auto &req = dut.read_ports[master].req;
+      req.valid = true;
+      req.addr = trace.req_addr;
+      req.total_size = trace.req_size;
+      req.id = trace.req_id;
+      req.bypass = false;
+    }
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    no_external_issue =
+        no_external_issue && !dut.axi_ddr_io.ar.arvalid &&
+        !dut.axi_ddr_io.aw.awvalid && !dut.axi_ddr_io.w.wvalid &&
+        !dut.axi_mmio_io.ar.arvalid && !dut.axi_mmio_io.aw.awvalid &&
+        !dut.axi_mmio_io.w.wvalid;
+    if (request_active && dut.read_ports[master].req.ready) {
+      accepted = true;
+      request_active = false;
+    }
+    auto &resp = dut.read_ports[master].resp;
+    if (resp.valid) {
+      resp_seen = true;
+      trace.resp_id = static_cast<uint8_t>(resp.id);
+      trace.resp_data = wide_read_words(resp.data);
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  require(accepted, "C++ cache read hit request was not accepted");
+  require(resp_seen, "C++ cache read hit response timeout");
+  require(no_external_issue, "C++ cache read hit escaped to external AXI");
+
+  bool resp_retired = false;
+  for (int cycle = 0; cycle < 8 && !resp_retired; ++cycle) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    auto &resp = dut.read_ports[master].resp;
+    if (!resp.valid) {
+      resp_retired = true;
+      dut.comb_inputs();
+      table_driver.observe(dut);
+      dut.seq();
+      ++sim_time;
+      break;
+    }
+    require(static_cast<uint8_t>(resp.id) == trace.resp_id,
+            "C++ cache read hit held response id changed before ready");
+    resp.ready = true;
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    dut.seq();
+    ++sim_time;
+  }
+  require(resp_retired, "C++ cache read hit response did not retire");
+}
+
 WriteTrace run_write_trace(const std::string &prefix, uint32_t addr,
                            uint8_t total_size, uint8_t req_id,
                            const axi_interconnect::WideWriteData_t &data,
@@ -7333,6 +7488,22 @@ void emit_invalidate_line_recovery_read(
      << (trace.invalidate_accepted ? 1 : 0) << ";\n";
 }
 
+void emit_invalidate_line_scope_read(
+    std::ostream &os, const InvalidateLineScopeReadTrace &trace) {
+  emit_read(os, trace.victim_fill);
+  emit_read(os, trace.survivor_fill);
+  emit_read(os, trace.victim_after);
+  emit_read(os, trace.survivor_after);
+  os << "localparam integer " << trace.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.read_master) << ";\n";
+  os << "localparam [31:0] " << trace.prefix
+     << "_INVALIDATE_ADDR = " << hex_u32(trace.invalidate_addr) << ";\n";
+  os << "localparam " << trace.prefix << "_INVALIDATE_ACCEPTED = 1'b"
+     << (trace.invalidate_accepted ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_SURVIVOR_HIT_NO_EXTERNAL = 1'b"
+     << (trace.survivor_hit_no_external ? 1 : 0) << ";\n";
+}
+
 void emit_reconfig_cache_read(std::ostream &os,
                               const ReconfigCacheReadTrace &trace) {
   emit_read(os, trace.read);
@@ -7579,6 +7750,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_invalidate_line_pending_read_trace();
   const auto mode1_invalidate_line_recovery_read =
       run_mode1_invalidate_line_recovery_read_trace();
+  const auto mode1_invalidate_line_scope_read =
+      run_mode1_invalidate_line_scope_read_trace();
   const auto mode1_invalidate_line_cache_mmio_read =
       run_mode1_invalidate_line_cache_mmio_read_trace();
   const auto mode1_same_line_read_pending_write =
@@ -7726,6 +7899,7 @@ void emit_vectors(std::ostream &os) {
   emit_invalidate_line_pending_read(os, mode1_invalidate_line_pending_read);
   emit_invalidate_line_recovery_read(os,
                                      mode1_invalidate_line_recovery_read);
+  emit_invalidate_line_scope_read(os, mode1_invalidate_line_scope_read);
   emit_invalidate_line_cache_mmio_read(
       os, mode1_invalidate_line_cache_mmio_read);
   emit_same_line_read_pending_write(os, mode1_same_line_read_pending_write);

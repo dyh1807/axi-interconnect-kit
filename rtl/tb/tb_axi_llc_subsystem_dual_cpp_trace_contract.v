@@ -5163,6 +5163,160 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_invalidate_line_scope_cache_hit;
+        input integer master;
+        input [31:0] req_addr;
+        input [7:0] req_size;
+        input [3:0] req_id;
+        input [3:0] exp_resp_id;
+        input [2047:0] exp_resp_data;
+        input exp_no_external;
+        input [8*240-1:0] fail_tag;
+        integer timeout;
+        reg accepted_seen;
+        reg resp_seen;
+        reg no_external_seen;
+        begin
+            read_resp_ready[master] = 1'b0;
+            ddr_axi_arready = 1'b0;
+            mmio_axi_arready = 1'b0;
+            read_req_addr[(master * ADDR_BITS) +: ADDR_BITS] = req_addr;
+            read_req_total_size[(master * 8) +: 8] = req_size;
+            read_req_id[(master * ID_BITS) +: ID_BITS] = req_id;
+            read_req_bypass[master] = 1'b0;
+            read_req_valid[master] = 1'b1;
+            timeout = 240;
+            accepted_seen = 1'b0;
+            resp_seen = 1'b0;
+            no_external_seen = 1'b1;
+            while (!resp_seen && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[master]) begin
+                    accepted_seen = 1'b1;
+                    read_req_valid[master] = 1'b0;
+                end
+                if (ddr_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid ||
+                    mmio_axi_arvalid || mmio_axi_awvalid || mmio_axi_wvalid) begin
+                    no_external_seen = 1'b0;
+                end
+                if (read_resp_valid[master]) begin
+                    resp_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (!accepted_seen || !resp_seen) begin
+                fail_now(fail_tag);
+            end
+            if (no_external_seen !== exp_no_external) begin
+                fail_now(fail_tag);
+            end
+            if (read_resp_id[(master * ID_BITS) +: ID_BITS] != exp_resp_id ||
+                read_resp_data[(master * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    exp_resp_data) begin
+                fail_now(fail_tag);
+            end
+            read_resp_ready[master] = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            read_resp_ready[master] = 1'b0;
+        end
+    endtask
+
+    task issue_mode1_invalidate_line_scope_read_and_check;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            ddr_axi_arready = 1'b0;
+            mmio_axi_arready = 1'b0;
+            invalidate_line_valid = 1'b0;
+
+            issue_mode1_invalidate_line_recovery_cache_read(
+                CPP_MODE1_INVLINE_SCOPE_MASTER,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_REQ_ADDR,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_REQ_SIZE,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_REQ_ID,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_ARADDR,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_ARLEN,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_ARSIZE,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_ARBURST,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_ARID,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_BEATS,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_RBEAT0,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_RBEAT1,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_RESP_ID,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_FILL_RESP_DATA,
+                "C++ trace invline scope victim fill mismatch");
+
+            issue_mode1_invalidate_line_recovery_cache_read(
+                CPP_MODE1_INVLINE_SCOPE_MASTER,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_REQ_ADDR,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_REQ_SIZE,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_REQ_ID,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_ARADDR,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_ARLEN,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_ARSIZE,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_ARBURST,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_ARID,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_BEATS,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_RBEAT0,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_RBEAT1,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_RESP_ID,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_FILL_RESP_DATA,
+                "C++ trace invline scope survivor fill mismatch");
+
+            invalidate_line_addr = CPP_MODE1_INVLINE_SCOPE_INVALIDATE_ADDR;
+            invalidate_line_valid = 1'b1;
+            timeout = 240;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                #1;
+                if (invalidate_line_accepted) begin
+                    accepted_seen = 1'b1;
+                end
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (accepted_seen !== CPP_MODE1_INVLINE_SCOPE_INVALIDATE_ACCEPTED) begin
+                fail_now("C++ trace invline scope invalidate accept mismatch");
+            end
+            @(negedge clk);
+            invalidate_line_valid = 1'b0;
+            invalidate_line_addr = {ADDR_BITS{1'b0}};
+
+            issue_mode1_invalidate_line_recovery_cache_read(
+                CPP_MODE1_INVLINE_SCOPE_MASTER,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_REQ_ADDR,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_REQ_SIZE,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_REQ_ID,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_ARADDR,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_ARLEN,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_ARSIZE,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_ARBURST,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_ARID,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_BEATS,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_RBEAT0,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_RBEAT1,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_RESP_ID,
+                CPP_MODE1_INVLINE_SCOPE_VICTIM_AFTER_RESP_DATA,
+                "C++ trace invline scope victim after mismatch");
+
+            issue_mode1_invalidate_line_scope_cache_hit(
+                CPP_MODE1_INVLINE_SCOPE_MASTER,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_AFTER_REQ_ADDR,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_AFTER_REQ_SIZE,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_AFTER_REQ_ID,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_AFTER_RESP_ID,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_AFTER_RESP_DATA,
+                CPP_MODE1_INVLINE_SCOPE_SURVIVOR_HIT_NO_EXTERNAL,
+                "C++ trace invline scope survivor hit mismatch");
+        end
+    endtask
+
     task issue_mode1_invalidate_line_cache_mmio_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -9025,6 +9179,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         issue_mode1_cache_mmio_overlap_read_and_check();
         issue_mode1_invalidate_line_pending_read_and_check();
         issue_mode1_invalidate_line_recovery_read_and_check();
+        issue_mode1_invalidate_line_scope_read_and_check();
         issue_mode1_invalidate_line_cache_mmio_read_and_check();
         issue_mode1_same_line_read_pending_write_and_check();
         issue_mode1_same_line_mmio_read_pending_write_and_check();
