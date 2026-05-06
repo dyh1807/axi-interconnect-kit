@@ -4,7 +4,10 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=189 / open=2。本轮新增 MODE_CACHE `invalidate_line` 与 cacheable
+当前计数：done=190 / open=2。本轮新增 actual `llc_cache_ctrl.v`
+`invalidate_line` hit bounded formal，证明 accepted 后在 bounded window 内出现与 C++
+trace 对齐的 valid clear payload；side-effect safety 仍由实际 RTL VCS trace contract
+覆盖。本轮新增 MODE_CACHE `invalidate_line` 与 cacheable
 write miss/refill + MMIO write 同时在途的 actual C++ trace 到实际 RTL subsystem
 一致性检查，要求 MMIO `BREADY` 与 DDR refill `RREADY` 不被 maintenance 或 held
 upstream response 回压，且 MMIO/cache write response 均 retire 后才允许 target-line
@@ -255,8 +258,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   最新 targeted VCS 目录：`rtl/local_debug/vcs_llc_cache_cpp_trace_dvpw_20260504_081121`。
   该项是 trace-based 功能 EC，meta/valid/repl 只做 C++ 抽象表项到 RTL row encoding
   的接口适配。
-- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 77 项；
-  `formal/*/run_hw_cbmc.sh` 当前共有 79 个入口，其中 2 个实验/未收敛入口暂未纳入
+- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 79 项；
+  `formal/*/run_hw_cbmc.sh` 当前共有 81 个入口，其中 2 个实验/未收敛入口暂未纳入
   稳定 manifest。原 68/68 已有 split-run 通过证据。前 20 项见
   `local_debug/run_passed_hw_cbmc_after_ddr_write_mmio_read_20260504_202454.log`；
   该 log 在 `dual_bridge_prod_width_ddr_read_mmio_write_independent` 处因默认 240s
@@ -319,6 +322,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `local_debug/hw_cbmc_subsystem_dual_ddr_read_mmio_read_independent_20260506_014057.log`，
   覆盖 native dual top 中 DDR direct read 已发 `AR` 且 `R` 未返回时，MMIO read
   仍可独立 accepted 并发出 MMIO `AR`，并已纳入 manifest；
+  本轮新增并通过
+  `formal/cache_ctrl_invalidate_line_hit/run_hw_cbmc.sh`，targeted log 为
+  `local_debug/hw_cbmc_cache_ctrl_invalidate_line_hit_20260506_132948.log`，覆盖实际
+  `llc_cache_ctrl.v` 在 `invalidate_line` hit 后产生与 C++ trace 对齐的 valid clear
+  payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
   `rtl/local_debug/vcs_all_contracts_after_same_line_20260506_005229_eda10`。本轮新增
@@ -487,6 +495,14 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `formal/cache_ctrl_partial_write_hit_merge/run_hw_cbmc.sh` 当前通过；直接实例化实际
   `llc_cache_ctrl.v`，覆盖 clean line 命中 partial write 时不发外部 memory request，
   按 offset/`WSTRB` merge 写数据，meta 变 dirty，并返回 upstream write id/code。
+- [x] actual cache-control invalidate_line hit valid-clear bounded formal：
+  `formal/cache_ctrl_invalidate_line_hit/run_hw_cbmc.sh` 当前通过；直接实例化实际
+  `llc_cache_ctrl.v`，覆盖命中 dirty line 的 `invalidate_line` 被接受后，在 bounded
+  window 内出现与 C++ trace 对齐的 valid clear payload：`valid_wr_mask=2'b10`、
+  `valid_wr_bits=2'b00`。同周期不误写 data/meta/repl、不发 lower/bypass/response
+  的 side-effect safety 仍由 `tb_llc_cache_ctrl_cpp_trace_contract` 直接覆盖，最近一次
+  targeted VCS 目录为
+  `rtl/local_debug/vcs_llc_cache_ctrl_cpp_trace_invline_formal_boundary_20260506_133152_eda10`。
 - [x] actual native dual subsystem MMIO read-route bounded formal：
   `formal/subsystem_dual_mmio_read_route/run_hw_cbmc.sh` 当前通过；直接实例化实际
   `axi_llc_subsystem_dual.v`，覆盖 4B MMIO read 被接受后只向 MMIO `AR` 发出，且

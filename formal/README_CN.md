@@ -1466,6 +1466,37 @@ formal/cache_ctrl_partial_write_hit_merge/run_hw_cbmc.sh
 - 不实例化完整 native dual top 和 DDR AXI bridge。
 - partial write miss refill/merge 由 `formal/cache_ctrl_partial_write_miss_refill` 覆盖。
 
+### `formal/cache_ctrl_invalidate_line_hit`
+
+状态：已通过，并已计入 `formal/run_passed_hw_cbmc.sh`。
+
+运行：
+
+```sh
+formal/cache_ctrl_invalidate_line_hit/run_hw_cbmc.sh
+```
+
+实际生产对象：
+
+- `rtl/src/llc_cache_ctrl.v`
+- 消费者：`rtl/src/axi_llc_subsystem_core.v`
+
+覆盖范围：
+
+- 直接实例化生产 cache-control FSM，formal top 使用与 C++ invalidate trace 对齐的小参数：
+  8B line / 2 set / 2 way / 29-bit meta。
+- `invalidate_line` 在 idle 且无 pending MSHR/victim hazard 时可以被 accepted。
+- 命中 dirty line 后，在 bounded window 内必须出现与 C++ trace 对齐的 valid clear
+  payload：`valid_wr_mask=2'b10` 且 `valid_wr_bits=2'b00`。
+
+明确不覆盖：
+
+- 不覆盖 same-cycle side-effect safety；`data/meta/repl` 不写、lower memory/bypass/upstream
+  response 不产生，仍由 `tb_llc_cache_ctrl_cpp_trace_contract` 的 VCS trace contract 直接覆盖。
+- 不覆盖 pending MSHR/victim hazard；这些由 subsystem trace/VCS contract 覆盖。
+- 不覆盖 `invalidate_all` dirty-line blocked 语义；该语义依赖 subsystem/core 级 drain
+  与 dirty resident state。
+
 ## 已通过的 actual bridge bounded smoke
 
 ### `formal/dual_bridge_read_route`
