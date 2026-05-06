@@ -142,8 +142,8 @@ contract 已通过 `53/53`，目录为
 - DC PID：`3230092`
 - 启动时 `eda-09` 约有 `588GiB` available memory，无正在运行的我方 DC；早期日志已
   完成 data/meta SRAM `.db` 读取并进入 RTL analyze
-- 2026-05-06 22:03 CST 复查：仍在 `DC_STAGE elaborate_start` / building
-  `axi_llc_subsystem_compat`，RSS 约 `5.0GB`，`eda-09` 约 `584GiB` available memory；
+- 2026-05-06 22:06 CST 复查：仍在 `DC_STAGE elaborate_start` / building
+  `axi_llc_subsystem_compat`，RSS 约 `5.2GB`，`eda-09` 约 `582GiB` available memory；
   当前仍无 compile/QoR/timing/netlist 结果，因此不能 signoff
 
 OOM 诊断：
@@ -159,6 +159,9 @@ OOM 诊断：
 - 因此该 OOM 的直接触发因素是共享服务器全局内存压力，不是 valid/repl regfile 或
   generic SRAM table 必然导致。valid/repl 继续保持 regfile；data/meta 继续使用
   SMIC12 SRAM macro。
+- 若后续再次 OOM，先用同一套证据链判断：DC console 的 allocation 点、`dmesg -T`
+  的 `global_oom`/killed pid/uid、全机其它用户 RSS、以及 log 中 `USE_SMIC12=1` 和
+  SRAM `.db` 是否已加载；不能只凭 DC 输出 `Out of memory` 就推断 RTL 必须改存储实现。
 
 已通过的 current RTL link sanity：
 
@@ -218,9 +221,11 @@ OOM 诊断：
 
 1. 不再因 20:45 的 OOM 单独修改 valid/repl 或 SRAM 映射；该事件按共享服务器
    `global_oom` 处理。
-2. 定期检查 `eda-09` 新 full DC 的 log mtime、阶段、RSS、是否产生
+2. 低频检查 `eda-09` 新 full DC 的 log mtime、阶段、RSS、是否产生
    precompile/postcompile QoR/timing/area/netlist/ddc/db/svf/sdc/sdf/spf；若长期停在
    `axi_llc_subsystem_compat` elaborate 且无日志更新，再继续做 compat 局部结构诊断，
    不再盲目重复 full top。
+   当前策略：早期 elaborate 阶段约每 1 小时检查一次；进入 compile/QoR 后按
+   30-60 分钟检查；只有进程退出、OOM、log 报错或 RSS 异常快速增长时才立即介入。
 3. EC 不再开放式新增同类 directed case；只在发现真实 bug、production 语义变化，
    或能抽象为新的 production helper/formal invariant 时补充。

@@ -95,6 +95,9 @@ build `axi_llc_subsystem_compat` 时间很长。
 4. 保持 valid/repl 为 regfile。
    valid 表本来就应是 regfile，不应因为此前 global OOM 改成 SRAM macro。data/meta
    才继续使用 SMIC12 SRAM macro。
+   如果后续 DC 再报 OOM，先核对 `dmesg -T` 是否为 shared-server `global_oom`、
+   killed pid/uid 是否对应当前 DC、同时段其它用户 RSS、以及 console 中
+   `USE_SMIC12=1`/SRAM `.db` 是否已生效，再决定是否需要 RTL 结构整改。
 
 5. 不在没有证据时切流水。
    切流水会影响接受时序、Linux 性能和 C++ reference 对齐。只有在 full DC timing
@@ -110,3 +113,5 @@ build `axi_llc_subsystem_compat` 时间很长。
 - 如果 RSS 快速增长到几十 GB 且 log 长时间不动，再按本文候选点优先整改 compat。
 - 如果出现 OOM，需要同时检查 `dmesg -T` 和全机其它用户进程，避免把 shared-server
   `global_oom` 误判成 RTL 必然 OOM。
+- 检查频率保持低频：早期 elaborate 阶段约每 1 小时一次；进入 compile/QoR 后按
+  30-60 分钟一次；只有退出、OOM、log 报错或 RSS 异常快速增长时才立即处理。
