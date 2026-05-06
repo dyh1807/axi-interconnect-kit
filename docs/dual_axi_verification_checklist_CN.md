@@ -4,16 +4,19 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=188 / open=3。本轮新增 MODE_CACHE dirty victim writeback +
-pending MMIO write + `invalidate_all` 同时存在的 actual C++ trace 到实际 RTL
-subsystem 一致性检查，要求 MMIO `BREADY` 与 DDR victim `BREADY` 不被
-maintenance 或 held upstream response 回压，且 MMIO/cache response retire
-前 `invalidate_all_accepted=0`；response retire 后因为仍存在 dirty resident line，
-`invalidate_all` 仍必须保持 blocked。本轮此前新增 MODE_CACHE `invalidate_line`
-与 cacheable read miss/refill + MMIO read 同时在途的 actual C++ trace 到实际 RTL
-subsystem 一致性检查，要求 MMIO/DDR `RREADY` 不被 maintenance 或 held upstream
-response 回压，且 MMIO/cache response 均 retire 后才允许目标 line maintenance
-accepted。本轮此前新增 MODE_CACHE cacheable read miss/refill +
+当前计数：done=189 / open=2。本轮新增 MODE_CACHE `invalidate_line` 与 cacheable
+write miss/refill + MMIO write 同时在途的 actual C++ trace 到实际 RTL subsystem
+一致性检查，要求 MMIO `BREADY` 与 DDR refill `RREADY` 不被 maintenance 或 held
+upstream response 回压，且 MMIO/cache write response 均 retire 后才允许 target-line
+maintenance accepted。本轮此前新增 MODE_CACHE dirty victim writeback + pending
+MMIO write + `invalidate_all` 同时存在的 actual C++ trace 到实际 RTL subsystem
+一致性检查，要求 MMIO `BREADY` 与 DDR victim `BREADY` 不被 maintenance 或 held
+upstream response 回压，且 MMIO/cache response retire 前 `invalidate_all_accepted=0`；
+response retire 后因为仍存在 dirty resident line，`invalidate_all` 仍必须保持 blocked。
+本轮此前新增 MODE_CACHE `invalidate_line` 与 cacheable read miss/refill + MMIO read
+同时在途的 actual C++ trace 到实际 RTL subsystem 一致性检查，要求 MMIO/DDR
+`RREADY` 不被 maintenance 或 held upstream response 回压，且 MMIO/cache response
+均 retire 后才允许目标 line maintenance accepted。本轮此前新增 MODE_CACHE cacheable read miss/refill +
 MMIO read + MMIO write 同时在途时拉起 `invalidate_all` 的 actual C++ trace 到实际
 RTL subsystem 一致性检查，要求 MMIO `RREADY/BREADY` 与 DDR `RREADY` 不被
 maintenance/held upstream response 回压，且只有 MMIO read/write response 与 cache
@@ -103,7 +106,7 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 
 - [x] C++ regression：`ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`
   当前通过 24/24；最近一次复跑目录：
-  `local_debug/ctest_dirty_victim_inval_20260506_125514.log`。
+  `local_debug/ctest_invline_cache_mmio_write_20260506_130721.log`。
 - [x] 2026-05-06 same-master write response queue 复核：targeted VCS
   `tb_axi_llc_subsystem_dual_cpp_trace_contract` 通过，目录
   `rtl/local_debug/vcs_dual_cpp_trace_same_master_write_20260506_020403_eda07`；
@@ -937,6 +940,16 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_cpp_trace_invline_cache_mmio_20260506_123952`；全量 RTL
   contract 复跑目录：
   `rtl/local_debug/vcs_all_contracts_20260506_124010_invline_cache_mmio`。
+- [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE `invalidate_line`
+  cache-write-refill + MMIO write drain 组合：已补 cacheable partial write miss/refill、
+  另一 write master 的 MMIO 4B write 同时在途后拉起 target-line `invalidate_line` 的场景；
+  actual C++ 与实际 RTL subsystem 均要求外部 MMIO `BREADY` 和 DDR refill `RREADY`
+  不因 maintenance pending 或 held upstream response 被回压，且 MMIO write response
+  与 target cache write response 均 retire 之前 `invalidate_line_accepted=0`，两者均
+  retire 后才允许 target-line maintenance accepted。最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_cpp_trace_invline_cache_mmio_write_20260506_130801`；全量 RTL
+  contract 复跑目录：
+  `rtl/local_debug/vcs_all_contracts_20260506_130824_invline_cache_mmio_write`。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE `invalidate_all`
   dirty-victim/MMIO write drain 组合：已补 dirty victim writeback `AW/W` 发出后，
   另一 write master 的 MMIO 4B write 先完成并被 upstream response hold，同时持续拉起
@@ -989,6 +1002,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   组合；本轮继续补齐 cacheable read miss/refill + MMIO read/write 同时在途时的
   `invalidate_all` drain/recovery 组合；本轮继续补齐 target-line `invalidate_line`
   与 cacheable read miss/refill + MMIO read 同时在途时的 drain/recovery 组合；
+  本轮继续补齐 target-line `invalidate_line` 与 cacheable write miss/refill + MMIO write
+  同时在途时的 drain/recovery 组合；
   本轮继续补齐 dirty victim writeback + pending MMIO write + `invalidate_all`
   同时存在时的 drain/blocked 组合；
   后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
@@ -1111,7 +1126,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `local_debug/ctest_invline_cache_mmio_20260506_124110.log`；targeted VCS
   `rtl/local_debug/vcs_cpp_trace_invline_cache_mmio_20260506_123952` 通过；全量 RTL
   contract 53/53 通过，out_dir 为
-  `rtl/local_debug/vcs_all_contracts_20260506_124010_invline_cache_mmio`。
+  `rtl/local_debug/vcs_all_contracts_20260506_124010_invline_cache_mmio`。随后新增
+  target-line `invalidate_line` + cache write miss/refill + pending MMIO write
+  drain/recovery 组合 trace 后，C++ regression 24/24 通过，log 为
+  `local_debug/ctest_invline_cache_mmio_write_20260506_130721.log`；targeted VCS
+  `rtl/local_debug/vcs_cpp_trace_invline_cache_mmio_write_20260506_130801` 通过；全量
+  RTL contract 53/53 通过，out_dir 为
+  `rtl/local_debug/vcs_all_contracts_20260506_130824_invline_cache_mmio_write`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
@@ -1355,7 +1376,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] invalidate_line / invalidate_all 相关 hazard、drain 与 recovery 合同；
   MODE_CACHE 下 cacheable read miss/refill 未完成和 read response 被上游 hold 时，
   `invalidate_line` 必须保持阻塞，response 被消费后才允许 accepted，且该场景已由
-  actual C++ trace 到实际 RTL subsystem contract 覆盖。
+  actual C++ trace 到实际 RTL subsystem contract 覆盖；本轮补齐对称的 cacheable
+  write miss/refill + pending MMIO write + target-line `invalidate_line` 组合，要求
+  MMIO `BREADY`/DDR refill `RREADY` 不被回压，两个 write response 均 retire 后才
+  accepted。
 - [ ] C++ reference 与 RTL 端到端形式 EC；当前已有 production-helper read issue
   shape 切片，但完整 C++ class / RTL top 同 harness 仍未完成。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate。
