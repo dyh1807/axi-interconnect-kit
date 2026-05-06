@@ -140,6 +140,10 @@
   `compile_ultra -retime`；新增 precompile timing report
   `reports/axi_llc_subsystem_dual_timing_precompile.rpt`。尚无 postcompile
   QoR/timing/area/netlist signoff 产物，因此不能标记 DC/timing 完成。
+  precompile QoR/timing 当前只作为参考：setup WNS/TNS 为 `0.00/0.00`，最差
+  setup path 是 data SRAM Q 到 `llc_data_store_smic12` read-row capture，slack
+  约 `+0.33ns`；hold 仍有大量违例，当前 top 尚未完整建 CTS/IO/pad，不能据此做
+  signoff 结论。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
