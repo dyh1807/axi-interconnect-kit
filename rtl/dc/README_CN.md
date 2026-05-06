@@ -70,6 +70,14 @@
   `rtl/dc/runs/compat_link_sanity_payload_no_clear_9b05923_20260506_194526_eda10`；
   旧 full DC 和旧 compat sanity 启动早于该 RTL 修改，只能作为旧 RTL bottleneck 证据，
   不能作为该修改后的 signoff。
+- 2026-05-06 19:53 CST 继续对 `axi_llc_axi_bridge` 做同类 conservative RTL hygiene：
+  去掉 invalid pending/rsp slot 的 wide payload reset/free clear，但保留 read accept
+  时 `rd_rdata_r` 清零以初始化 multi-beat read merge buffer。全量 RTL contract 53/53
+  已通过，目录为
+  `rtl/local_debug/vcs_all_contracts_bridge_payload_no_clear_20260506_195341_eda10`。
+  因该修改发生在 `compat_link_sanity_payload_no_clear_9b05923_20260506_194526_eda10`
+  启动之后，该 sanity 已被停止并 supersede；后续 current-HEAD sanity 需要基于
+  compat+bridge 两处 hygiene 后的 RTL 重新启动。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10

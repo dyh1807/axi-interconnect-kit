@@ -116,6 +116,9 @@ module axi_llc_axi_bridge #(
     reg [ID_BITS-1:0]             wr_req_id_r [0:WRITE_PENDING_COUNT-1];
     reg [7:0]                     wr_size_r [0:WRITE_PENDING_COUNT-1];
     reg                           wr_mode2_ddr_aligned_r [0:WRITE_PENDING_COUNT-1];
+    // Wide payload arrays are written before their valid/count gates expose
+    // them. Avoid invalid-entry reset/free clears to keep DC from building
+    // unnecessary wide mux trees.
     reg [LINE_BITS-1:0]           wr_wdata_r [0:WRITE_PENDING_COUNT-1];
     reg [LINE_BYTES-1:0]          wr_wstrb_r [0:WRITE_PENDING_COUNT-1];
     reg [AXI_ID_BITS-1:0]         wr_axi_id_r [0:WRITE_PENDING_COUNT-1];
@@ -841,15 +844,12 @@ module axi_llc_axi_bridge #(
                 rd_beats_done_r[seq_idx] <= 8'd0;
                 rd_ar_sent_r[seq_idx] <= 1'b0;
                 rd_complete_r[seq_idx] <= 1'b0;
-                rd_rdata_r[seq_idx] <= {READ_RESP_BITS{1'b0}};
                 rd_resp_code_r[seq_idx] <= RESP_OKAY;
                 rd_issue_q_slot_r[seq_idx] <= 8'd0;
                 cache_rd_rsp_id_r[seq_idx] <= {ID_BITS{1'b0}};
                 cache_rd_rsp_code_r[seq_idx] <= RESP_OKAY;
-                cache_rd_rsp_data_r[seq_idx] <= {READ_RESP_BITS{1'b0}};
                 bypass_rd_rsp_id_r[seq_idx] <= {ID_BITS{1'b0}};
                 bypass_rd_rsp_code_r[seq_idx] <= RESP_OKAY;
-                bypass_rd_rsp_data_r[seq_idx] <= {READ_RESP_BITS{1'b0}};
             end
             for (seq_idx = 0; seq_idx < WRITE_PENDING_COUNT; seq_idx = seq_idx + 1) begin
                 wr_valid_r[seq_idx] <= 1'b0;
@@ -858,8 +858,6 @@ module axi_llc_axi_bridge #(
                 wr_req_id_r[seq_idx] <= {ID_BITS{1'b0}};
                 wr_size_r[seq_idx] <= 8'd0;
                 wr_mode2_ddr_aligned_r[seq_idx] <= 1'b0;
-                wr_wdata_r[seq_idx] <= {LINE_BITS{1'b0}};
-                wr_wstrb_r[seq_idx] <= {LINE_BYTES{1'b0}};
                 wr_axi_id_r[seq_idx] <= {AXI_ID_BITS{1'b0}};
                 wr_total_beats_r[seq_idx] <= 8'd0;
                 wr_beats_sent_r[seq_idx] <= 8'd0;
@@ -991,7 +989,6 @@ module axi_llc_axi_bridge #(
                 rd_beats_done_r[rd_complete_slot_w] <= 8'd0;
                 rd_ar_sent_r[rd_complete_slot_w] <= 1'b0;
                 rd_complete_r[rd_complete_slot_w] <= 1'b0;
-                rd_rdata_r[rd_complete_slot_w] <= {READ_RESP_BITS{1'b0}};
                 rd_resp_code_r[rd_complete_slot_w] <= RESP_OKAY;
             end
 
@@ -1016,8 +1013,6 @@ module axi_llc_axi_bridge #(
                 wr_req_id_r[wr_match_slot_w] <= {ID_BITS{1'b0}};
                 wr_size_r[wr_match_slot_w] <= 8'd0;
                 wr_mode2_ddr_aligned_r[wr_match_slot_w] <= 1'b0;
-                wr_wdata_r[wr_match_slot_w] <= {LINE_BITS{1'b0}};
-                wr_wstrb_r[wr_match_slot_w] <= {LINE_BYTES{1'b0}};
                 wr_axi_id_r[wr_match_slot_w] <= {AXI_ID_BITS{1'b0}};
                 wr_total_beats_r[wr_match_slot_w] <= 8'd0;
                 wr_beats_sent_r[wr_match_slot_w] <= 8'd0;
