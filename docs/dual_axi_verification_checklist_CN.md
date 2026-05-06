@@ -383,8 +383,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   最新 targeted VCS 目录：`rtl/local_debug/vcs_llc_cache_cpp_trace_dvpw_20260504_081121`。
   该项是 trace-based 功能 EC，meta/valid/repl 只做 C++ 抽象表项到 RTL row encoding
   的接口适配。
-- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 80 项；
-  `formal/*/run_hw_cbmc.sh` 当前共有 82 个入口，其中 2 个实验/未收敛入口暂未纳入
+- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 81 项；
+  `formal/*/run_hw_cbmc.sh` 当前共有 83 个入口，其中 2 个实验/未收敛入口暂未纳入
   稳定 manifest。原 68/68 已有 split-run 通过证据。前 20 项见
   `local_debug/run_passed_hw_cbmc_after_ddr_write_mmio_read_20260504_202454.log`；
   该 log 在 `dual_bridge_prod_width_ddr_read_mmio_write_independent` 处因默认 240s
@@ -702,6 +702,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   shadow row，覆盖 read miss refill/install 后，后续同地址 read 必须命中新安装 line
   并返回 refill data，且不得再次发 lower memory request。targeted log 为
   `local_debug/hw_cbmc_cache_ctrl_table_oracle_read_miss_refill_then_read_20260506.log`。
+- [x] actual cache-control table-oracle partial-write-miss refill then read bounded formal：
+  `formal/cache_ctrl_table_oracle_partial_write_miss_refill_then_read/run_hw_cbmc.sh` 当前通过；
+  直接实例化实际 `llc_cache_ctrl.v`，在 data/meta/valid/repl 表边界使用 tracked set
+  shadow row，覆盖 partial write miss refill/merge/install 后，后续同地址 read 必须命中
+  新安装 dirty line 并返回 merge 后数据，且不得再次发 lower memory request。targeted
+  log 为
+  `local_debug/hw_cbmc_cache_ctrl_table_oracle_partial_write_miss_refill_then_read_20260506.log`。
 - [x] actual cache-control partial write hit merge bounded formal：
   `formal/cache_ctrl_partial_write_hit_merge/run_hw_cbmc.sh` 当前通过；直接实例化实际
   `llc_cache_ctrl.v`，覆盖 clean line 命中 partial write 时不发外部 memory request，
@@ -847,6 +854,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] `formal/cache_ctrl_table_oracle_read_miss_refill_then_read`：actual
   `llc_cache_ctrl.v` table-oracle/state-IO bounded smoke，覆盖 tracked set shadow row
   下 read miss install 后同地址 read 必须返回 refill data，不展开整张 cache table。
+- [x] `formal/cache_ctrl_table_oracle_partial_write_miss_refill_then_read`：actual
+  `llc_cache_ctrl.v` table-oracle/state-IO bounded smoke，覆盖 tracked set shadow row
+  下 partial write miss merge/install 后同地址 read 必须返回 merge 后数据。
 - [x] `formal/cache_ctrl_partial_write_hit_merge`：actual `llc_cache_ctrl.v` bounded
   smoke，覆盖 partial write hit 的 byte merge、clean-to-dirty meta 更新和 write response。
 - [x] `formal/cache_ctrl_table_oracle_write_then_read`：actual `llc_cache_ctrl.v`
@@ -957,8 +967,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 ## 待继续收敛的生产边界
 
 - [x] 未纳入稳定 manifest 的 formal 入口已按优先级分流：
-  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 80 个稳定入口，`formal/*/run_hw_cbmc.sh`
-  当前共有 82 个入口，剩余未纳入入口为
+  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 81 个稳定入口，`formal/*/run_hw_cbmc.sh`
+  当前共有 83 个入口，剩余未纳入入口为
   `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response` 和
   `formal/subsystem_core_dirty_evict_writeback` 两项；二者均已明确归类为
   experimental/non-stable，不计入稳定回归缺口。dual bridge production-width
