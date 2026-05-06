@@ -1358,9 +1358,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   530423/921658；L1D AMAT 2.373202、L1D miss penalty 61.364674 cycles、
   LLC->DDR read avg 52.000000 cycles 也完全一致，因此本轮 cycle delta=0、IPC
   delta=0，未出现可观测性能回退。
-  后续所有 Linux 5M 或更长 boot gate 都必须沿用这个判定标准：不允许只报告
-  pass/error，必须同时给出 cycles、IPC 及相对 baseline 的 delta；若当前改动理论上不应
-  影响性能，任何非零 cycle/IPC 差异都需要先解释来源，再决定是否接受。
+	  后续所有 Linux 5M 或更长 boot gate 都必须沿用这个判定标准：不允许只报告
+	  pass/error，必须同时给出 cycles、IPC 及相对 baseline 的 delta；若当前改动理论上不应
+	  影响性能，任何非零 cycle/IPC 差异都需要先解释来源，再决定是否接受。
+	  2026-05-06 后续推进到 `3a2020c` 期间只新增 trace generator、RTL TB、
+	  generated TB include 和 docs，不改 production C++/RTL 路径，因此仍沿用上述
+	  300k/5M cycle delta=0、IPC delta=0 的性能结论；下一次 production 路径改动后必须
+	  重新跑 300k/5M 并按同一口径报告。
 
 ## Multi-Agent 并行推进边界
 
