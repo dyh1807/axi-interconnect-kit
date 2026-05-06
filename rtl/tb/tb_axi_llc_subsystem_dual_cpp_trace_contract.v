@@ -1437,6 +1437,256 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_invalidate_all_pending_mmio_rw_and_check;
+        integer timeout;
+        reg accepted_seen;
+        reg [ID_BITS-1:0] accepted_id_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            write_resp_ready = {NUM_WRITE_MASTERS{1'b0}};
+            mmio_axi_arready = 1'b0;
+            mmio_axi_awready = 1'b0;
+            mmio_axi_wready = 1'b0;
+
+            accepted_seen = 1'b0;
+            accepted_id_seen = {ID_BITS{1'b0}};
+            read_req_addr[(READ_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_REQ_ADDR;
+            read_req_total_size[(READ_MASTER * 8) +: 8] =
+                CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_REQ_SIZE;
+            read_req_id[(READ_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_REQ_ID;
+            read_req_bypass[READ_MASTER] = 1'b0;
+            read_req_valid[READ_MASTER] = 1'b1;
+
+            timeout = 80;
+            while (!mmio_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[READ_MASTER]) begin
+                    accepted_seen = 1'b1;
+                    accepted_id_seen =
+                        read_req_accepted_id[(READ_MASTER * ID_BITS) +: ID_BITS];
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending invalidate-all RW MMIO AR timeout");
+            end
+            #1;
+            expect_no_ddr_activity();
+            if (mmio_axi_araddr != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_ARADDR ||
+                mmio_axi_arlen != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_ARLEN ||
+                mmio_axi_arsize != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_ARSIZE ||
+                mmio_axi_arburst != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_ARBURST ||
+                mmio_axi_arid != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_ARID) begin
+                fail_now("C++ trace pending invalidate-all RW MMIO AR mismatch");
+            end
+            seen_mmio_arid = mmio_axi_arid;
+            mmio_axi_arready = 1'b1;
+            @(posedge clk);
+            #1;
+            if (read_req_accepted[READ_MASTER]) begin
+                accepted_seen = 1'b1;
+                accepted_id_seen =
+                    read_req_accepted_id[(READ_MASTER * ID_BITS) +: ID_BITS];
+            end
+            if (!accepted_seen ||
+                accepted_id_seen != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_REQ_ID) begin
+                fail_now("C++ trace pending invalidate-all RW read accept mismatch");
+            end
+            @(negedge clk);
+            read_req_valid[READ_MASTER] = 1'b0;
+            read_req_bypass[READ_MASTER] = 1'b0;
+            mmio_axi_arready = 1'b0;
+
+            accepted_seen = 1'b0;
+            write_req_addr[(WRITE_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_REQ_ADDR;
+            write_req_total_size[(WRITE_MASTER * 8) +: 8] =
+                CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_REQ_SIZE;
+            write_req_id[(WRITE_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_REQ_ID;
+            write_req_wdata[(WRITE_MASTER * LINE_BITS) +: LINE_BITS] =
+                CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_REQ_WDATA;
+            write_req_wstrb[(WRITE_MASTER * LINE_BYTES) +: LINE_BYTES] =
+                CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_REQ_WSTRB[LINE_BYTES-1:0];
+            write_req_bypass[WRITE_MASTER] = 1'b0;
+            write_req_valid[WRITE_MASTER] = 1'b1;
+
+            timeout = 80;
+            while (!mmio_axi_awvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (write_req_accepted[WRITE_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending invalidate-all RW MMIO AW timeout");
+            end
+            #1;
+            expect_no_ddr_activity();
+            if (mmio_axi_awaddr != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_AWADDR ||
+                mmio_axi_awlen != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_AWLEN ||
+                mmio_axi_awsize != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_AWSIZE ||
+                mmio_axi_awburst != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_AWBURST ||
+                mmio_axi_awid != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_AWID) begin
+                fail_now("C++ trace pending invalidate-all RW MMIO AW mismatch");
+            end
+            seen_mmio_awid = mmio_axi_awid;
+            mmio_axi_awready = 1'b1;
+            @(posedge clk);
+            #1;
+            if (write_req_accepted[WRITE_MASTER]) begin
+                accepted_seen = 1'b1;
+            end
+            if (!accepted_seen) begin
+                fail_now("C++ trace pending invalidate-all RW write accept missing");
+            end
+            @(negedge clk);
+            write_req_valid[WRITE_MASTER] = 1'b0;
+            write_req_bypass[WRITE_MASTER] = 1'b0;
+            mmio_axi_awready = 1'b0;
+
+            timeout = 80;
+            while (!mmio_axi_wvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending invalidate-all RW MMIO W timeout");
+            end
+            #1;
+            expect_no_ddr_activity();
+            if (mmio_axi_wdata !=
+                    CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_WBEAT0[MMIO_DATA_BITS-1:0] ||
+                mmio_axi_wstrb !=
+                    CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_WSTRB0[MMIO_STRB_BITS-1:0] ||
+                mmio_axi_wlast != CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_WLAST0) begin
+                fail_now("C++ trace pending invalidate-all RW MMIO W mismatch");
+            end
+            mmio_axi_wready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_wready = 1'b0;
+
+            invalidate_all_valid = 1'b1;
+            repeat (4) begin
+                @(posedge clk);
+                #1;
+                if (invalidate_all_accepted !==
+                    !CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_BLOCKED_BEFORE_RESP) begin
+                    fail_now("C++ trace pending invalidate-all RW early accept mismatch");
+                end
+            end
+
+            @(negedge clk);
+            mmio_axi_rid = seen_mmio_arid;
+            mmio_axi_rdata =
+                CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_RBEAT0[MMIO_DATA_BITS-1:0];
+            mmio_axi_rresp = AXI_RESP_OKAY;
+            mmio_axi_rlast = 1'b1;
+            mmio_axi_rvalid = 1'b1;
+            mmio_axi_bid = seen_mmio_awid;
+            mmio_axi_bresp = AXI_RESP_OKAY;
+            mmio_axi_bvalid = 1'b1;
+            #1;
+            if (mmio_axi_rready !== CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_RREADY_PENDING ||
+                mmio_axi_bready !== CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_BREADY_PENDING ||
+                invalidate_all_accepted) begin
+                fail_now("C++ trace pending invalidate-all RW R/B handshake mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_rvalid = 1'b0;
+            mmio_axi_rlast = 1'b0;
+            mmio_axi_bvalid = 1'b0;
+
+            timeout = 160;
+            while ((!(read_resp_valid[READ_MASTER] && write_resp_valid[WRITE_MASTER])) &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (invalidate_all_accepted) begin
+                    fail_now("invalidate_all accepted before both RW responses held");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending invalidate-all RW response timeout");
+            end
+            #1;
+            if (read_resp_id[(READ_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_RESP_ID ||
+                read_resp_data[(READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_RESP_DATA ||
+                write_resp_id[(WRITE_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_RESP_ID ||
+                write_resp_code[(WRITE_MASTER * 2) +: 2] !=
+                    CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_RESP_CODE ||
+                invalidate_all_accepted !==
+                    !CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_BLOCKED_BOTH_HELD) begin
+                fail_now("C++ trace pending invalidate-all RW held response mismatch");
+            end
+
+            @(negedge clk);
+            read_resp_ready[READ_MASTER] = 1'b1;
+            #1;
+            if (read_resp_id[(READ_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_RESP_ID ||
+                read_resp_data[(READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_READ_RESP_DATA ||
+                invalidate_all_accepted) begin
+                fail_now("C++ trace pending invalidate-all RW read retire mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            read_resp_ready[READ_MASTER] = 1'b0;
+            #1;
+            if (!write_resp_valid[WRITE_MASTER] ||
+                invalidate_all_accepted !==
+                    !CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_BLOCKED_AFTER_READ_RETIRE) begin
+                fail_now("C++ trace pending invalidate-all RW write held mismatch");
+            end
+
+            @(negedge clk);
+            write_resp_ready[WRITE_MASTER] = 1'b1;
+            #1;
+            if (write_resp_id[(WRITE_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_RESP_ID ||
+                write_resp_code[(WRITE_MASTER * 2) +: 2] !=
+                    CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_WRITE_RESP_CODE ||
+                invalidate_all_accepted) begin
+                fail_now("C++ trace pending invalidate-all RW write retire mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            write_resp_ready[WRITE_MASTER] = 1'b0;
+
+            timeout = 10000;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (invalidate_all_accepted) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (accepted_seen !==
+                CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW_ACCEPTED_AFTER_BOTH_RETIRE) begin
+                fail_now("C++ trace pending invalidate-all RW final accept mismatch");
+            end
+            @(negedge clk);
+            invalidate_all_valid = 1'b0;
+        end
+    endtask
+
     task issue_invalidate_all_pre_ar_mmio_read_and_check;
         input [31:0] req_addr;
         input [7:0] req_size;
@@ -6037,6 +6287,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
             1'b0,
             CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_WRITE_RESP_ID,
             CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_WRITE_RESP_CODE);
+        issue_invalidate_all_pending_mmio_rw_and_check();
         issue_invalidate_all_pre_ar_mmio_read_and_check(
             CPP_MODE1_INVALIDATE_ALL_PRE_AR_MMIO_READ_REQ_ADDR,
             CPP_MODE1_INVALIDATE_ALL_PRE_AR_MMIO_READ_REQ_SIZE,

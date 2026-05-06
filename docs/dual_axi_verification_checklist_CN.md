@@ -852,6 +852,16 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   VCS 目录：
   `rtl/local_debug/vcs_dual_cpp_trace_pending_inval_mmio_write_20260505_141827`。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE `invalidate_all`
+  pending direct MMIO read+write drain 组合：已补 MMIO 4B read 已发 `AR` 且未收
+  `R`，随后不同 64B hazard granule 的 MMIO 4B write 仍可 accepted 并发 `AW/W`；
+  `invalidate_all` 拉起后，实际 C++ 与实际 RTL subsystem 均要求在 `R/B` 未返回、
+  `R/B` 同拍返回 handshake、两个 upstream response 同时 held、只 retire read 后 write
+  response 仍 held 这些阶段 `invalidate_all_accepted=0`，且外部 `RREADY/BREADY`
+  均不得因 maintenance pending 或 held upstream response 被回压；只有两个 upstream
+  response 都 retire 后才允许 `invalidate_all` accepted。最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_cpp_trace_rw_20260506_103904`；全量 RTL contract 复跑目录：
+  `rtl/local_debug/vcs_all_contracts_20260506_103930_mmio_rw`。
+- [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE `invalidate_all`
   cache-refill + held MMIO read drain 第一组：已补 cacheable read miss/refill 已发
   DDR 64B refill `ARLEN=1`、另一 read master 的 MMIO 4B read 先返回并被 upstream
   response slot hold 时拉起 `invalidate_all` 的场景；actual C++ 与实际 RTL subsystem
@@ -1004,8 +1014,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
-  DC/VCS 统一读入、关键新增 helper 保持寄存器边界清晰；最终仍需要 full/top 或拆分
-  submodule DC 报告确认 1GHz setup。2026-05-04 曾尝试
+  DC/VCS 统一读入、关键新增 helper 保持寄存器边界清晰；最终仍需要使用 SMIC12
+  `9T20` 标准单元库（`SCC12NSFE_90SDB_9TC20_RVT/LVT_V1P0F`，不得使用早期误配的
+  `7P5TC*` 库）跑 full/top 或拆分 submodule DC 报告确认 1GHz setup。2026-05-04 曾尝试
   `rtl/dc/run_dual_link_sanity.tcl` full `axi_llc_subsystem_dual` link sanity，已完成
   SRAM `.db` 读取和 42 个 RTL 文件 `analyze`，但在 full-top elaborate/uniquify 阶段
   运行约 36 分钟、RSS 约 22GB 仍无阶段推进，手动终止；该结果不计为通过，后续应拆
@@ -1030,7 +1041,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   同日 DC 服务器探测结果：`eda-10`、`eda-09`、`eda-05` 均可启动 `dc_shell` 并通过
   `DC_SMOKE_OK`；`eda-10` 当前负载低、内存充足，是下一轮 full 1GHz DC 首选；
   `eda-05` 可用但负载高且有旧 DC 任务；`eda-08` 当前 `Design Compiler is not enabled`
-  / vendor daemon 不可用，不应作为 DC 首选。
+  / vendor daemon 不可用，不应作为 DC 首选。2026-05-06 用户补充最终 DC signoff
+  必须使用 9T20 标准单元；`rtl/dc/axi_llc_dc_common.tcl` 已把默认 stdcell 从 7p5t
+  改为 9TC20 RVT/LVT list，当前已经启动且使用旧默认库的 eda-10 长跑不能作为最终
+  signoff 结论，只能作为调试参考。随后在 `eda-09` 做 DC library setup smoke，
+  默认加载 9TC20 RVT/LVT、data SRAM 和 meta SRAM `.db` 并打印 `DC_LIB_SETUP_PASS`；
+  run root 为 `rtl/dc/runs/lib_setup_smoke_9t20_20260506_104253_eda09`。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
   `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
   后最新全量 RTL contract 53/53 目录为
@@ -1045,7 +1061,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   hygiene cleanup 后又在 `eda-10` 复跑 dual-only 4/4，目录为
   `rtl/local_debug/vcs_dual_axi_contracts_push_check_20260506_001419_eda10`；全量 RTL
   contract 53/53，目录为
-  `rtl/local_debug/vcs_all_contracts_push_check_20260506_001441_eda10`。
+  `rtl/local_debug/vcs_all_contracts_push_check_20260506_001441_eda10`。2026-05-06
+  新增 `invalidate_all` + pending MMIO read/write 组合 trace 后，又复跑全量 RTL
+  contract 53/53，目录为
+  `rtl/local_debug/vcs_all_contracts_20260506_103930_mmio_rw`。
 - [x] 受 `axi_llc_subsystem_compat.v` 影响的 actual dual-subsystem hw-cbmc 子集：
   compat signedness cleanup 后已复跑稳定 manifest 中 16 个 `subsystem_dual_*`
   proof，全部通过，覆盖 MMIO read/write route/response、DDR/MMIO independent、
@@ -1060,7 +1079,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`；本轮已复跑并通过
   24/24，其中 `axi_interconnect_dual_port_test` 内部通过 38/38。最新 targeted log：
   `local_debug/axi_interconnect_dual_port_test_accepted_id_20260505.log`；最新 ctest log：
-  `local_debug/ctest_after_accepted_id_20260505.log`。
+  `local_debug/ctest_after_accepted_id_20260505.log`。2026-05-06 新增 trace-only
+  `invalidate_all` + pending MMIO read/write 组合后再次执行同一 ctest 命令，24/24
+  通过。
 - [x] Linux/image 级 300k/5M 功能与性能 sanity：父仓库临时适配 cacheability/MMIO
   分类后，large + `CONFIG_BPU` + `../img/linux.bin` 已补跑 300k 与 5M commit。
   之前失败点是约 58,695 commit 后父仓库 MSHR 以 cacheline read 请求

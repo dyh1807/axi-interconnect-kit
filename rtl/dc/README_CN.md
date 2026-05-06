@@ -10,6 +10,9 @@
 - 默认 SRAM：
   - data：`4096x256 SASS`
   - meta：`4096x16 SASS`
+- 默认标准单元：SMIC12 `9T20` (`SCC12NSFE_90SDB_9TC20_RVT/LVT_V1P0F`)。
+  最终 1GHz/full DC signoff 必须使用 9T20 标准单元库；不要使用早期实验中的
+  `SCC12NSFE_96SDB_7P5TC*` 7p5t 库作为收敛结论。
 - 默认时钟：`1.0ns`
 - 默认 `USE_SMIC12_STORES=1`，由 RTL parameter 默认值决定
 
@@ -51,7 +54,8 @@ constraint/power/check_design。
 可通过环境变量覆盖路径：
 
 - `AXI_LLC_DC_RUN_ROOT`
-- `AXI_LLC_DC_STD_DB`
+- `AXI_LLC_DC_STD_DB`，可传入一个 Tcl list；如果覆盖，仍应保持 SMIC12 9T20
+  signoff 库配置。
 - `AXI_LLC_DC_DATA_DB`
 - `AXI_LLC_DC_META_DB`
 - `AXI_LLC_DC_FLIST`
