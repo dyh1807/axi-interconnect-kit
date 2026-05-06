@@ -201,6 +201,8 @@ module llc_cache_ctrl #(
     reg                mshr_refill_issued_r [0:MSHR_COUNT-1];
     reg                mshr_refill_valid_r [0:MSHR_COUNT-1];
     reg [ADDR_BITS-1:0] mshr_victim_addr_r [0:MSHR_COUNT-1];
+    // These wide MSHR payload arrays are only consumed while the owning MSHR
+    // state marks them valid. Do not reset/clear invalid entries.
     reg [LINE_BITS-1:0] mshr_victim_data_r [0:MSHR_COUNT-1];
     reg [LINE_BITS-1:0] mshr_refill_line_r [0:MSHR_COUNT-1];
     reg [LINE_BITS-1:0] mshr_wdata_r [0:MSHR_COUNT-1];
@@ -902,10 +904,6 @@ module llc_cache_ctrl #(
                 mshr_refill_issued_r[mshr_seq_idx] <= 1'b0;
                 mshr_refill_valid_r[mshr_seq_idx] <= 1'b0;
                 mshr_victim_addr_r[mshr_seq_idx] <= {ADDR_BITS{1'b0}};
-                mshr_victim_data_r[mshr_seq_idx] <= {LINE_BITS{1'b0}};
-                mshr_refill_line_r[mshr_seq_idx] <= {LINE_BITS{1'b0}};
-                mshr_wdata_r[mshr_seq_idx] <= {LINE_BITS{1'b0}};
-                mshr_wstrb_r[mshr_seq_idx] <= {LINE_BYTES{1'b0}};
                 mshr_need_refill_r[mshr_seq_idx] <= 1'b0;
                 mshr_total_size_r[mshr_seq_idx] <= 8'd0;
             end
@@ -943,10 +941,6 @@ module llc_cache_ctrl #(
                         mshr_tag_r[mshr_resp_slot_r] <= {TAG_BITS{1'b0}};
                         mshr_way_r[mshr_resp_slot_r] <= {WAY_BITS{1'b0}};
                         mshr_victim_addr_r[mshr_resp_slot_r] <= {ADDR_BITS{1'b0}};
-                        mshr_victim_data_r[mshr_resp_slot_r] <= {LINE_BITS{1'b0}};
-                        mshr_refill_line_r[mshr_resp_slot_r] <= {LINE_BITS{1'b0}};
-                        mshr_wdata_r[mshr_resp_slot_r] <= {LINE_BITS{1'b0}};
-                        mshr_wstrb_r[mshr_resp_slot_r] <= {LINE_BYTES{1'b0}};
                         mshr_need_refill_r[mshr_resp_slot_r] <= 1'b0;
                         mshr_total_size_r[mshr_resp_slot_r] <= 8'd0;
                     end
@@ -1111,7 +1105,6 @@ module llc_cache_ctrl #(
                                 mshr_refill_valid_r[req_id_r] <= 1'b0;
                                 mshr_victim_addr_r[req_id_r] <= lookup_victim_addr_r;
                                 mshr_victim_data_r[req_id_r] <= lookup_victim_line_r;
-                                mshr_refill_line_r[req_id_r] <= {LINE_BITS{1'b0}};
                                 mshr_wdata_r[req_id_r] <= req_wdata_r;
                                 mshr_wstrb_r[req_id_r] <= req_wstrb_r;
                                 mshr_need_refill_r[req_id_r] <= !req_write_r || !full_write_w;
@@ -1206,14 +1199,6 @@ module llc_cache_ctrl #(
                             mshr_way_r[install_mshr_slot_r] <= {WAY_BITS{1'b0}};
                             mshr_victim_addr_r[install_mshr_slot_r] <=
                                 {ADDR_BITS{1'b0}};
-                            mshr_victim_data_r[install_mshr_slot_r] <=
-                                {LINE_BITS{1'b0}};
-                            mshr_refill_line_r[install_mshr_slot_r] <=
-                                {LINE_BITS{1'b0}};
-                            mshr_wdata_r[install_mshr_slot_r] <=
-                                {LINE_BITS{1'b0}};
-                            mshr_wstrb_r[install_mshr_slot_r] <=
-                                {LINE_BYTES{1'b0}};
                             mshr_need_refill_r[install_mshr_slot_r] <= 1'b0;
                             mshr_total_size_r[install_mshr_slot_r] <= 8'd0;
                         end

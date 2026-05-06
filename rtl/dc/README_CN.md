@@ -78,6 +78,13 @@
   因该修改发生在 `compat_link_sanity_payload_no_clear_9b05923_20260506_194526_eda10`
   启动之后，该 sanity 已被停止并 supersede；后续 current-HEAD sanity 需要基于
   compat+bridge 两处 hygiene 后的 RTL 重新启动。
+- 2026-05-06 20:00 CST 继续对 `llc_cache_ctrl` MSHR 做同类 conservative RTL hygiene：
+  去掉 invalid MSHR slot 的 victim/refill/write payload reset/free clear，保留
+  MSHR valid/status/address/tag/way 等控制状态清零。全量 RTL contract 53/53 已通过，
+  目录为 `rtl/local_debug/vcs_all_contracts_mshr_payload_no_clear_20260506_200052_eda10`。
+  因该修改发生在 `compat_link_sanity_payload_hygiene_c6aba0a_20260506_195734_eda10`
+  启动之后，该 sanity 已被停止并 supersede；后续 current-HEAD sanity 需要基于
+  compat+bridge+MSHR 三处 hygiene 后的 RTL 重新启动。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10

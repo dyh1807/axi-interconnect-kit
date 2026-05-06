@@ -222,6 +222,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_all_contracts_bridge_payload_no_clear_20260506_195341_eda10`。该修改只去掉
   invalid pending/rsp slot 的 wide payload reset/free clear，保留 read accept 时用于
   multi-beat merge buffer 初始化的 `rd_rdata_r` 清零。
+- [x] 2026-05-06 MSHR invalid-payload no-clear RTL hygiene 复核：`git diff --check`
+  通过；全量 RTL contract 53/53 通过，目录
+  `rtl/local_debug/vcs_all_contracts_mshr_payload_no_clear_20260506_200052_eda10`。该修改只去掉
+  invalid MSHR slot 的 victim/refill/write payload reset/free clear，保留
+  MSHR valid/status/address/tag/way 等控制状态清零。
 - [x] 2026-05-06 same-master write response queue 复核：targeted VCS
   `tb_axi_llc_subsystem_dual_cpp_trace_contract` 通过，目录
   `rtl/local_debug/vcs_dual_cpp_trace_same_master_write_20260506_020403_eda07`；
@@ -441,7 +446,7 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `local_debug/vcs_all_contracts_bridge_payload_no_clear_20260506_195341_eda10`。
+  `local_debug/vcs_all_contracts_mshr_payload_no_clear_20260506_200052_eda10`。
   本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中固定 32 seed 的 MODE_CACHE
   maintenance/recovery suite：实际 C++ 模型生成 `CPP_SEEDED_MAINT_*` 数组，RTL 逐
   seed replay；seed 随机化地址、`ICACHE/DCACHE_R` master 顺序和 `invalidate_all` /
