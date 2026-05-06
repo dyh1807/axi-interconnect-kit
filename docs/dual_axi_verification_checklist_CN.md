@@ -1275,6 +1275,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   进一步补齐 pending MMIO read/write 同时在途且 `B` 先于 `R` 返回时请求
   MODE_MAPPED 的 targeted VCS，目录为
   `rtl/local_debug/vcs_dual_cpp_trace_reconfig_pending_mmio_rw_b_before_r_20260506_141938_eda10`。
+  随后复跑全量 RTL contract 53/53 通过，目录为
+  `rtl/local_debug/vcs_all_contracts_reconfig_rw_20260506_142058_eda10`。
 - [x] 受 `axi_llc_subsystem_compat.v` 影响的 actual dual-subsystem hw-cbmc 子集：
   compat signedness cleanup 后已复跑稳定 manifest 中 16 个 `subsystem_dual_*`
   proof，全部通过，覆盖 MMIO read/write route/response、DDR/MMIO independent、
