@@ -49,6 +49,7 @@ tests=(
   "cache_ctrl_dirty_evict_writeback"
   "cache_ctrl_partial_write_miss_refill"
   "cache_ctrl_read_miss_refill_response"
+  "cache_ctrl_table_oracle_read_miss_refill_then_read"
   "cache_ctrl_partial_write_hit_merge"
   "cache_ctrl_table_oracle_write_then_read"
   "cache_ctrl_invalidate_line_hit"
