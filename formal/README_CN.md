@@ -20,7 +20,7 @@ formal/run_passed_hw_cbmc.sh
 ```
 
 该入口当前默认设置 `HW_CBMC_TIMEOUT_SEC=600`，只包含已能返回
-`VERIFICATION SUCCESSFUL` 的项目。2026-05-05 当前 stable manifest 为 74 项；
+`VERIFICATION SUCCESSFUL` 的项目。2026-05-06 当前 stable manifest 为 78 项；
 其中前 71 项已有 split-run 证据：
 `local_debug/run_passed_hw_cbmc_manifest71_20260505_144134.log` 完成前 20 项，
 并在第 21 项本体已 `VERIFICATION SUCCESSFUL` 后因旧 240s wrapper timeout 退出；
@@ -32,7 +32,9 @@ formal/run_passed_hw_cbmc.sh
 `local_debug/hw_cbmc_dual_bridge_prod_helper_read_issue_shape_20260505_215117.log`；
 新增第 74 项 `formal/dual_bridge_prod_helper_write_issue_shape` 的 targeted log 为
 `local_debug/hw_cbmc_dual_bridge_prod_helper_write_issue_shape_20260505_220230.log`。
-当前 `formal/*/run_hw_cbmc.sh` 共有 76 个入口，未纳入 stable manifest 的 2 个入口
+2026-05-06 后续又把 `subsystem_dual_mode0_ddr_bypass_read_response_8b` 以及
+3 个 `subsystem_dual_cache_dirty_evict_*` 入口纳入 stable manifest。当前
+`formal/*/run_hw_cbmc.sh` 共有 80 个入口，未纳入 stable manifest 的 2 个入口
 已明确归类为 experimental/non-stable，见下方“非稳定实验入口”。它们不作为当前生产
 RTL 失败结论，也不应在未收敛前加入 `formal/run_passed_hw_cbmc.sh`。
 
@@ -2181,9 +2183,10 @@ formal/dual_port_hazard_scoreboard/run_hw_cbmc.sh
 - `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response`
 
   该入口直接实例化实际 `axi_llc_subsystem_dual.v`，覆盖目标是 MODE_OFF/direct-bypass
-  64B read response 的 native top production-width 路径。当前失败模式是 300s timeout
-  停在 `Type-checking Verilog::axi_llc_subsystem_dual`，尚未进入 harness/BMC；根因更像
-  monolithic native top 拉入 compat/core/store/bridge 后超出 hw-cbmc frontend 展开成本。
+  64B read response 的 native top production-width 路径。2026-05-06 复跑到 600s
+  timeout，进度从 top 展开推进到 `Type-checking harness`，但仍未进入可完成的 BMC
+  证明；根因更像 monolithic native top 拉入 compat/core/store/bridge 后超出
+  hw-cbmc frontend/type-check 成本。
   bridge-level `dual_bridge_prod_width_bypass_cacheline_read_response` 已覆盖 64B bypass
   read 的 DDR `AR`、两拍 `RREADY/RLAST`、512-bit merge 与 response 回收；VCS trace
   contract 也覆盖 actual C++ trace 到 actual RTL subsystem 的 MODE_OFF DDR 64B read/write。

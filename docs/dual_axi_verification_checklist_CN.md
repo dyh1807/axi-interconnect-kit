@@ -851,17 +851,17 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 ## 待继续收敛的生产边界
 
 - [x] 未纳入稳定 manifest 的 formal 入口已按优先级分流：
-  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 77 个稳定入口，`formal/*/run_hw_cbmc.sh`
-  当前共有 79 个入口，剩余未纳入入口为
+  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 78 个稳定入口，`formal/*/run_hw_cbmc.sh`
+  当前共有 80 个入口，剩余未纳入入口为
   `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response` 和
   `formal/subsystem_core_dirty_evict_writeback` 两项；二者均已明确归类为
   experimental/non-stable，不计入稳定回归缺口。dual bridge production-width
   `AR` shape、cacheline read response、bypass-source cacheline read response、cacheline write payload
   和 mode2 write targeted proof 已通过并纳入 manifest；
   `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response` 是 native dual top
-  production-width direct-bypass 64B read response 入口，当前 300 秒 timeout 仍停在
-  `axi_llc_subsystem_dual` top
-  type-check/展开阶段，因为它会拉入 core/compat/store；该项暂不作为生产 RTL 失败结论，
+  production-width direct-bypass 64B read response 入口，2026-05-06 复跑到 600 秒
+  timeout，进度从 top 展开推进到 `Type-checking harness`，但仍未完成 BMC；因为它会
+  拉入 core/compat/store，该项暂不作为生产 RTL 失败结论，
   bridge-level production-width bypass-source cacheline read-response proof 已通过并分担
   payload/merge 覆盖；若必须做 native-top 级别，应把 compat direct-bypass accept/slot/response-owner
   逻辑抽成生产子模块再证明，避免 monolithic top proof 拉入 core/store；
