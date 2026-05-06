@@ -148,6 +148,8 @@ module axi_llc_subsystem_compat #(
 
     reg [WR_SLOT_COUNT-1:0]      wr_q_valid;
     reg [ADDR_BITS-1:0]          wr_q_addr [0:WR_SLOT_COUNT-1];
+    // Wide payload arrays are guarded by valid/count state. Leaving invalid
+    // entries untouched avoids large reset/clear muxes in DC.
     reg [LINE_BITS-1:0]          wr_q_wdata [0:WR_SLOT_COUNT-1];
     reg [LINE_BYTES-1:0]         wr_q_wstrb [0:WR_SLOT_COUNT-1];
     reg [7:0]                    wr_q_size [0:WR_SLOT_COUNT-1];
@@ -1484,15 +1486,9 @@ module axi_llc_subsystem_compat #(
             for (idx = 0; idx < WR_SLOT_COUNT; idx = idx + 1) begin
                 wr_q_valid[idx] <= 1'b0;
                 wr_q_addr[idx] <= {ADDR_BITS{1'b0}};
-                wr_q_wdata[idx] <= {LINE_BITS{1'b0}};
-                wr_q_wstrb[idx] <= {LINE_BYTES{1'b0}};
                 wr_q_size[idx] <= 8'd0;
                 wr_q_id[idx] <= {ID_BITS{1'b0}};
                 wr_q_bypass[idx] <= 1'b0;
-            end
-            for (idx = 0; idx < RD_RESP_SLOT_COUNT; idx = idx + 1) begin
-                rd_resp_q_data[idx] <= {READ_RESP_BITS{1'b0}};
-                rd_resp_q_id[idx] <= {ID_BITS{1'b0}};
             end
             for (idx = 0; idx < MAX_OUTSTANDING; idx = idx + 1) begin
                 core_slot_valid_r[idx] <= 1'b0;
@@ -1510,8 +1506,6 @@ module axi_llc_subsystem_compat #(
                 direct_slot_orig_id_r[idx] <= {ID_BITS{1'b0}};
                 direct_slot_addr_r[idx] <= {ADDR_BITS{1'b0}};
                 direct_slot_size_r[idx] <= 8'd0;
-                direct_slot_wdata_r[idx] <= {LINE_BITS{1'b0}};
-                direct_slot_wstrb_r[idx] <= {LINE_BYTES{1'b0}};
             end
             core_req_stage_valid_r <= 1'b0;
             core_req_stage_is_write_r <= 1'b0;
@@ -1544,8 +1538,6 @@ module axi_llc_subsystem_compat #(
                         rd_resp_valid_r[idx] <= 1'b1;
                         rd_resp_data_r[idx] <= rd_resp_q_data[slot_idx];
                         rd_resp_id_r[idx] <= rd_resp_q_id[slot_idx];
-                        rd_resp_q_data[slot_idx] <= {READ_RESP_BITS{1'b0}};
-                        rd_resp_q_id[slot_idx] <= {ID_BITS{1'b0}};
                         rd_resp_q_head[idx] <= next_rd_resp_ptr(rd_resp_q_head[idx]);
                         rd_resp_q_count[idx] <= rd_resp_q_count[idx] - 8'd1;
                     end else begin
@@ -1556,8 +1548,6 @@ module axi_llc_subsystem_compat #(
                     rd_resp_valid_r[idx] <= 1'b1;
                     rd_resp_data_r[idx] <= rd_resp_q_data[slot_idx];
                     rd_resp_id_r[idx] <= rd_resp_q_id[slot_idx];
-                    rd_resp_q_data[slot_idx] <= {READ_RESP_BITS{1'b0}};
-                    rd_resp_q_id[slot_idx] <= {ID_BITS{1'b0}};
                     rd_resp_q_head[idx] <= next_rd_resp_ptr(rd_resp_q_head[idx]);
                     rd_resp_q_count[idx] <= rd_resp_q_count[idx] - 8'd1;
                 end
@@ -1786,8 +1776,6 @@ module axi_llc_subsystem_compat #(
                 direct_slot_orig_id_r[direct_resp_slot_w] <= {ID_BITS{1'b0}};
                 direct_slot_addr_r[direct_resp_slot_w] <= {ADDR_BITS{1'b0}};
                 direct_slot_size_r[direct_resp_slot_w] <= 8'd0;
-                direct_slot_wdata_r[direct_resp_slot_w] <= {LINE_BITS{1'b0}};
-                direct_slot_wstrb_r[direct_resp_slot_w] <= {LINE_BYTES{1'b0}};
             end
         end
     end

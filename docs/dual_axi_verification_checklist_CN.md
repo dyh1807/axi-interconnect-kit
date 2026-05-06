@@ -211,6 +211,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] C++ regression：`ctest --test-dir build_dual_axi_scope_20260428 --output-on-failure`
   当前通过 24/24；最近一次复跑目录：
   `local_debug/ctest_invline_cache_mmio_write_20260506_130721.log`。
+- [x] 2026-05-06 compat invalid-payload no-clear RTL hygiene 复核：`git diff --check`
+  通过；targeted `tb_axi_llc_subsystem_dual_cpp_trace_contract` 通过，目录
+  `rtl/local_debug/vcs_dual_cpp_trace_payload_no_clear_20260506_194236_eda10`；
+  全量 RTL contract 53/53 通过，目录
+  `rtl/local_debug/vcs_all_contracts_payload_no_clear_20260506_194248_eda10`。该修改只去掉
+  invalid wide payload entries 的 reset/clear，valid/head/tail/count 仍按原逻辑复位。
 - [x] 2026-05-06 same-master write response queue 复核：targeted VCS
   `tb_axi_llc_subsystem_dual_cpp_trace_contract` 通过，目录
   `rtl/local_debug/vcs_dual_cpp_trace_same_master_write_20260506_020403_eda07`；
@@ -430,7 +436,7 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `local_debug/vcs_all_contracts_seeded_maintenance_20260506_190155_eda-10`。
+  `local_debug/vcs_all_contracts_payload_no_clear_20260506_194248_eda10`。
   本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中固定 32 seed 的 MODE_CACHE
   maintenance/recovery suite：实际 C++ 模型生成 `CPP_SEEDED_MAINT_*` 数组，RTL 逐
   seed replay；seed 随机化地址、`ICACHE/DCACHE_R` master 顺序和 `invalidate_all` /

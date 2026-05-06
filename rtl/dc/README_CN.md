@@ -63,6 +63,13 @@
   的扫描。因此 compat elaborate/compile 很慢可能是 RTL 结构规模问题，不只是
   SRAM macro 或库路径问题。若限时 compat link sanity 超时，优先评估 read-response
   payload queue 的存储方式、深度/宽度拆分和扫描结构，而不是只重复启动 full DC。
+- 2026-05-06 19:42 CST 之后做了一项 conservative RTL hygiene：去掉
+  `axi_llc_subsystem_compat` 中 invalid wide payload entries 的 reset/pop/free clear，
+  保留 valid/head/tail/count reset 和所有有效 payload 写入。targeted C++ trace replay
+  与全量 RTL contract 53/53 已通过。新的 current-worktree compat link sanity 为
+  `rtl/dc/runs/compat_link_sanity_payload_no_clear_9b05923_20260506_194526_eda10`；
+  旧 full DC 和旧 compat sanity 启动早于该 RTL 修改，只能作为旧 RTL bottleneck 证据，
+  不能作为该修改后的 signoff。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
