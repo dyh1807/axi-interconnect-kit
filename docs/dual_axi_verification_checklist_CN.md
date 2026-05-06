@@ -4,8 +4,15 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=208 / open=2。本轮继续新增 MODE_CACHE cacheable write miss/refill
-与 MMIO read/write 三路并发下的 `invalidate_all` drain/dirty-blocked 检查：
+当前计数：done=209 / open=2。本轮继续新增 MODE_CACHE dirty victim writeback
+与 MMIO read/write 同时在途下的 `invalidate_all` drain/dirty-blocked 检查：
+full-line write miss 发出 DDR victim `AW/W`，MMIO read/write 分别发出 MMIO
+`AR/AW/W`；`invalidate_all` pending 时同周期返回的 MMIO `RREADY/BREADY` 和 held
+MMIO responses 期间的 DDR victim `BREADY` 都不能被回压，三类 response retire 后
+由于 cache write 留下 dirty resident line，`invalidate_all` 仍必须保持 blocked，
+随后 target-line `invalidate_line` 必须可 accepted。本轮此前新增 MODE_CACHE
+cacheable write miss/refill 与 MMIO read/write 三路并发下的 `invalidate_all`
+drain/dirty-blocked 检查：
 DCache write miss 发出 DDR refill `AR`，MMIO read/write 分别发出 MMIO `AR/AW/W`；
 `invalidate_all` pending 时 MMIO `RREADY/BREADY` 和 held MMIO response 期间的 DDR
 refill `RREADY` 都不能被回压，三类 response retire 后由于 cache write 留下 dirty
@@ -1139,6 +1146,15 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   maintenance 或 held response 回压，并在 drain 后确认 targeted dirty resident line
   `invalidate_line` 可被 accepted；最新 targeted VCS 目录：
   `rtl/local_debug/vcs_dual_cpp_trace_dirty_victim_mmio_read_20260506_135823_eda10`；
+  本轮继续补齐 dirty victim writeback + pending MMIO read/write + `invalidate_all`
+  同时存在时的组合：MMIO `R` 和 `B` 同周期返回时 `RREADY/BREADY` 都不能被回压，
+  held MMIO read/write responses 期间 DDR victim `BREADY` 也不能被回压；MMIO
+  read/write response 与 cache write response 均 retire 前 `invalidate_all` 不能
+  accepted，drain 后因 dirty resident line 仍保持 blocked，targeted `invalidate_line`
+  可 accepted。最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_dirty_victim_mmio_rw_20260506_172046_eda-10`；
+  全量 RTL contract 目录：
+  `rtl/local_debug/vcs_all_contracts_dirty_victim_mmio_rw_20260506_172058_eda-10`；
   本轮继续补齐 clean cacheable read miss/refill 完成并被 upstream 消费后，
   target-line `invalidate_line` accepted，且同地址第二次 cacheable read 重新 miss/refill
   走 DDR 的状态恢复检查；最新 targeted VCS 目录：
@@ -1257,14 +1273,17 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   对称的 MMIO read direct-bypass：victim `B` pending 期间另一 read master 的 MMIO
   4B read 可独立发出，pending maintenance 下 MMIO `RREADY` 与 DDR victim `BREADY`
   均不被 held response 回压，MMIO/cache response retire 前不接受 `invalidate_all`，
-  drain 后 targeted `invalidate_line` 可 accepted。
+  drain 后 targeted `invalidate_line` 可 accepted。随后补齐同一路径下 MMIO read/write
+  同时在途：MMIO `R/B` 同周期返回时不回压，held read/write responses 不能让
+  maintenance 提前 accepted，victim `B` 也不能被上游 held response 回压。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的剩余并发场景：DDR 64B 两拍
   read/write 与 MMIO 同时在途、同一 upstream read master 多 ID response out-of-order
   完成与 held response 稳定性、同一 upstream write master 多 ID `B` response
   out-of-order 完成与 held response 稳定性、read-side/write-side release-reuse、read/write
   full-budget release、MODE_CACHE read refill/MMIO read direct-bypass、MODE_CACHE
   partial write miss/refill/MMIO write direct-bypass、MODE_CACHE dirty victim/MMIO
-  write direct-bypass 已由 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 覆盖；后续如继续
+  write/read/read+write direct-bypass 已由
+  `tb_axi_llc_subsystem_dual_cpp_trace_contract` 覆盖；后续如继续
   扩展，应优先做随机 trace 和更复杂 maintenance/recovery 与并发请求组合。
 - [x] 实际 C++ LLC/AXI integration stress：2026-05-06 直接运行
   `./build_dual_axi_scope_20260428/axi_interconnect_llc_axi4_test`，29/29 pass，覆盖
@@ -1638,6 +1657,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   TB 和文档，不改变 production simulator/RTL 路径，因此继续沿用上述 cycle delta=0、
   IPC delta=0 结论；本轮新增 `invalidate_all` + cache write + MMIO read/write
   dirty-blocked trace 仍只改同类测试/文档文件，也不改变 production simulator/RTL 路径。
+  本轮新增 dirty victim writeback + MMIO read/write + `invalidate_all` drain/blocked
+  trace 同样只改 trace generator、generated include、RTL contract TB 和文档，不改变
+  production simulator/RTL 路径，因此不重跑 Linux，继续沿用上述 5M cycle delta=0、
+  IPC delta=0 的结论。
   如果下一轮修改 production C++/RTL，则 Linux
   5M 结论必须同时报告 error/difftest、cycles、IPC、相对 baseline delta 和是否可接受。
 

@@ -655,6 +655,26 @@ struct DirtyVictimMmioReadTrace {
   bool invalidate_line_accepted_after_resp_retire = false;
 };
 
+struct DirtyVictimMmioReadWriteTrace {
+  WriteTrace setup0;
+  WriteTrace setup1;
+  WriteTrace cache;
+  WriteTrace writeback;
+  ReadTrace mmio_read;
+  WriteTrace mmio_write;
+  uint8_t cache_master = 0;
+  uint8_t mmio_read_master = 0;
+  uint8_t mmio_write_master = 0;
+  bool mmio_rready_while_resp_stalled = false;
+  bool mmio_bready_while_resp_stalled = false;
+  bool ddr_bready_while_resp_stalled = false;
+  bool blocked_while_mmio_resp_held = false;
+  bool blocked_while_cache_resp_held = false;
+  bool accepted_after_resp_retire = false;
+  uint32_t invalidate_line_addr = 0;
+  bool invalidate_line_accepted_after_resp_retire = false;
+};
+
 struct SameLineReadPendingWriteTrace {
   ReadTrace read;
   BlockedTrace write;
@@ -7680,6 +7700,308 @@ DirtyVictimMmioReadTrace run_mode1_dirty_victim_mmio_read_trace() {
   return trace;
 }
 
+DirtyVictimMmioReadWriteTrace
+run_mode1_dirty_victim_mmio_read_write_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  StatefulLlcTableDriver table_driver(dut.get_llc_config());
+
+  DirtyVictimMmioReadWriteTrace trace{};
+  trace.cache_master = axi_interconnect::MASTER_DCACHE_W;
+  trace.mmio_read_master = axi_interconnect::MASTER_UNCORE_LSU_R;
+  trace.mmio_write_master = axi_interconnect::MASTER_UNCORE_LSU_W;
+
+  trace.setup0.prefix = "CPP_MODE1_DIRTY_VICTIM_RW_SETUP0";
+  trace.setup0.req_addr = 0x40001800u;
+  trace.setup0.req_size = 63;
+  trace.setup0.req_id = 0x5u;
+  const auto setup0_data = line_write_data(0x53000000u);
+  const auto setup_strobe = full_line_strobe();
+  trace.setup0.req_wdata = wide_write_words(setup0_data);
+  trace.setup0.req_wstrb = write_strobe_mask(setup_strobe);
+
+  trace.setup1.prefix = "CPP_MODE1_DIRTY_VICTIM_RW_SETUP1";
+  trace.setup1.req_addr = 0x40021800u;
+  trace.setup1.req_size = 63;
+  trace.setup1.req_id = 0x6u;
+  const auto setup1_data = line_write_data(0x63000000u);
+  trace.setup1.req_wdata = wide_write_words(setup1_data);
+  trace.setup1.req_wstrb = write_strobe_mask(setup_strobe);
+
+  trace.cache.prefix = "CPP_MODE1_DIRTY_VICTIM_RW_CACHE_WRITE";
+  trace.cache.req_addr = 0x40041800u;
+  trace.cache.req_size = 63;
+  trace.cache.req_id = 0x7u;
+  const auto cache_data = line_write_data(0x73000000u);
+  trace.cache.req_wdata = wide_write_words(cache_data);
+  trace.cache.req_wstrb = write_strobe_mask(setup_strobe);
+  trace.invalidate_line_addr = trace.cache.req_addr;
+
+  trace.writeback.prefix = "CPP_MODE1_DIRTY_VICTIM_RW_WB";
+  trace.writeback.req_addr = trace.setup0.req_addr;
+  trace.writeback.req_size = 63;
+  trace.writeback.req_id = 0;
+  trace.writeback.req_wdata = wide_write_words(setup0_data);
+  trace.writeback.req_wstrb = write_strobe_mask(setup_strobe);
+
+  trace.mmio_read.prefix = "CPP_MODE1_DIRTY_VICTIM_RW_MMIO_READ";
+  trace.mmio_read.req_addr = 0x10000380u;
+  trace.mmio_read.req_size = 3;
+  trace.mmio_read.req_id = 0xAu;
+  trace.mmio_read.beat_count = 1;
+
+  trace.mmio_write.prefix = "CPP_MODE1_DIRTY_VICTIM_RW_MMIO_WRITE";
+  trace.mmio_write.req_addr = 0x100003c0u;
+  trace.mmio_write.req_size = 3;
+  trace.mmio_write.req_id = 0xBu;
+  const auto mmio_write_data = single_word_data(0xface03c0u);
+  const auto mmio_write_strobe = byte_strobe(0xfu);
+  trace.mmio_write.req_wdata = wide_write_words(mmio_write_data);
+  trace.mmio_write.req_wstrb = write_strobe_mask(mmio_write_strobe);
+
+  issue_cache_write_and_wait_response(dut, table_driver, trace.setup0,
+                                      trace.cache_master, setup0_data,
+                                      setup_strobe);
+  issue_cache_write_and_wait_response(dut, table_driver, trace.setup1,
+                                      trace.cache_master, setup1_data,
+                                      setup_strobe);
+
+  bool accepted = false;
+  bool aw_seen = false;
+  bool request_active = true;
+  for (int cycle = 0; cycle < 240 && !aw_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    const bool ready_snapshot = dut.write_ports[trace.cache_master].req.ready;
+    if (request_active) {
+      auto &req = dut.write_ports[trace.cache_master].req;
+      req.valid = true;
+      req.addr = trace.cache.req_addr;
+      req.total_size = trace.cache.req_size;
+      req.id = trace.cache.req_id;
+      req.wdata = cache_data;
+      req.wstrb = setup_strobe;
+      req.bypass = false;
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (request_active && ready_snapshot) {
+      accepted = true;
+      request_active = false;
+    }
+    if (dut.axi_ddr_io.aw.awvalid) {
+      require(!dut.axi_mmio_io.aw.awvalid,
+              "C++ dirty victim RW writeback DDR AW overlapped with MMIO AW");
+      trace.writeback.awaddr =
+          static_cast<uint32_t>(dut.axi_ddr_io.aw.awaddr);
+      trace.writeback.awlen = static_cast<uint8_t>(dut.axi_ddr_io.aw.awlen);
+      trace.writeback.awsize = static_cast<uint8_t>(dut.axi_ddr_io.aw.awsize);
+      trace.writeback.awburst =
+          static_cast<uint8_t>(dut.axi_ddr_io.aw.awburst);
+      trace.writeback.awid = static_cast<uint8_t>(dut.axi_ddr_io.aw.awid);
+      aw_seen = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  require(accepted, "C++ dirty victim RW cache write was not accepted");
+  require(aw_seen, "C++ dirty victim RW writeback did not issue DDR AW");
+  trace.writeback.beat_count =
+      static_cast<uint32_t>(trace.writeback.awlen) + 1u;
+
+  for (uint32_t beat = 0; beat < trace.writeback.beat_count; ++beat) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(dut.axi_ddr_io.w.wvalid,
+            "C++ dirty victim RW writeback DDR W did not become valid");
+    trace.writeback.wbeats[beat] = axi_words(dut.axi_ddr_io.w.wdata);
+    trace.writeback.wstrb[beat] = axi_strobe_mask(dut.axi_ddr_io.w.wstrb);
+    trace.writeback.wlast[beat] = dut.axi_ddr_io.w.wlast ? 1 : 0;
+    dut.seq();
+    ++sim_time;
+  }
+
+  issue_read_and_capture_ar(dut, trace.mmio_read, trace.mmio_read_master,
+                            axi_interconnect::DownstreamPort::MMIO);
+  issue_write_and_capture_axi(dut, trace.mmio_write, trace.mmio_write_master,
+                              axi_interconnect::DownstreamPort::MMIO,
+                              mmio_write_data, mmio_write_strobe);
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
+  dut.axi_mmio_io.r.rvalid = true;
+  dut.axi_mmio_io.r.rid = trace.mmio_read.arid;
+  dut.axi_mmio_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+  dut.axi_mmio_io.r.rlast = true;
+  dut.axi_mmio_io.r.rdata = {};
+  axi_compat::set_u32(dut.axi_mmio_io.r.rdata, 0, 0xcafe0380u);
+  trace.mmio_read.rbeats[0] = axi_words(dut.axi_mmio_io.r.rdata);
+  dut.axi_mmio_io.b.bvalid = true;
+  dut.axi_mmio_io.b.bid = trace.mmio_write.awid;
+  dut.axi_mmio_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  trace.mmio_rready_while_resp_stalled = dut.axi_mmio_io.r.rready;
+  trace.mmio_bready_while_resp_stalled = dut.axi_mmio_io.b.bready;
+  require(trace.mmio_rready_while_resp_stalled,
+          "C++ dirty victim RW MMIO R was backpressured");
+  require(trace.mmio_bready_while_resp_stalled,
+          "C++ dirty victim RW MMIO B was backpressured");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_all_accepted(),
+          "C++ dirty victim RW accepted invalidate_all in MMIO R/B handshake");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
+  dut.comb_outputs();
+  require(dut.read_ports[trace.mmio_read_master].resp.valid,
+          "C++ dirty victim RW MMIO read response was not held");
+  require(dut.write_ports[trace.mmio_write_master].resp.valid,
+          "C++ dirty victim RW MMIO write response was not held");
+  require(!dut.write_ports[trace.cache_master].resp.valid,
+          "C++ dirty victim RW cache response appeared before victim B");
+  trace.blocked_while_mmio_resp_held = !dut.llc_invalidate_all_accepted();
+  require(trace.blocked_while_mmio_resp_held,
+          "C++ dirty victim RW accepted invalidate_all while MMIO responses held");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
+  dut.axi_ddr_io.b.bvalid = true;
+  dut.axi_ddr_io.b.bid = trace.writeback.awid;
+  dut.axi_ddr_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  trace.ddr_bready_while_resp_stalled = dut.axi_ddr_io.b.bready;
+  require(trace.ddr_bready_while_resp_stalled,
+          "C++ dirty victim RW DDR B was backpressured");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_all_accepted(),
+          "C++ dirty victim RW accepted invalidate_all in victim B handshake");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
+  dut.read_ports[trace.mmio_read_master].resp.ready = true;
+  dut.comb_outputs();
+  auto &mmio_read_resp = dut.read_ports[trace.mmio_read_master].resp;
+  require(mmio_read_resp.valid,
+          "C++ dirty victim RW MMIO read response dropped before ready");
+  trace.mmio_read.resp_id = static_cast<uint8_t>(mmio_read_resp.id);
+  trace.mmio_read.resp_data = wide_read_words(mmio_read_resp.data);
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_all_accepted(),
+          "C++ dirty victim RW accepted invalidate_all before MMIO read retire");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
+  dut.write_ports[trace.mmio_write_master].resp.ready = true;
+  dut.comb_outputs();
+  auto &mmio_write_resp = dut.write_ports[trace.mmio_write_master].resp;
+  require(mmio_write_resp.valid,
+          "C++ dirty victim RW MMIO write response dropped before ready");
+  trace.mmio_write.resp_id = static_cast<uint8_t>(mmio_write_resp.id);
+  trace.mmio_write.resp_code = static_cast<uint8_t>(mmio_write_resp.resp);
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_all_accepted(),
+          "C++ dirty victim RW accepted invalidate_all before MMIO write retire");
+  dut.seq();
+  ++sim_time;
+
+  bool cache_resp_seen = false;
+  for (int cycle = 0; cycle < 240 && !cache_resp_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
+    dut.comb_outputs();
+    auto &resp = dut.write_ports[trace.cache_master].resp;
+    if (resp.valid) {
+      cache_resp_seen = true;
+      trace.cache.resp_id = static_cast<uint8_t>(resp.id);
+      trace.cache.resp_code = static_cast<uint8_t>(resp.resp);
+      trace.blocked_while_cache_resp_held = !dut.llc_invalidate_all_accepted();
+      require(trace.blocked_while_cache_resp_held,
+              "C++ dirty victim RW accepted invalidate_all while cache response held");
+      resp.ready = true;
+      dut.comb_outputs();
+      require(resp.valid,
+              "C++ dirty victim RW cache response dropped before ready");
+      require(!dut.llc_invalidate_all_accepted(),
+              "C++ dirty victim RW accepted invalidate_all before cache retire");
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    dut.seq();
+    ++sim_time;
+  }
+  require(cache_resp_seen, "C++ dirty victim RW cache response timeout");
+
+  for (int retry = 0; retry < 32; ++retry) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_all_accepted(),
+            "C++ dirty victim RW accepted invalidate_all with dirty resident line");
+    dut.seq();
+    ++sim_time;
+  }
+  trace.accepted_after_resp_retire = false;
+  dut.set_llc_invalidate_all(false);
+
+  bool invalidate_line_accepted = false;
+  for (int retry = 0; retry < 96 && !invalidate_line_accepted; ++retry) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_line_addr);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (dut.llc_invalidate_line_accepted()) {
+      invalidate_line_accepted = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  trace.invalidate_line_accepted_after_resp_retire = invalidate_line_accepted;
+  require(invalidate_line_accepted,
+          "C++ dirty victim RW invalidate_line did not accept after drain");
+  dut.set_llc_invalidate_line(false, 0);
+  return trace;
+}
+
 Mode2MappedLocalTrace run_mode2_mapped_local_write_read_trace(
     const std::string &prefix = "CPP_MODE2_MAPPED_LOCAL",
     uint32_t write_addr = 0x30002000u, uint8_t write_size = 63,
@@ -9549,6 +9871,39 @@ void emit_dirty_victim_mmio_read(std::ostream &os,
      << (trace.invalidate_line_accepted_after_resp_retire ? 1 : 0) << ";\n";
 }
 
+void emit_dirty_victim_mmio_read_write(
+    std::ostream &os, const DirtyVictimMmioReadWriteTrace &trace) {
+  os << "\n";
+  os << "localparam integer CPP_MODE1_DIRTY_VICTIM_RW_CACHE_MASTER = "
+     << static_cast<unsigned>(trace.cache_master) << ";\n";
+  os << "localparam integer CPP_MODE1_DIRTY_VICTIM_RW_MMIO_READ_MASTER = "
+     << static_cast<unsigned>(trace.mmio_read_master) << ";\n";
+  os << "localparam integer CPP_MODE1_DIRTY_VICTIM_RW_MMIO_WRITE_MASTER = "
+     << static_cast<unsigned>(trace.mmio_write_master) << ";\n";
+  emit_cache_write_req_resp(os, trace.setup0);
+  emit_cache_write_req_resp(os, trace.setup1);
+  emit_cache_write_req_resp(os, trace.cache);
+  emit_write(os, trace.writeback);
+  os << "localparam " << trace.writeback.prefix << "_BREADY_STALLED = 1'b"
+     << (trace.ddr_bready_while_resp_stalled ? 1 : 0) << ";\n";
+  emit_read(os, trace.mmio_read);
+  os << "localparam " << trace.mmio_read.prefix << "_RREADY_STALLED = 1'b"
+     << (trace.mmio_rready_while_resp_stalled ? 1 : 0) << ";\n";
+  emit_write(os, trace.mmio_write);
+  os << "localparam " << trace.mmio_write.prefix << "_BREADY_STALLED = 1'b"
+     << (trace.mmio_bready_while_resp_stalled ? 1 : 0) << ";\n";
+  os << "localparam CPP_MODE1_DIRTY_VICTIM_RW_INVALL_BLOCKED_MMIO_HELD = 1'b"
+     << (trace.blocked_while_mmio_resp_held ? 1 : 0) << ";\n";
+  os << "localparam CPP_MODE1_DIRTY_VICTIM_RW_INVALL_BLOCKED_CACHE_HELD = 1'b"
+     << (trace.blocked_while_cache_resp_held ? 1 : 0) << ";\n";
+  os << "localparam CPP_MODE1_DIRTY_VICTIM_RW_INVALL_ACCEPTED_AFTER_RETIRE = 1'b"
+     << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
+  os << "localparam CPP_MODE1_DIRTY_VICTIM_RW_INVLINE_ADDR = "
+     << hex_u32(trace.invalidate_line_addr) << ";\n";
+  os << "localparam CPP_MODE1_DIRTY_VICTIM_RW_INVLINE_ACCEPTED_AFTER_RETIRE = 1'b"
+     << (trace.invalidate_line_accepted_after_resp_retire ? 1 : 0) << ";\n";
+}
+
 void emit_mode2_mapped_local(std::ostream &os,
                              const Mode2MappedLocalTrace &trace) {
   os << "\n";
@@ -10092,6 +10447,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_dirty_victim_mmio_write_trace();
   const auto mode1_dirty_victim_mmio_read =
       run_mode1_dirty_victim_mmio_read_trace();
+  const auto mode1_dirty_victim_mmio_read_write =
+      run_mode1_dirty_victim_mmio_read_write_trace();
   const auto mode2_mapped_local = run_mode2_mapped_local_write_read_trace();
   const auto mode2_mapped_low_boundary =
       run_mode2_mapped_local_write_read_trace(
@@ -10252,6 +10609,7 @@ void emit_vectors(std::ostream &os) {
       os, mode1_invalidate_all_cache_mmio_read_write);
   emit_dirty_victim_mmio_write(os, mode1_dirty_victim_mmio_write);
   emit_dirty_victim_mmio_read(os, mode1_dirty_victim_mmio_read);
+  emit_dirty_victim_mmio_read_write(os, mode1_dirty_victim_mmio_read_write);
   emit_mode2_mapped_local(os, mode2_mapped_local);
   emit_mode2_mapped_local(os, mode2_mapped_low_boundary);
   emit_mode2_mapped_local(os, mode2_mapped_contract_limit_boundary);
