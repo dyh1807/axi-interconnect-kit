@@ -25,6 +25,9 @@ case 就补一个”的开放式方式扩展。目标不是枚举所有交叉组
 
 短期 EC 不再采用“每轮想到一个场景就补一个 directed case”的方式推进。后续判断规则为：
 
+- 先按需求抽象成有限属性类别，再为每类选择一种主验证手段：deterministic trace
+  覆盖具体可观察行为，固定 seed suite 覆盖扰动交叉，formal invariant 覆盖不适合枚举的
+  安全性质，Linux/image gate 覆盖集成性能/功能回归。不要把所有维度做完整笛卡尔积。
 - 若需求已经落在下方 deterministic matrix，且代表 trace、固定 seed 和对应 formal
   invariant 均已通过，则该类别视为短期收敛；不再继续手写同类排列组合。
 - 若发现真实 bug，新增用例归类为 bug regression，并记录它修复的是哪个矩阵类别或
@@ -39,6 +42,10 @@ case 就补一个”的开放式方式扩展。目标不是枚举所有交叉组
 因此，“一次性想好各种可能 case”的可行做法不是枚举所有波形，而是一次性冻结属性矩阵、
 代表样例、固定 seed 扰动和形式化不变量。这个矩阵满足 Stop Criteria 后，EC 工作应切换
 到 bug regression 和长期 gate，而不是继续无边界扩展。
+
+当前短期执行结论：不再继续补充同类 directed EC case。下一步 EC 只允许三类变化：
+生产 C++/RTL 被修改后的必要回归、真实 bug regression、或把现有需求提炼成新的生产
+helper/formal invariant。否则继续新增 case 会增加维护成本，但不会显著提高当前风险覆盖。
 
 ## Deterministic Trace Matrix
 

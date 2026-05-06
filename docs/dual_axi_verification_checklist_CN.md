@@ -23,7 +23,13 @@ contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际
 - DC/timing：EC 通过不等价于可综合和 1GHz 收敛；仍需 9T20 + SMIC12 SRAM 的
   pre-DC hygiene/full DC gate。
 
-当前计数：done=210 / open=2。本轮继续收敛 C++ reference 的 `invalidate_line`
+当前短期计数：EC directed/category gate done=210 / open=0；全局工程 gate open=3。
+这 3 项分别是：C++/RTL 端到端形式 EC 的长期探索、RTL 可综合性与 1GHz DC/timing、
+Linux/image 级长期性能与 difftest 回归。后续不再继续开放式补同类 directed EC case；
+只有 production C++/RTL 发生语义修改、发现真实 bug，或需要把已有需求抽象成新的
+production helper/formal invariant 时才新增 EC 项。
+
+历史增量记录从此处开始，仅作为覆盖证据索引，不代表新的短期开放任务。本轮继续收敛 C++ reference 的 `invalidate_line`
 compat-local drain 语义：`invalidate_line` 现在与 RTL/文档一致，必须等 compat-local
 queue / inflight / response slot 全排空后才向 LLC core 前推，同时保留 same-line
 write/read hazard 作为额外过滤；新增 unrelated target-line `invalidate_line` + cache
@@ -1915,7 +1921,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   pending MMIO read/write + `invalidate_all` 组合，要求同样不回压 MMIO `RREADY/BREADY`
   或 DDR refill `RREADY`，且三类 response 都 retire 后仍因 dirty resident line 保持
   blocked。
-- [ ] C++ reference 与 RTL 端到端形式 EC；当前已有 production-helper read issue
+- [ ] 长期探索：C++ reference 与 RTL 端到端形式 EC；当前已有 production-helper read issue
   shape 切片，但完整 C++ class / RTL top 同 harness 仍未完成。
-- [ ] RTL 可综合性与 1GHz pre-DC hygiene gate。
-- [ ] Linux/image 级长期性能与 difftest 回归。
+- [ ] 工程签核：RTL 可综合性与 1GHz pre-DC/full DC timing gate。
+- [ ] 长期回归：Linux/image 级性能与 difftest 回归；production 路径变化后必须跑，
+  纯测试/文档变化不重新打开 EC directed coverage。
