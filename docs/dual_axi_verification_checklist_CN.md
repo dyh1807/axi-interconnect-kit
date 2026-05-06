@@ -4,6 +4,25 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
+## 当前阅读口径
+
+本文件保留了大量历史增量记录，因此不能把每个“可继续扩展”的描述都理解成短期
+必须补完。2026-05-06 起短期 EC 按
+`docs/dual_axi_ec_closure_plan_CN.md` 的 freeze policy 执行：先看属性矩阵、固定
+32 seed suite、稳定 formal manifest、Linux/image perf gate 和 DC/timing gate 是否满足，
+不再开放式追加同类 directed case。
+
+当前短期剩余 gate 归并为三类：
+
+- C++/RTL EC：deterministic trace matrix 和固定 32 seed maintenance/recovery suite 已通过；
+  2026-05-06 targeted hw-cbmc invariant gate 6/6 也已通过，日志为
+  `local_debug/hw_cbmc_invariant_gate_20260506_191142.log`。剩余不再是继续扩大手写
+  case，而是维护 stable formal manifest、bug regression 和必要时拆分新的生产 helper。
+- Linux/image：只有 production C++/RTL 路径变化时才需要重新跑 large + `CONFIG_BPU`
+  300k/5M，并报告 cycles、IPC、commit/load/store delta；仅测试/文档变化不重新定义性能结论。
+- DC/timing：EC 通过不等价于可综合和 1GHz 收敛；仍需 9T20 + SMIC12 SRAM 的
+  pre-DC hygiene/full DC gate。
+
 当前计数：done=210 / open=2。本轮继续收敛 C++ reference 的 `invalidate_line`
 compat-local drain 语义：`invalidate_line` 现在与 RTL/文档一致，必须等 compat-local
 queue / inflight / response slot 全排空后才向 LLC core 前推，同时保留 same-line

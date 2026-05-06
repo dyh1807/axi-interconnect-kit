@@ -8,6 +8,9 @@ case 就补一个”的开放式方式扩展。目标不是枚举所有交叉组
 
 - 不做完整笛卡尔积枚举。`mode`、master、DDR/MMIO、maintenance、dirty/victim、
   response-held 等维度组合过多，继续手写单点 case 会无穷展开。
+- EC 目标按“属性类别”收敛，而不是按“所有可能波形”收敛。每个类别必须说明由
+  deterministic trace、fixed seed、formal invariant 或 Linux/image gate 中哪一种覆盖；
+  没有归属到类别的新增 case 不进入短期收敛范围。
 - 每个需求必须至少有一个正向路径和一个阻断/回压路径。例：合法 DDR 64B read
   要能发出两拍 256-bit `AR/R`，非法 MMIO 8B 要 ready=0 且不发任一外部 AXI。
 - 每类 drain 不变量只用代表性组合覆盖。例：`invalidate_all` / `invalidate_line`
@@ -17,6 +20,25 @@ case 就补一个”的开放式方式扩展。目标不是枚举所有交叉组
   `ICACHE + DCACHE_R`，因为它覆盖 ready-first 与 same-cycle accept 的差异。
 - 后续新增 case 必须满足以下条件之一：补齐矩阵缺口、复现真实 bug、或验证一个尚未
   被形式化/随机 seed 覆盖的不变量。
+
+## EC Freeze Policy
+
+短期 EC 不再采用“每轮想到一个场景就补一个 directed case”的方式推进。后续判断规则为：
+
+- 若需求已经落在下方 deterministic matrix，且代表 trace、固定 seed 和对应 formal
+  invariant 均已通过，则该类别视为短期收敛；不再继续手写同类排列组合。
+- 若发现真实 bug，新增用例归类为 bug regression，并记录它修复的是哪个矩阵类别或
+  formal 不变量；该行为不是重新打开整个类别。
+- 若新增需求引入新语义，先扩展矩阵类别，再决定需要 deterministic trace、seed 扰动、
+  formal invariant 还是 Linux/image gate；不能直接追加零散 case。
+- 固定 seed suite 初始规模锁定为 `32`。除非 seed 暴露真实 bug、覆盖矩阵新增维度，
+  或需要阶段性加严到下一档固定规模，否则不逐轮增加随机 seed。
+- DC/timing 失败不自动意味着 EC 未覆盖。若为时序整改修改了生产 C++/RTL 语义，
+  才需要重新跑对应 EC/perf gate。
+
+因此，“一次性想好各种可能 case”的可行做法不是枚举所有波形，而是一次性冻结属性矩阵、
+代表样例、固定 seed 扰动和形式化不变量。这个矩阵满足 Stop Criteria 后，EC 工作应切换
+到 bug regression 和长期 gate，而不是继续无边界扩展。
 
 ## Deterministic Trace Matrix
 
@@ -68,6 +90,18 @@ RTL contract `rtl/local_debug/vcs_all_contracts_seeded_maintenance_20260506_1901
 
 形式化 harness 必须引用实际会使用的 RTL/C++ 文件，不接受另写一个“按理解重做”的
 模型作为替代。
+
+当前短期 invariant gate 复核：
+
+- 2026-05-06 targeted hw-cbmc gate 已通过 6/6，日志：
+  `local_debug/hw_cbmc_invariant_gate_20260506_191142.log`。
+- 覆盖入口：`dual_port_route_shape`、`dual_port_req_steer`、`dual_port_issue_gate`、
+  `dual_port_hazard_match`、`dual_port_hazard_scoreboard`、`dual_port_resp_mux`。
+- 这些入口分别卡住地址/端口互斥、unsupported no-issue、同地址 AR/AW issue gate、
+  pending read/write hazard 记录/释放、以及 response mux ready/选择逻辑。
+- maintenance gate 的完整 top 级状态空间当前仍主要由 deterministic trace、固定 32 seed
+  maintenance/recovery suite 和 RTL contract 覆盖；不再通过 monolithic top formal
+  强行证明，除非后续把 maintenance accepted 条件拆成生产 helper。
 
 ## Linux / Performance Gate
 
