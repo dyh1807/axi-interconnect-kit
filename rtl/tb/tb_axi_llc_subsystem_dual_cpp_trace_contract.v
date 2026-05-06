@@ -5317,6 +5317,104 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_invalidate_all_recovery_cache_read_and_check;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            ddr_axi_arready = 1'b0;
+            invalidate_all_valid = 1'b0;
+
+            issue_mode1_invalidate_line_recovery_cache_read(
+                CPP_MODE1_INVALL_RECOVERY_CACHE_MASTER,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_REQ_ADDR,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_REQ_SIZE,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_REQ_ID,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_ARADDR,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_ARLEN,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_ARSIZE,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_ARBURST,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_ARID,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_BEATS,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_RBEAT0,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_RBEAT1,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_RESP_ID,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_FILL_RESP_DATA,
+                "C++ trace invall cache recovery first fill mismatch");
+
+            issue_mode1_invalidate_line_recovery_cache_read(
+                CPP_MODE1_INVALL_RECOVERY_CACHE_MASTER,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_REQ_ADDR,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_REQ_SIZE,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_REQ_ID,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_ARADDR,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_ARLEN,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_ARSIZE,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_ARBURST,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_ARID,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_BEATS,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_RBEAT0,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_RBEAT1,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_RESP_ID,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_FILL_RESP_DATA,
+                "C++ trace invall cache recovery second fill mismatch");
+
+            invalidate_all_valid = 1'b1;
+            timeout = 10000;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                #1;
+                if (invalidate_all_accepted) begin
+                    accepted_seen = 1'b1;
+                end
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (accepted_seen !== CPP_MODE1_INVALL_RECOVERY_CACHE_INVALIDATE_ACCEPTED) begin
+                fail_now("C++ trace invall cache recovery accept mismatch");
+            end
+            @(negedge clk);
+            invalidate_all_valid = 1'b0;
+
+            issue_mode1_invalidate_line_recovery_cache_read(
+                CPP_MODE1_INVALL_RECOVERY_CACHE_MASTER,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_REQ_ADDR,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_REQ_SIZE,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_REQ_ID,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_ARADDR,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_ARLEN,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_ARSIZE,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_ARBURST,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_ARID,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_BEATS,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_RBEAT0,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_RBEAT1,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_RESP_ID,
+                CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER_RESP_DATA,
+                "C++ trace invall cache recovery first after mismatch");
+
+            issue_mode1_invalidate_line_recovery_cache_read(
+                CPP_MODE1_INVALL_RECOVERY_CACHE_MASTER,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_REQ_ADDR,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_REQ_SIZE,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_REQ_ID,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_ARADDR,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_ARLEN,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_ARSIZE,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_ARBURST,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_ARID,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_BEATS,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_RBEAT0,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_RBEAT1,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_RESP_ID,
+                CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER_RESP_DATA,
+                "C++ trace invall cache recovery second after mismatch");
+        end
+    endtask
+
     task issue_mode1_invalidate_line_cache_mmio_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -9180,6 +9278,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         issue_mode1_invalidate_line_pending_read_and_check();
         issue_mode1_invalidate_line_recovery_read_and_check();
         issue_mode1_invalidate_line_scope_read_and_check();
+        issue_mode1_invalidate_all_recovery_cache_read_and_check();
         issue_mode1_invalidate_line_cache_mmio_read_and_check();
         issue_mode1_same_line_read_pending_write_and_check();
         issue_mode1_same_line_mmio_read_pending_write_and_check();

@@ -712,6 +712,16 @@ struct InvalidateLineScopeReadTrace {
   bool survivor_hit_no_external = false;
 };
 
+struct InvalidateAllRecoveryReadTrace {
+  ReadTrace first_fill;
+  ReadTrace second_fill;
+  ReadTrace first_after;
+  ReadTrace second_after;
+  std::string prefix;
+  uint8_t read_master = 0;
+  bool invalidate_accepted = false;
+};
+
 struct ReconfigCacheReadTrace {
   ReadTrace read;
   uint8_t read_master = 0;
@@ -3360,6 +3370,70 @@ run_mode1_invalidate_line_scope_read_trace() {
                                          trace.survivor_hit_no_external);
   require(trace.survivor_hit_no_external,
           "C++ invalidate_line scope survivor hit escaped to external AXI");
+  return trace;
+}
+
+InvalidateAllRecoveryReadTrace
+run_mode1_invalidate_all_recovery_cache_read_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  StatefulLlcTableDriver table_driver(dut.get_llc_config());
+
+  InvalidateAllRecoveryReadTrace trace{};
+  trace.prefix = "CPP_MODE1_INVALL_RECOVERY_CACHE";
+  trace.read_master = axi_interconnect::MASTER_DCACHE_R;
+  trace.first_fill.prefix = "CPP_MODE1_INVALL_RECOVERY_FIRST_FILL";
+  trace.first_fill.req_addr = 0x40001804u;
+  trace.first_fill.req_size = 3;
+  trace.first_fill.req_id = 0x1u;
+  trace.first_fill.beat_count = 2;
+  trace.second_fill.prefix = "CPP_MODE1_INVALL_RECOVERY_SECOND_FILL";
+  trace.second_fill.req_addr = 0x40001844u;
+  trace.second_fill.req_size = trace.first_fill.req_size;
+  trace.second_fill.req_id = 0x2u;
+  trace.second_fill.beat_count = 2;
+  trace.first_after.prefix = "CPP_MODE1_INVALL_RECOVERY_FIRST_AFTER";
+  trace.first_after.req_addr = trace.first_fill.req_addr;
+  trace.first_after.req_size = trace.first_fill.req_size;
+  trace.first_after.req_id = 0x3u;
+  trace.first_after.beat_count = 2;
+  trace.second_after.prefix = "CPP_MODE1_INVALL_RECOVERY_SECOND_AFTER";
+  trace.second_after.req_addr = trace.second_fill.req_addr;
+  trace.second_after.req_size = trace.second_fill.req_size;
+  trace.second_after.req_id = 0x4u;
+  trace.second_after.beat_count = 2;
+
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.first_fill,
+                                          trace.read_master, 0xd00d1c00u);
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.second_fill,
+                                          trace.read_master, 0xd00d1e00u);
+
+  for (int cycle = 0; cycle < 240 && !trace.invalidate_accepted; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (dut.llc_invalidate_all_accepted()) {
+      trace.invalidate_accepted = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  if (!trace.invalidate_accepted) {
+    dut.debug_print();
+  }
+  require(trace.invalidate_accepted,
+          "C++ invalidate_all cache recovery trace did not accept");
+  dut.set_llc_invalidate_all(false);
+
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.first_after,
+                                          trace.read_master, 0xd00d2000u);
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.second_after,
+                                          trace.read_master, 0xd00d2200u);
   return trace;
 }
 
@@ -7504,6 +7578,18 @@ void emit_invalidate_line_scope_read(
      << (trace.survivor_hit_no_external ? 1 : 0) << ";\n";
 }
 
+void emit_invalidate_all_recovery_cache_read(
+    std::ostream &os, const InvalidateAllRecoveryReadTrace &trace) {
+  emit_read(os, trace.first_fill);
+  emit_read(os, trace.second_fill);
+  emit_read(os, trace.first_after);
+  emit_read(os, trace.second_after);
+  os << "localparam integer " << trace.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.read_master) << ";\n";
+  os << "localparam " << trace.prefix << "_INVALIDATE_ACCEPTED = 1'b"
+     << (trace.invalidate_accepted ? 1 : 0) << ";\n";
+}
+
 void emit_reconfig_cache_read(std::ostream &os,
                               const ReconfigCacheReadTrace &trace) {
   emit_read(os, trace.read);
@@ -7752,6 +7838,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_invalidate_line_recovery_read_trace();
   const auto mode1_invalidate_line_scope_read =
       run_mode1_invalidate_line_scope_read_trace();
+  const auto mode1_invalidate_all_recovery_cache_read =
+      run_mode1_invalidate_all_recovery_cache_read_trace();
   const auto mode1_invalidate_line_cache_mmio_read =
       run_mode1_invalidate_line_cache_mmio_read_trace();
   const auto mode1_same_line_read_pending_write =
@@ -7900,6 +7988,8 @@ void emit_vectors(std::ostream &os) {
   emit_invalidate_line_recovery_read(os,
                                      mode1_invalidate_line_recovery_read);
   emit_invalidate_line_scope_read(os, mode1_invalidate_line_scope_read);
+  emit_invalidate_all_recovery_cache_read(
+      os, mode1_invalidate_all_recovery_cache_read);
   emit_invalidate_line_cache_mmio_read(
       os, mode1_invalidate_line_cache_mmio_read);
   emit_same_line_read_pending_write(os, mode1_same_line_read_pending_write);

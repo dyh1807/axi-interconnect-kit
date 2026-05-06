@@ -4,7 +4,10 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=199 / open=2。本轮新增 MODE_CACHE `invalidate_line` 作用域检查：
+当前计数：done=200 / open=2。本轮新增 MODE_CACHE `invalidate_all` cache resident
+recovery 检查：先填充两条 clean cache line，`invalidate_all` accepted 后，两条
+resident line 的后续 read 都必须重新 miss/refill 走 DDR，不能继续命中旧 resident
+entry。本轮此前新增 MODE_CACHE `invalidate_line` 作用域检查：
 先填充同 set 不同 tag 的 victim/survivor 两条 clean cache line，只 invalidate victim；
 随后 victim 必须重新 miss/refill 走 DDR，而 survivor 必须保持 hit 且不出现任何外部
 AXI `AR/AW/W`。本轮此前新增 MODE_CACHE cacheable read miss/refill 完成并被
@@ -354,8 +357,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `rtl/local_debug/vcs_all_contracts_invline_scope_read_20260506_151748_eda-10`。
+  `rtl/local_debug/vcs_all_contracts_inval_all_cache_recovery_20260506_152642_eda-10`。
   本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE
+  `invalidate_all` cache resident recovery trace：两条 clean cache line 均 resident 后，
+  `invalidate_all` accepted；随后两条 line 的 read 都必须重新走 DDR miss/refill。
+  targeted 目录为
+  `rtl/local_debug/vcs_dual_cpp_trace_inval_all_cache_recovery_20260506_152623_eda-10`。
+  此前本项新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE
   `invalidate_line` scope trace：同 set 不同 tag 的 victim/survivor clean line
   均已 resident 后，只 invalidate victim；victim 后续重新走 DDR miss/refill，
   survivor 后续保持 hit 且无外部 AXI `AR/AW/W`。targeted 目录为
@@ -1078,6 +1086,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_invline_scope_read_20260506_151734_eda-10`，
   全量 RTL contract 目录：
   `rtl/local_debug/vcs_all_contracts_invline_scope_read_20260506_151748_eda-10`；
+  本轮继续补齐 MODE_CACHE `invalidate_all` 对 clean resident cache line 的全局恢复
+  检查：两条 clean line 填充后 `invalidate_all` accepted，之后两条 line 都必须重新
+  miss/refill 走 DDR；最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_inval_all_cache_recovery_20260506_152623_eda-10`，
+  全量 RTL contract 目录：
+  `rtl/local_debug/vcs_all_contracts_inval_all_cache_recovery_20260506_152642_eda-10`；
   后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
   maintenance/recovery 组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
@@ -1209,6 +1223,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_cpp_trace_invline_cache_mmio_write_20260506_130801` 通过；全量
   RTL contract 53/53 通过，out_dir 为
   `rtl/local_debug/vcs_all_contracts_20260506_130824_invline_cache_mmio_write`。
+  随后新增 clean resident line `invalidate_line` recovery/scope 与 `invalidate_all`
+  cache resident recovery trace 后，C++ regression 24/24 通过；latest targeted VCS
+  为 `rtl/local_debug/vcs_dual_cpp_trace_inval_all_cache_recovery_20260506_152623_eda-10`，
+  latest 全量 RTL contract 53/53 目录为
+  `rtl/local_debug/vcs_all_contracts_inval_all_cache_recovery_20260506_152642_eda-10`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
@@ -1417,16 +1436,18 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   530423/921658；L1D AMAT 2.373202、L1D miss penalty 61.364674 cycles、
   LLC->DDR read avg 52.000000 cycles 也完全一致，因此本轮 cycle delta=0、IPC
   delta=0，未出现可观测性能回退。
-	  后续所有 Linux 5M 或更长 boot gate 都必须沿用这个判定标准：不允许只报告
-	  pass/error，必须同时给出 cycles、IPC 及相对 baseline 的 delta；若当前改动理论上不应
-	  影响性能，任何非零 cycle/IPC 差异都需要先解释来源，再决定是否接受。可用
-	  `tools/compare_linux_boot_perf.py --require-exact <baseline.log> <current.log>`
-	  固化该检查；非 deterministic 或允许微小抖动的 gate 可改用默认阈值
-	  `--max-cycle-delta-pct 1.0 --max-ipc-drop-pct 1.0`。
-	  2026-05-06 后续推进到 `3a2020c` 期间只新增 trace generator、RTL TB、
-	  generated TB include 和 docs，不改 production C++/RTL 路径，因此仍沿用上述
-	  300k/5M cycle delta=0、IPC delta=0 的性能结论；下一次 production 路径改动后必须
-	  重新跑 300k/5M 并按同一口径报告。
+  后续所有 Linux 5M 或更长 boot gate 都必须沿用这个判定标准：不允许只报告
+  pass/error，必须同时给出 cycles、IPC 及相对 baseline 的 delta；若当前改动理论上不应
+  影响性能，任何非零 cycle/IPC 差异都需要先解释来源，再决定是否接受。可用
+  `tools/compare_linux_boot_perf.py --require-exact <baseline.log> <current.log>`
+  固化该检查；非 deterministic 或允许微小抖动的 gate 可改用默认阈值
+  `--max-cycle-delta-pct 1.0 --max-ipc-drop-pct 1.0`。
+  2026-05-06 用户再次明确：Linux boot 5M 测试结论不能只关注是否出现 error，
+  必须报告 IPC、cycle 数量、相对 baseline 的差异是否显著，以及该差异是否可接受。
+  2026-05-06 后续推进到 `3a2020c` 期间只新增 trace generator、RTL TB、
+  generated TB include 和 docs，不改 production C++/RTL 路径，因此仍沿用上述
+  300k/5M cycle delta=0、IPC delta=0 的性能结论；下一次 production 路径改动后必须
+  重新跑 300k/5M 并按同一口径报告。
 
 ## Multi-Agent 并行推进边界
 
