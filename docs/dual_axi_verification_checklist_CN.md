@@ -4,7 +4,11 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=197 / open=2。本轮新增 MODE_CACHE cacheable write miss/refill 的 DDR
+当前计数：done=198 / open=2。本轮新增 MODE_CACHE cacheable read miss/refill 完成并被
+upstream 消费后，target-line `invalidate_line` 必须 accepted，随后同地址第二次 cacheable
+read 必须重新 miss/refill 走 DDR `AR/R` 的 actual C++ trace 到实际 RTL subsystem
+一致性检查；该场景同时校准 C++ trace helper 对 LLC read response `fresh` 保护的 ready
+握手建模，避免把未 retire 的 response 误当作已消费。本轮此前新增 MODE_CACHE cacheable write miss/refill 的 DDR
 `AR` 已发且 `R`/upstream write response 尚未 retire 时请求 MODE_MAPPED 的 actual C++
 trace 到实际 RTL subsystem 一致性检查，要求外部 DDR `RREADY` 不被 reconfig 回压，
 且 active mode 不得在 refill 或 held write response 期间提前切换；write response retire 后
@@ -347,7 +351,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `rtl/local_debug/vcs_all_contracts_after_same_line_20260506_005229_eda10`。本轮新增
+  `rtl/local_debug/vcs_all_contracts_invline_recovery_read_20260506_150544_eda-10`。
+  本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE
+  `invalidate_line` recovery trace：clean cacheable read miss/refill 完成并 retire 后，
+  target-line invalidate accepted，随后同地址第二次 read 重新走 DDR miss/refill；
+  targeted 目录为
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_recovery_read_20260506_150520_eda-10`。
+  此前本项新增
   `tb_axi_llc_subsystem_core_startup_idle_contract`，直接实例化实际
   `axi_llc_subsystem_core.v`，小参数/generic store 下验证 reset startup sweep 结束后
   `active_mode=MODE_CACHE`、`reconfig_state=IDLE`、`config_error=0`，且无意外
@@ -1047,6 +1057,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   maintenance 或 held response 回压，并在 drain 后确认 targeted dirty resident line
   `invalidate_line` 可被 accepted；最新 targeted VCS 目录：
   `rtl/local_debug/vcs_dual_cpp_trace_dirty_victim_mmio_read_20260506_135823_eda10`；
+  本轮继续补齐 clean cacheable read miss/refill 完成并被 upstream 消费后，
+  target-line `invalidate_line` accepted，且同地址第二次 cacheable read 重新 miss/refill
+  走 DDR 的状态恢复检查；最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_invline_recovery_read_20260506_150520_eda-10`，
+  全量 RTL contract 目录：
+  `rtl/local_debug/vcs_all_contracts_invline_recovery_read_20260506_150544_eda-10`；
   后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
   maintenance/recovery 组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
@@ -1485,7 +1501,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] invalidate_line / invalidate_all 相关 hazard、drain 与 recovery 合同；
   MODE_CACHE 下 cacheable read miss/refill 未完成和 read response 被上游 hold 时，
   `invalidate_line` 必须保持阻塞，response 被消费后才允许 accepted，且该场景已由
-  actual C++ trace 到实际 RTL subsystem contract 覆盖；本轮补齐对称的 cacheable
+  actual C++ trace 到实际 RTL subsystem contract 覆盖；clean cacheable read miss/refill
+  完成并被上游消费后，target-line `invalidate_line` accepted 且同地址后续 read
+  重新 miss/refill 走 DDR 的状态恢复也已由 actual C++ trace 到实际 RTL subsystem
+  contract 覆盖；本轮补齐对称的 cacheable
   write miss/refill + pending MMIO write + target-line `invalidate_line` 组合，要求
   MMIO `BREADY`/DDR refill `RREADY` 不被回压，两个 write response 均 retire 后才
   accepted。

@@ -4982,6 +4982,187 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_invalidate_line_recovery_cache_read;
+        input integer master;
+        input [31:0] req_addr;
+        input [7:0] req_size;
+        input [3:0] req_id;
+        input [31:0] exp_araddr;
+        input [7:0] exp_arlen;
+        input [2:0] exp_arsize;
+        input [1:0] exp_arburst;
+        input [5:0] exp_arid;
+        input integer beat_count;
+        input [255:0] rbeat0;
+        input [255:0] rbeat1;
+        input [3:0] exp_resp_id;
+        input [2047:0] exp_resp_data;
+        input [8*240-1:0] fail_tag;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            read_resp_ready[master] = 1'b0;
+            ddr_axi_arready = 1'b0;
+            read_req_addr[(master * ADDR_BITS) +: ADDR_BITS] = req_addr;
+            read_req_total_size[(master * 8) +: 8] = req_size;
+            read_req_id[(master * ID_BITS) +: ID_BITS] = req_id;
+            read_req_bypass[master] = 1'b0;
+            read_req_valid[master] = 1'b1;
+            timeout = 240;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[master]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (!accepted_seen) begin
+                fail_now(fail_tag);
+            end
+            read_req_valid[master] = 1'b0;
+            @(negedge clk);
+
+            timeout = 240;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now(fail_tag);
+            end
+            #1;
+            if (ddr_axi_araddr != exp_araddr ||
+                ddr_axi_arlen != exp_arlen ||
+                ddr_axi_arsize != exp_arsize ||
+                ddr_axi_arburst != exp_arburst ||
+                ddr_axi_arid != exp_arid ||
+                mmio_axi_arvalid) begin
+                fail_now(fail_tag);
+            end
+            seen_ddr_arid = ddr_axi_arid;
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = rbeat0;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = (beat_count == 1);
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now(fail_tag);
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+
+            if (beat_count == 2) begin
+                ddr_axi_rid = seen_ddr_arid;
+                ddr_axi_rdata = rbeat1;
+                ddr_axi_rresp = AXI_RESP_OKAY;
+                ddr_axi_rlast = 1'b1;
+                ddr_axi_rvalid = 1'b1;
+                #1;
+                if (!ddr_axi_rready) begin
+                    fail_now(fail_tag);
+                end
+                @(posedge clk);
+                @(negedge clk);
+                ddr_axi_rvalid = 1'b0;
+            end
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 240;
+            while (!read_resp_valid[master] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now(fail_tag);
+            end
+            #1;
+            if (read_resp_id[(master * ID_BITS) +: ID_BITS] != exp_resp_id ||
+                read_resp_data[(master * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    exp_resp_data) begin
+                fail_now(fail_tag);
+            end
+            read_resp_ready[master] = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            read_resp_ready[master] = 1'b0;
+        end
+    endtask
+
+    task issue_mode1_invalidate_line_recovery_read_and_check;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            ddr_axi_arready = 1'b0;
+            invalidate_line_valid = 1'b0;
+
+            issue_mode1_invalidate_line_recovery_cache_read(
+                CPP_MODE1_INVLINE_RECOVERY_MASTER,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_REQ_ADDR,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_REQ_SIZE,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_REQ_ID,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_ARADDR,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_ARLEN,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_ARSIZE,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_ARBURST,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_ARID,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_BEATS,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_RBEAT0,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_RBEAT1,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_RESP_ID,
+                CPP_MODE1_INVLINE_RECOVERY_FIRST_RESP_DATA,
+                "C++ trace invline recovery first read mismatch");
+
+            invalidate_line_addr = CPP_MODE1_INVLINE_RECOVERY_INVALIDATE_ADDR;
+            invalidate_line_valid = 1'b1;
+            timeout = 240;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                #1;
+                if (invalidate_line_accepted) begin
+                    accepted_seen = 1'b1;
+                end
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (accepted_seen !== CPP_MODE1_INVLINE_RECOVERY_INVALIDATE_ACCEPTED) begin
+                fail_now("C++ trace invline recovery invalidate accept mismatch");
+            end
+            @(negedge clk);
+            invalidate_line_valid = 1'b0;
+            invalidate_line_addr = {ADDR_BITS{1'b0}};
+
+            issue_mode1_invalidate_line_recovery_cache_read(
+                CPP_MODE1_INVLINE_RECOVERY_MASTER,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_REQ_ADDR,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_REQ_SIZE,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_REQ_ID,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_ARADDR,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_ARLEN,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_ARSIZE,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_ARBURST,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_ARID,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_BEATS,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_RBEAT0,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_RBEAT1,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_RESP_ID,
+                CPP_MODE1_INVLINE_RECOVERY_SECOND_RESP_DATA,
+                "C++ trace invline recovery second read mismatch");
+        end
+    endtask
+
     task issue_mode1_invalidate_line_cache_mmio_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -8843,6 +9024,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
 
         issue_mode1_cache_mmio_overlap_read_and_check();
         issue_mode1_invalidate_line_pending_read_and_check();
+        issue_mode1_invalidate_line_recovery_read_and_check();
         issue_mode1_invalidate_line_cache_mmio_read_and_check();
         issue_mode1_same_line_read_pending_write_and_check();
         issue_mode1_same_line_mmio_read_pending_write_and_check();

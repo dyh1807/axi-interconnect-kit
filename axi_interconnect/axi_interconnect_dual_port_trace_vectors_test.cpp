@@ -691,6 +691,15 @@ struct InvalidateLinePendingReadTrace {
   bool accepted_after_resp_retire = false;
 };
 
+struct InvalidateLineRecoveryReadTrace {
+  ReadTrace first;
+  ReadTrace second;
+  std::string prefix;
+  uint8_t read_master = 0;
+  uint32_t invalidate_addr = 0;
+  bool invalidate_accepted = false;
+};
+
 struct ReconfigCacheReadTrace {
   ReadTrace read;
   uint8_t read_master = 0;
@@ -801,6 +810,10 @@ void capture_write_response_with_table(
 void issue_mapped_read_and_wait_response(
     axi_interconnect::AXI_Interconnect &dut, StatefulLlcTableDriver &table_driver,
     ReadTrace &trace, uint8_t master);
+
+void issue_cache_read_miss_and_wait_response(
+    axi_interconnect::AXI_Interconnect &dut, StatefulLlcTableDriver &table_driver,
+    ReadTrace &trace, uint8_t master, uint32_t beat_seed);
 
 void issue_read_and_capture_ar(axi_interconnect::AXI_Interconnect &dut,
                                ReadTrace &trace, uint8_t master,
@@ -3212,6 +3225,56 @@ run_mode1_invalidate_line_pending_read_trace() {
             "C++ invalidate_line did not accept after read response retired");
   }
   dut.set_llc_invalidate_line(false, 0);
+  return trace;
+}
+
+InvalidateLineRecoveryReadTrace
+run_mode1_invalidate_line_recovery_read_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  StatefulLlcTableDriver table_driver(dut.get_llc_config());
+
+  InvalidateLineRecoveryReadTrace trace{};
+  trace.prefix = "CPP_MODE1_INVLINE_RECOVERY";
+  trace.first.prefix = "CPP_MODE1_INVLINE_RECOVERY_FIRST";
+  trace.first.req_addr = 0x40000e04u;
+  trace.first.req_size = 3;
+  trace.first.req_id = 0x6u;
+  trace.first.beat_count = 2;
+  trace.second.prefix = "CPP_MODE1_INVLINE_RECOVERY_SECOND";
+  trace.second.req_addr = trace.first.req_addr;
+  trace.second.req_size = trace.first.req_size;
+  trace.second.req_id = 0x7u;
+  trace.second.beat_count = 2;
+  trace.read_master = axi_interconnect::MASTER_DCACHE_R;
+  trace.invalidate_addr = trace.first.req_addr;
+
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.first,
+                                          trace.read_master, 0xd00d1200u);
+
+  for (int cycle = 0; cycle < 240 && !trace.invalidate_accepted; ++cycle) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_addr);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (dut.llc_invalidate_line_accepted()) {
+      trace.invalidate_accepted = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  if (!trace.invalidate_accepted) {
+    dut.debug_print();
+  }
+  require(trace.invalidate_accepted,
+          "C++ invalidate_line recovery trace did not accept");
+  dut.set_llc_invalidate_line(false, 0);
+
+  issue_cache_read_miss_and_wait_response(dut, table_driver, trace.second,
+                                          trace.read_master, 0xd00d1400u);
   return trace;
 }
 
@@ -5888,6 +5951,111 @@ void issue_mapped_read_and_wait_response(
   require(resp_seen, "C++ mode2 mapped local read response timeout");
 }
 
+void issue_cache_read_miss_and_wait_response(
+    axi_interconnect::AXI_Interconnect &dut,
+    StatefulLlcTableDriver &table_driver, ReadTrace &trace, uint8_t master,
+    uint32_t beat_seed) {
+  bool accepted = false;
+  bool ar_seen = false;
+  bool request_active = true;
+  for (int cycle = 0; cycle < 240 && !ar_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    if (request_active) {
+      auto &req = dut.read_ports[master].req;
+      req.valid = true;
+      req.addr = trace.req_addr;
+      req.total_size = trace.req_size;
+      req.id = trace.req_id;
+      req.bypass = false;
+    }
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (request_active && dut.read_ports[master].req.ready) {
+      accepted = true;
+      request_active = false;
+    }
+    if (dut.axi_ddr_io.ar.arvalid) {
+      require(!dut.axi_mmio_io.ar.arvalid,
+              "C++ cache read miss escaped to both AR ports");
+      trace.araddr = static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr);
+      trace.arlen = static_cast<uint8_t>(dut.axi_ddr_io.ar.arlen);
+      trace.arsize = static_cast<uint8_t>(dut.axi_ddr_io.ar.arsize);
+      trace.arburst = static_cast<uint8_t>(dut.axi_ddr_io.ar.arburst);
+      trace.arid = static_cast<uint8_t>(dut.axi_ddr_io.ar.arid);
+      ar_seen = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  require(accepted, "C++ cache read miss request was not accepted");
+  require(ar_seen, "C++ cache read miss did not issue DDR AR");
+  require(trace.beat_count == static_cast<uint32_t>(trace.arlen) + 1u,
+          "C++ cache read miss beat count mismatch");
+
+  for (uint32_t beat = 0; beat < trace.beat_count; ++beat) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    dut.axi_ddr_io.r.rvalid = true;
+    dut.axi_ddr_io.r.rid = trace.arid;
+    dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+    dut.axi_ddr_io.r.rlast = beat == trace.beat_count - 1u;
+    dut.axi_ddr_io.r.rdata = ddr_read_beat(beat_seed + beat * 0x100u);
+    trace.rbeats[beat] = axi_words(dut.axi_ddr_io.r.rdata);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(dut.axi_ddr_io.r.rready,
+            "C++ cache read miss DDR R was backpressured");
+    dut.seq();
+    ++sim_time;
+  }
+
+  bool resp_seen = false;
+  for (int cycle = 0; cycle < 240 && !resp_seen; ++cycle) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    auto &resp = dut.read_ports[master].resp;
+    if (resp.valid) {
+      resp_seen = true;
+      trace.resp_id = static_cast<uint8_t>(resp.id);
+      trace.resp_data = wide_read_words(resp.data);
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    dut.seq();
+    ++sim_time;
+  }
+  require(resp_seen, "C++ cache read miss response timeout");
+
+  bool resp_retired = false;
+  for (int cycle = 0; cycle < 8 && !resp_retired; ++cycle) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    auto &resp = dut.read_ports[master].resp;
+    if (!resp.valid) {
+      resp_retired = true;
+      dut.comb_inputs();
+      table_driver.observe(dut);
+      dut.seq();
+      ++sim_time;
+      break;
+    }
+    require(static_cast<uint8_t>(resp.id) == trace.resp_id,
+            "C++ cache read miss held response id changed before ready");
+    resp.ready = true;
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    dut.seq();
+    ++sim_time;
+  }
+  require(resp_retired, "C++ cache read miss response did not retire");
+}
+
 WriteTrace run_write_trace(const std::string &prefix, uint32_t addr,
                            uint8_t total_size, uint8_t req_id,
                            const axi_interconnect::WideWriteData_t &data,
@@ -7153,6 +7321,18 @@ void emit_invalidate_line_pending_read(
      << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
 }
 
+void emit_invalidate_line_recovery_read(
+    std::ostream &os, const InvalidateLineRecoveryReadTrace &trace) {
+  emit_read(os, trace.first);
+  emit_read(os, trace.second);
+  os << "localparam integer " << trace.prefix
+     << "_MASTER = " << static_cast<unsigned>(trace.read_master) << ";\n";
+  os << "localparam [31:0] " << trace.prefix
+     << "_INVALIDATE_ADDR = " << hex_u32(trace.invalidate_addr) << ";\n";
+  os << "localparam " << trace.prefix << "_INVALIDATE_ACCEPTED = 1'b"
+     << (trace.invalidate_accepted ? 1 : 0) << ";\n";
+}
+
 void emit_reconfig_cache_read(std::ostream &os,
                               const ReconfigCacheReadTrace &trace) {
   emit_read(os, trace.read);
@@ -7397,6 +7577,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_cache_mmio_overlap_read_trace();
   const auto mode1_invalidate_line_pending_read =
       run_mode1_invalidate_line_pending_read_trace();
+  const auto mode1_invalidate_line_recovery_read =
+      run_mode1_invalidate_line_recovery_read_trace();
   const auto mode1_invalidate_line_cache_mmio_read =
       run_mode1_invalidate_line_cache_mmio_read_trace();
   const auto mode1_same_line_read_pending_write =
@@ -7542,6 +7724,8 @@ void emit_vectors(std::ostream &os) {
   emit_write(os, mode1_mmio_write4);
   emit_overlap_read(os, mode1_cache_mmio_overlap_read);
   emit_invalidate_line_pending_read(os, mode1_invalidate_line_pending_read);
+  emit_invalidate_line_recovery_read(os,
+                                     mode1_invalidate_line_recovery_read);
   emit_invalidate_line_cache_mmio_read(
       os, mode1_invalidate_line_cache_mmio_read);
   emit_same_line_read_pending_write(os, mode1_same_line_read_pending_write);
