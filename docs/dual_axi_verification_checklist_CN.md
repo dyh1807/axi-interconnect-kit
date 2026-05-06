@@ -1093,6 +1093,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/dc/runs/full_compile_1g_template_9t20_4ac96ae_20260506_112854_eda10`，
   parent PID `2469192`，dc_shell child PID `2469465`；早期日志已进入
   `read_data_db_start`，并确认加载 9T20 RVT/LVT 与 data/meta SRAM `.db`。
+  后续复核组内模板差异时发现该版本仍显式加入了 `standard.sldb/dw_foundation.sldb`，
+  不属于 RTL/filelist、SRAM `.db` 或 QoR/report 输出差异；已修正为不显式设置
+  `synthetic_library`，且 `target_library/link_library` 只包含 9T20 RVT/LVT 与实际
+  data/meta SRAM `.db`。因此 `4ac96ae` 长跑不能作为最终 strict-template signoff，
+  需要用修正后的脚本重新启动 clean full DC。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
   `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
   后最新全量 RTL contract 53/53 目录为
@@ -1136,6 +1141,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   及 C++ fall-through 修复后再次复跑同一 ctest 命令，24/24 通过。
 - [x] Linux/image 级 300k/5M 功能与性能 sanity：父仓库临时适配 cacheability/MMIO
   分类后，large + `CONFIG_BPU` + `../img/linux.bin` 已补跑 300k 与 5M commit。
+  该 gate 不能只看退出码或 difftest/error；每轮都必须同时记录并比较
+  baseline/current 的 cycles、IPC、commit/load/store 计数和关键 memory latency。
+  对 deterministic boot quick gate，若当前改动理论上不应影响性能，则 cycle/IPC
+  应尽量完全一致；任何 cycle 上升或 IPC 下降都要给出百分比和解释，超过约 1% 或
+  无法解释时按性能回归处理。
   之前失败点是约 58,695 commit 后父仓库 MSHR 以 cacheline read 请求
   `0x00000040`，而新双口合同下非 DDR/MMIO 只支持 32-bit/1-beat，导致 interconnect
   合理保持 `ready=0/accepted=0` 并触发 ROB deadlock；该问题已通过父仓库临时把
@@ -1160,6 +1170,16 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `../local_logs/dual_axi_ec_20260505/linux_large_bpu_5m_inval_cache_mmio_20260505_212056.log`，
   结果为退出码 0、5000005 commit、2078844 cycles、IPC 2.405185、墙钟 6:12.53；
   与上一条 5M 基线 cycle/IPC 完全一致。
+  2026-05-06 在 submodule `0dce8d4` 上又按 large + `CONFIG_BPU` 重建
+  `build_dual_axi_ec_20260506_large_bpu_0dce8d4`，先跑 300k：
+  `../local_logs/dual_axi_ec_20260506/linux_large_bpu_300k_0dce8d4_20260506_113340.log`，
+  对照 `a9ee8e8` 300k baseline，结果同为 300001 commit、120687 cycles、IPC
+  2.485777。随后跑 5M：
+  `../local_logs/dual_axi_ec_20260506/linux_large_bpu_5m_0dce8d4_20260506_113425.log`，
+  对照 `../local_logs/dual_axi_ec_20260506/linux_large_bpu_5m_a9ee8e8_20260506_102229.log`，
+  两者同为退出码 0、5000005 commit、2078844 cycles、IPC 2.405185；L1D AMAT
+  2.373202、L1D miss penalty 61.364674 cycles、LLC->DDR read avg 52.000000 cycles
+  也完全一致，因此本轮 cycle delta=0、IPC delta=0，未出现可观测性能回退。
 
 ## Multi-Agent 并行推进边界
 

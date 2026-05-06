@@ -71,10 +71,7 @@ proc axi_llc_setup_libraries {} {
     }
 
     set_app_var search_path [list $rtl_root [file join $rtl_root include] [file join $rtl_root src] $run_root]
-    set_app_var target_library $std_db
-    set_app_var synthetic_library [list standard.sldb dw_foundation.sldb]
-    set link_db [concat [list *] $std_db [list $data_db $meta_db] [get_app_var synthetic_library]]
-    set_app_var link_library [concat [list *] $std_db [get_app_var synthetic_library]]
+    set target_db [concat $std_db [list $data_db $meta_db]]
     set hdlin_while_loop_iterations 6000
 
     puts "=== DC_STD_DB $std_db ==="
@@ -92,7 +89,8 @@ proc axi_llc_setup_libraries {} {
     read_db $meta_db
     puts "=== DC_STAGE read_meta_db_done [clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] ==="
     flush stdout
-    set_app_var link_library $link_db
+    set_app_var target_library $target_db
+    set_app_var link_library [concat [list *] $target_db]
 }
 
 proc axi_llc_read_rtl_flist {flist_path} {
