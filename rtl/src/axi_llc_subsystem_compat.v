@@ -127,6 +127,7 @@ module axi_llc_subsystem_compat #(
     localparam integer RD_SLOT_COUNT = NUM_READ_MASTERS * READ_FIFO_DEPTH;
     localparam integer WR_SLOT_COUNT = NUM_WRITE_MASTERS * WRITE_FIFO_DEPTH;
     localparam integer RD_RESP_SLOT_COUNT = NUM_READ_MASTERS * READ_RESP_QUEUE_DEPTH;
+    localparam integer RD_RESP_POOL_COUNT = MAX_OUTSTANDING;
     localparam [1:0] WRITE_RESP_OKAY = 2'b00;
     localparam [MODE_BITS-1:0] MODE_OFF = {{(MODE_BITS-2){1'b0}}, 2'b00};
     localparam [MODE_BITS-1:0] MODE_CACHE =
@@ -165,8 +166,13 @@ module axi_llc_subsystem_compat #(
     reg [7:0]                    rd_resp_q_head [0:NUM_READ_MASTERS-1];
     reg [7:0]                    rd_resp_q_tail [0:NUM_READ_MASTERS-1];
     reg [7:0]                    rd_resp_q_count [0:NUM_READ_MASTERS-1];
-    reg [READ_RESP_BITS-1:0]     rd_resp_q_data [0:RD_RESP_SLOT_COUNT-1];
-    reg [ID_BITS-1:0]            rd_resp_q_id [0:RD_RESP_SLOT_COUNT-1];
+    // Per-master FIFOs preserve upstream response ordering, while the wide
+    // payloads live in a shared pool. Total read outstanding is globally
+    // limited to MAX_OUTSTANDING, so 32 shared payload slots are sufficient.
+    reg [7:0]                    rd_resp_q_pool_idx [0:RD_RESP_SLOT_COUNT-1];
+    reg [RD_RESP_POOL_COUNT-1:0] rd_resp_pool_valid;
+    reg [READ_RESP_BITS-1:0]     rd_resp_pool_data [0:RD_RESP_POOL_COUNT-1];
+    reg [ID_BITS-1:0]            rd_resp_pool_id [0:RD_RESP_POOL_COUNT-1];
     reg [NUM_READ_MASTERS-1:0]   read_req_accepted_r;
     reg [NUM_READ_MASTERS*ID_BITS-1:0] read_req_accepted_id_r;
 
@@ -249,6 +255,7 @@ module axi_llc_subsystem_compat #(
     reg [7:0]                    next_port;
     reg [7:0]                    write_port_w;
     integer                      slot_idx;
+    integer                      pool_slot_idx;
     reg [15:0]                   total_read_outstanding_w;
     reg [15:0]                   total_write_outstanding_w;
     reg                          rd_select_found_w;
@@ -297,6 +304,11 @@ module axi_llc_subsystem_compat #(
     reg                          direct_resp_target_busy_w;
     reg                          direct_resp_conflict_w;
     wire                         direct_resp_accept_w;
+    reg                          rd_resp_pool_free0_found_w;
+    reg                          rd_resp_pool_free1_found_w;
+    reg [7:0]                    rd_resp_pool_free0_w;
+    reg [7:0]                    rd_resp_pool_free1_w;
+    reg                          core_resp_pool_alloc_w;
     reg                          core_bypass_slot_found_w;
     reg [7:0]                    core_bypass_slot_w;
     reg                          direct_issue_found_w;
@@ -539,7 +551,16 @@ module axi_llc_subsystem_compat #(
         begin
             read_resp_has_room = (!rd_resp_valid_r[master_idx] &&
                                   (rd_resp_q_count[master_idx] == 0)) ||
-                                 (rd_resp_q_count[master_idx] < READ_RESP_QUEUE_DEPTH);
+                                 ((rd_resp_q_count[master_idx] < READ_RESP_QUEUE_DEPTH) &&
+                                  rd_resp_pool_free0_found_w);
+        end
+    endfunction
+
+    function read_resp_needs_pool;
+        input integer master_idx;
+        begin
+            read_resp_needs_pool = rd_resp_valid_r[master_idx] ||
+                                   (rd_resp_q_count[master_idx] != 0);
         end
     endfunction
 
@@ -721,6 +742,7 @@ module axi_llc_subsystem_compat #(
         input [ID_BITS-1:0] req_id_value;
         integer depth_idx;
         integer slot_value;
+        integer pool_slot_value;
         integer direct_idx;
         reg [7:0] resp_ptr;
         begin
@@ -758,8 +780,9 @@ module axi_llc_subsystem_compat #(
                     resp_ptr = resp_ptr - idx8(READ_RESP_QUEUE_DEPTH);
                 end
                 slot_value = rd_resp_slot_index(master_idx, resp_ptr);
+                pool_slot_value = rd_resp_q_pool_idx[slot_value];
                 if ((idx8(depth_idx) < rd_resp_q_count[master_idx]) &&
-                    (rd_resp_q_id[slot_value] == req_id_value)) begin
+                    (rd_resp_pool_id[pool_slot_value] == req_id_value)) begin
                     read_id_conflict = 1'b1;
                 end
             end
@@ -895,6 +918,23 @@ module axi_llc_subsystem_compat #(
         core_bypass_slot_w = 8'd0;
         direct_issue_found_w = 1'b0;
         direct_issue_slot_w = 8'd0;
+        rd_resp_pool_free0_found_w = 1'b0;
+        rd_resp_pool_free1_found_w = 1'b0;
+        rd_resp_pool_free0_w = 8'd0;
+        rd_resp_pool_free1_w = 8'd0;
+        core_resp_pool_alloc_w = 1'b0;
+
+        for (flat_idx = 0; flat_idx < RD_RESP_POOL_COUNT; flat_idx = flat_idx + 1) begin
+            if (!rd_resp_pool_valid[flat_idx]) begin
+                if (!rd_resp_pool_free0_found_w) begin
+                    rd_resp_pool_free0_found_w = 1'b1;
+                    rd_resp_pool_free0_w = idx8(flat_idx);
+                end else if (!rd_resp_pool_free1_found_w) begin
+                    rd_resp_pool_free1_found_w = 1'b1;
+                    rd_resp_pool_free1_w = idx8(flat_idx);
+                end
+            end
+        end
 
         for (flat_idx = 0; flat_idx < NUM_READ_MASTERS; flat_idx = flat_idx + 1) begin
             total_read_outstanding_w = total_read_outstanding_w + rd_q_count[flat_idx];
@@ -1223,6 +1263,9 @@ module axi_llc_subsystem_compat #(
             end else begin
                 core_resp_target_busy_w =
                     !read_resp_has_room(core_slot_master_r[core_up_resp_id_w]);
+                core_resp_pool_alloc_w =
+                    read_resp_needs_pool(core_slot_master_r[core_up_resp_id_w]) &&
+                    !core_resp_target_busy_w;
             end
         end
 
@@ -1242,6 +1285,11 @@ module axi_llc_subsystem_compat #(
             end else begin
                 direct_resp_target_busy_w =
                     !read_resp_has_room(direct_slot_master_r[bypass_resp_id]);
+                if (read_resp_needs_pool(direct_slot_master_r[bypass_resp_id]) &&
+                    core_resp_pool_alloc_w &&
+                    !rd_resp_pool_free1_found_w) begin
+                    direct_resp_target_busy_w = 1'b1;
+                end
             end
             if (core_resp_match_w &&
                 (core_resp_is_write_w == direct_slot_is_write_r[bypass_resp_id]) &&
@@ -1456,6 +1504,7 @@ module axi_llc_subsystem_compat #(
             write_req_accepted_r <= {NUM_WRITE_MASTERS{1'b0}};
             read_req_ready_r <= {NUM_READ_MASTERS{1'b0}};
             write_req_ready_r <= {NUM_WRITE_MASTERS{1'b0}};
+            rd_resp_pool_valid <= {RD_RESP_POOL_COUNT{1'b0}};
             for (idx = 0; idx < NUM_READ_MASTERS; idx = idx + 1) begin
                 rd_q_head[idx] <= 8'd0;
                 rd_q_tail[idx] <= 8'd0;
@@ -1535,9 +1584,11 @@ module axi_llc_subsystem_compat #(
                 if (rd_resp_valid_r[idx] && read_resp_ready[idx]) begin
                     if (rd_resp_q_count[idx] != 0) begin
                         slot_idx = rd_resp_slot_index(idx, rd_resp_q_head[idx]);
+                        pool_slot_idx = rd_resp_q_pool_idx[slot_idx];
                         rd_resp_valid_r[idx] <= 1'b1;
-                        rd_resp_data_r[idx] <= rd_resp_q_data[slot_idx];
-                        rd_resp_id_r[idx] <= rd_resp_q_id[slot_idx];
+                        rd_resp_data_r[idx] <= rd_resp_pool_data[pool_slot_idx];
+                        rd_resp_id_r[idx] <= rd_resp_pool_id[pool_slot_idx];
+                        rd_resp_pool_valid[pool_slot_idx] <= 1'b0;
                         rd_resp_q_head[idx] <= next_rd_resp_ptr(rd_resp_q_head[idx]);
                         rd_resp_q_count[idx] <= rd_resp_q_count[idx] - 8'd1;
                     end else begin
@@ -1545,9 +1596,11 @@ module axi_llc_subsystem_compat #(
                     end
                 end else if (!rd_resp_valid_r[idx] && (rd_resp_q_count[idx] != 0)) begin
                     slot_idx = rd_resp_slot_index(idx, rd_resp_q_head[idx]);
+                    pool_slot_idx = rd_resp_q_pool_idx[slot_idx];
                     rd_resp_valid_r[idx] <= 1'b1;
-                    rd_resp_data_r[idx] <= rd_resp_q_data[slot_idx];
-                    rd_resp_id_r[idx] <= rd_resp_q_id[slot_idx];
+                    rd_resp_data_r[idx] <= rd_resp_pool_data[pool_slot_idx];
+                    rd_resp_id_r[idx] <= rd_resp_pool_id[pool_slot_idx];
+                    rd_resp_pool_valid[pool_slot_idx] <= 1'b0;
                     rd_resp_q_head[idx] <= next_rd_resp_ptr(rd_resp_q_head[idx]);
                     rd_resp_q_count[idx] <= rd_resp_q_count[idx] - 8'd1;
                 end
@@ -1730,8 +1783,11 @@ module axi_llc_subsystem_compat #(
                     end else begin
                         slot_idx = rd_resp_slot_index(core_resp_master_w,
                                                       rd_resp_q_tail[core_resp_master_w]);
-                        rd_resp_q_data[slot_idx] <= core_up_resp_rdata_w;
-                        rd_resp_q_id[slot_idx] <= core_resp_orig_id_w;
+                        pool_slot_idx = rd_resp_pool_free0_w;
+                        rd_resp_pool_valid[pool_slot_idx] <= 1'b1;
+                        rd_resp_pool_data[pool_slot_idx] <= core_up_resp_rdata_w;
+                        rd_resp_pool_id[pool_slot_idx] <= core_resp_orig_id_w;
+                        rd_resp_q_pool_idx[slot_idx] <= pool_slot_idx[7:0];
                         rd_resp_q_tail[core_resp_master_w] <=
                             next_rd_resp_ptr(rd_resp_q_tail[core_resp_master_w]);
                         rd_resp_q_count[core_resp_master_w] <=
@@ -1760,8 +1816,12 @@ module axi_llc_subsystem_compat #(
                     end else begin
                         slot_idx = rd_resp_slot_index(direct_resp_master_w,
                                                       rd_resp_q_tail[direct_resp_master_w]);
-                        rd_resp_q_data[slot_idx] <= bypass_resp_rdata;
-                        rd_resp_q_id[slot_idx] <= direct_resp_orig_id_w;
+                        pool_slot_idx = core_resp_pool_alloc_w ?
+                                        rd_resp_pool_free1_w : rd_resp_pool_free0_w;
+                        rd_resp_pool_valid[pool_slot_idx] <= 1'b1;
+                        rd_resp_pool_data[pool_slot_idx] <= bypass_resp_rdata;
+                        rd_resp_pool_id[pool_slot_idx] <= direct_resp_orig_id_w;
+                        rd_resp_q_pool_idx[slot_idx] <= pool_slot_idx[7:0];
                         rd_resp_q_tail[direct_resp_master_w] <=
                             next_rd_resp_ptr(rd_resp_q_tail[direct_resp_master_w]);
                         rd_resp_q_count[direct_resp_master_w] <=

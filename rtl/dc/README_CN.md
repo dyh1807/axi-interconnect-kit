@@ -57,7 +57,7 @@
   直接重复 full top。
 - 2026-05-06 对 `axi_llc_subsystem_compat` 做静态规模复核：在生产参数
   `NUM_READ_MASTERS=4`、`READ_RESP_QUEUE_DEPTH=32`、`READ_RESP_BITS=2048` 下，
-  仅 `rd_resp_q_data` 就是 `4*32*2048=262144` bit 的寄存器阵列；compat 内部
+  旧结构仅 `rd_resp_q_data` 就是 `4*32*2048=262144` bit 的寄存器阵列；compat 内部
   主要显式寄存器阵列合计约 `338338` bit，且组合逻辑中存在多个对
   `MAX_OUTSTANDING` / `RD_SLOT_COUNT` / `WR_SLOT_COUNT` / `RD_RESP_SLOT_COUNT`
   的扫描。因此 compat elaborate/compile 很慢可能是 RTL 结构规模问题，不只是
@@ -66,7 +66,7 @@
 - 2026-05-06 19:42 CST 之后做了一项 conservative RTL hygiene：去掉
   `axi_llc_subsystem_compat` 中 invalid wide payload entries 的 reset/pop/free clear，
   保留 valid/head/tail/count reset 和所有有效 payload 写入。targeted C++ trace replay
-  与全量 RTL contract 53/53 已通过。新的 current-worktree compat link sanity 为
+  与全量 RTL contract 53/53 已通过。该轮已废弃的 compat link sanity 为
   `rtl/dc/runs/compat_link_sanity_payload_no_clear_9b05923_20260506_194526_eda10`；
   旧 full DC 和旧 compat sanity 启动早于该 RTL 修改，只能作为旧 RTL bottleneck 证据，
   不能作为该修改后的 signoff。
@@ -85,6 +85,14 @@
   因该修改发生在 `compat_link_sanity_payload_hygiene_c6aba0a_20260506_195734_eda10`
   启动之后，该 sanity 已被停止并 supersede；后续 current-HEAD sanity 需要基于
   compat+bridge+MSHR 三处 hygiene 后的 RTL 重新启动。
+- 2026-05-06 20:16 CST 继续对 `axi_llc_subsystem_compat` read response buffering
+  做结构优化：per-master FIFO 只保留顺序和 pool index，2048-bit payload 改为
+  `MAX_OUTSTANDING=32` 个共享 pool slot。read-response backing 从旧结构约
+  `262656` bit 降至约 `66720` bit，减少约 `195936` bit。全量 RTL contract
+  53/53 已通过，目录为
+  `rtl/local_debug/vcs_all_contracts_resp_pool_20260506_201648_eda10`。该修改
+  supersede 此前所有 compat link sanity；下一轮 sanity/DC 必须基于包含 response-pool
+  的 current HEAD 启动。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
