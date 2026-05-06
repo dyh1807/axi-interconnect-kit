@@ -1970,6 +1970,120 @@ ReadTrace run_mode1_to_mode2_mmio_read_trace(const std::string &prefix,
   return trace;
 }
 
+ReadTrace run_mode1_to_mode2_pending_mmio_read_trace(
+    const std::string &prefix, uint32_t addr, uint8_t total_size,
+    uint8_t req_id, uint32_t rdata_word) {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+
+  ReadTrace trace{};
+  trace.prefix = prefix;
+  trace.req_addr = addr;
+  trace.req_size = total_size;
+  trace.req_id = req_id;
+  trace.beat_count = 1;
+
+  auto &req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  req.valid = true;
+  req.addr = addr;
+  req.total_size = total_size;
+  req.id = req_id;
+  req.bypass = false;
+  dut.comb_inputs();
+  require(req.ready,
+          "C++ mode1-to-mode2 pending MMIO read request was not ready");
+  require(dut.axi_mmio_io.ar.arvalid,
+          "C++ mode1-to-mode2 pending MMIO read did not issue AR");
+  require(!dut.axi_ddr_io.ar.arvalid,
+          "C++ mode1-to-mode2 pending MMIO read escaped to DDR AR");
+
+  trace.araddr = static_cast<uint32_t>(dut.axi_mmio_io.ar.araddr);
+  trace.arlen = static_cast<uint8_t>(dut.axi_mmio_io.ar.arlen);
+  trace.arsize = static_cast<uint8_t>(dut.axi_mmio_io.ar.arsize);
+  trace.arburst = static_cast<uint8_t>(dut.axi_mmio_io.ar.arburst);
+  trace.arid = static_cast<uint8_t>(dut.axi_mmio_io.ar.arid);
+
+  dut.seq();
+  ++sim_time;
+  idle_request_outputs(dut);
+
+  dut.mode = 2u;
+  dut.llc_mapped_offset = 0x30000000u;
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    require(dut.active_mode() != 2u,
+            "C++ mode transition completed while MMIO read was pending");
+    dut.seq();
+    ++sim_time;
+  }
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  dut.axi_mmio_io.r.rvalid = true;
+  dut.axi_mmio_io.r.rid = trace.arid;
+  dut.axi_mmio_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+  dut.axi_mmio_io.r.rlast = true;
+  dut.axi_mmio_io.r.rdata = {};
+  axi_compat::set_u32(dut.axi_mmio_io.r.rdata, 0, rdata_word);
+  trace.rbeats[0] = axi_words(dut.axi_mmio_io.r.rdata);
+  dut.comb_outputs();
+  require(dut.axi_mmio_io.r.rready,
+          "C++ mode1-to-mode2 pending MMIO R was backpressured");
+  dut.comb_inputs();
+  require(dut.active_mode() != 2u,
+          "C++ mode transition completed in MMIO R handshake cycle");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  dut.comb_outputs();
+  const auto &held_resp =
+      dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp;
+  require(held_resp.valid,
+          "C++ mode1-to-mode2 pending MMIO response was not held");
+  dut.comb_inputs();
+  require(dut.active_mode() != 2u,
+          "C++ mode transition completed while MMIO response held");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp.ready = true;
+  dut.comb_outputs();
+  const auto &resp = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp;
+  require(resp.valid,
+          "C++ mode1-to-mode2 pending MMIO response did not become valid");
+  trace.resp_id = static_cast<uint8_t>(resp.id);
+  trace.resp_data = wide_read_words(resp.data);
+  dut.comb_inputs();
+  require(dut.active_mode() != 2u,
+          "C++ mode transition completed before MMIO response retired");
+  dut.seq();
+  ++sim_time;
+
+  for (int retry = 0; retry < 64; ++retry) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    dut.seq();
+    ++sim_time;
+    if (dut.active_mode() == 2u &&
+        dut.active_llc_mapped_offset() == 0x30000000u) {
+      return trace;
+    }
+  }
+  require(false,
+          "C++ mode transition did not complete after MMIO response retired");
+  return trace;
+}
+
 OverlapReadTrace run_overlapped_read_trace() {
   axi_interconnect::AXI_Interconnect dut;
   init_dut(dut);
@@ -6652,6 +6766,10 @@ void emit_vectors(std::ostream &os) {
       run_mode1_to_mode2_mmio_read_trace(
           "CPP_MODE1_TO_MODE2_MMIO_ABOVE_READ4", 0x30400004u, 3, 0xAu,
           0xabcd4004u);
+  const auto mode1_to_mode2_pending_mmio_read =
+      run_mode1_to_mode2_pending_mmio_read_trace(
+          "CPP_MODE1_TO_MODE2_PENDING_MMIO_READ", 0x100000e0u, 3, 0xBu,
+          0xabcd00e0u);
 
   os << "`ifndef AXI_DUAL_CPP_TRACE_VECTORS_VH\n";
   os << "`define AXI_DUAL_CPP_TRACE_VECTORS_VH\n";
@@ -6728,6 +6846,7 @@ void emit_vectors(std::ostream &os) {
   emit_read(os, mode1_invalidate_all_pre_ar_mmio_read);
   emit_write(os, mode1_invalidate_all_pre_aw_w_mmio_write);
   emit_read(os, mode1_to_mode2_mmio_above_read4);
+  emit_read(os, mode1_to_mode2_pending_mmio_read);
   os << "\n`endif\n";
 }
 

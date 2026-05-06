@@ -2203,6 +2203,167 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_to_mode2_pending_mmio_read_and_check;
+        input [31:0] req_addr;
+        input [7:0] req_size;
+        input [3:0] req_id;
+        input [31:0] exp_araddr;
+        input [7:0] exp_arlen;
+        input [2:0] exp_arsize;
+        input [1:0] exp_arburst;
+        input [5:0] exp_arid;
+        input [255:0] rbeat0;
+        input [3:0] exp_resp_id;
+        input [2047:0] exp_resp_data;
+        integer timeout;
+        reg accepted_seen;
+        reg [ID_BITS-1:0] accepted_id_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            mmio_axi_arready = 1'b0;
+            accepted_seen = 1'b0;
+            accepted_id_seen = {ID_BITS{1'b0}};
+            read_req_addr[(READ_MASTER * ADDR_BITS) +: ADDR_BITS] = req_addr;
+            read_req_total_size[(READ_MASTER * 8) +: 8] = req_size;
+            read_req_id[(READ_MASTER * ID_BITS) +: ID_BITS] = req_id;
+            read_req_bypass[READ_MASTER] = 1'b0;
+            read_req_valid[READ_MASTER] = 1'b1;
+
+            #1;
+            if (read_req_accepted[READ_MASTER]) begin
+                accepted_seen = 1'b1;
+                accepted_id_seen =
+                    read_req_accepted_id[(READ_MASTER * ID_BITS) +: ID_BITS];
+            end
+            timeout = 80;
+            while (!mmio_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[READ_MASTER]) begin
+                    accepted_seen = 1'b1;
+                    accepted_id_seen =
+                        read_req_accepted_id[(READ_MASTER * ID_BITS) +: ID_BITS];
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending mode transition did not issue MMIO AR");
+            end
+            #1;
+            expect_no_ddr_activity();
+            if (mmio_axi_araddr != exp_araddr ||
+                mmio_axi_arlen != exp_arlen ||
+                mmio_axi_arsize != exp_arsize ||
+                mmio_axi_arburst != exp_arburst ||
+                mmio_axi_arid != exp_arid) begin
+                fail_now("C++ trace pending mode transition MMIO AR mismatch");
+            end
+            seen_mmio_arid = mmio_axi_arid;
+            mmio_axi_arready = 1'b1;
+            @(posedge clk);
+            #1;
+            if (read_req_accepted[READ_MASTER]) begin
+                accepted_seen = 1'b1;
+                accepted_id_seen =
+                    read_req_accepted_id[(READ_MASTER * ID_BITS) +: ID_BITS];
+            end
+            if (!accepted_seen || accepted_id_seen != req_id) begin
+                fail_now("C++ trace pending mode transition metadata mismatch");
+            end
+            if (active_mode == MODE_MAPPED) begin
+                fail_now("mode transition completed before MMIO read pending check");
+            end
+            @(negedge clk);
+            read_req_valid[READ_MASTER] = 1'b0;
+            read_req_bypass[READ_MASTER] = 1'b0;
+            mode_req = MODE_MAPPED;
+
+            repeat (4) begin
+                @(posedge clk);
+                #1;
+                if (active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed while MMIO read pending");
+                end
+            end
+
+            @(negedge clk);
+            mmio_axi_rid = seen_mmio_arid;
+            mmio_axi_rdata = rbeat0[MMIO_DATA_BITS-1:0];
+            mmio_axi_rresp = AXI_RESP_OKAY;
+            mmio_axi_rlast = 1'b1;
+            mmio_axi_rvalid = 1'b1;
+            #1;
+            if (!mmio_axi_rready) begin
+                fail_now("C++ trace pending mode transition R was backpressured");
+            end
+            if (active_mode == MODE_MAPPED) begin
+                fail_now("mode transition completed in MMIO R handshake cycle");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_rvalid = 1'b0;
+            mmio_axi_rlast = 1'b0;
+
+            timeout = 120;
+            while (!read_resp_valid[READ_MASTER] && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed before held response");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending mode transition response timeout");
+            end
+            #1;
+            if (read_resp_id[(READ_MASTER * ID_BITS) +: ID_BITS] != exp_resp_id ||
+                read_resp_data[(READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    exp_resp_data) begin
+                fail_now("C++ trace pending mode transition response mismatch");
+            end
+            repeat (4) begin
+                @(posedge clk);
+                #1;
+                if (active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed while response held");
+                end
+            end
+
+            @(negedge clk);
+            read_resp_ready[READ_MASTER] = 1'b1;
+            #1;
+            if (read_resp_id[(READ_MASTER * ID_BITS) +: ID_BITS] != exp_resp_id ||
+                read_resp_data[(READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    exp_resp_data) begin
+                fail_now("C++ trace pending mode transition retire response mismatch");
+            end
+            if (active_mode == MODE_MAPPED) begin
+                fail_now("mode transition completed before response retire edge");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            read_resp_ready[READ_MASTER] = 1'b0;
+
+            timeout = 10000;
+            while (((active_mode != MODE_MAPPED) || reconfig_busy) &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("mode transition did not complete after MMIO read retired");
+            end
+            #1;
+            if (active_offset != 32'h3000_0000) begin
+                fail_now("mode transition active offset mismatch after pending MMIO read");
+            end
+        end
+    endtask
+
     task issue_overlapped_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -8074,6 +8235,18 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
             CPP_MODE1_TO_MODE2_MMIO_ABOVE_READ4_RBEAT0,
             CPP_MODE1_TO_MODE2_MMIO_ABOVE_READ4_RESP_ID,
             CPP_MODE1_TO_MODE2_MMIO_ABOVE_READ4_RESP_DATA);
+        issue_mode1_to_mode2_pending_mmio_read_and_check(
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_REQ_ADDR,
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_REQ_SIZE,
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_REQ_ID,
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_ARADDR,
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_ARLEN,
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_ARSIZE,
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_ARBURST,
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_ARID,
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_RBEAT0,
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_RESP_ID,
+            CPP_MODE1_TO_MODE2_PENDING_MMIO_READ_RESP_DATA);
 
         $display("tb_axi_llc_subsystem_dual_cpp_trace_contract PASS");
         $finish(0);
