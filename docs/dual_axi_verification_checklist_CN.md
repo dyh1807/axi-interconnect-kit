@@ -1241,10 +1241,16 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `elaborate_start`，随后在 build `axi_llc_subsystem_compat` 阶段因 120s 探针超时退出；
   该超时符合预期，不是早期配置失败。修正提交 `e4a6434` 推送后，已用
   foreground unified exec 会话启动新的 clean full DC，run root 为
-  `rtl/dc/runs/full_compile_1g_strict_template_9t20_e4a6434_20260506_115655_eda10_live`；
-  早期日志已完成 `analyze_done` 并进入 `elaborate_start`，正在 build
-  `axi_llc_subsystem_compat`。此前尝试用普通 `nohup` 后台方式启动的两轮会被当前执行
-  环境清理，均停在加载 RVT db 附近，不能作为有效 DC。
+	  `rtl/dc/runs/full_compile_1g_strict_template_9t20_e4a6434_20260506_115655_eda10_live`；
+	  早期日志已完成 `analyze_done` 并进入 `elaborate_start`，正在 build
+	  `axi_llc_subsystem_compat`。此前尝试用普通 `nohup` 后台方式启动的两轮会被当前执行
+	  环境清理，均停在加载 RVT db 附近，不能作为有效 DC。2026-05-06 14:23 CST
+	  复查该 clean full DC：dc_shell child PID `2555401` 仍存活，CPU 约 100%、RSS
+	  约 25.8GB，但 `full_compile_1g.console.log` mtime 仍停在
+	  `2026-05-06 11:57:30 +0800`，最后阶段仍是 `elaborate_start` / build
+	  `axi_llc_subsystem_compat`；因此尚无 compile、QoR 或 timing 结果，不能作为
+	  1GHz signoff 证据。当前 `e4a6434..eedb204` 期间未修改生产 RTL 或 DC 脚本，
+	  后续若该 run 完成，结果仍可代表当前生产 RTL。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
   `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
   后最新全量 RTL contract 53/53 目录为
