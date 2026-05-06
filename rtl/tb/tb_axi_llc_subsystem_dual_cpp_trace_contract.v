@@ -2567,6 +2567,279 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_to_mode2_pending_mmio_rw_and_check;
+        integer timeout;
+        reg accepted_seen;
+        reg [ID_BITS-1:0] accepted_id_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            write_resp_ready = {NUM_WRITE_MASTERS{1'b0}};
+            mmio_axi_arready = 1'b0;
+            mmio_axi_awready = 1'b0;
+            mmio_axi_wready = 1'b0;
+
+            accepted_seen = 1'b0;
+            accepted_id_seen = {ID_BITS{1'b0}};
+            read_req_addr[(READ_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_REQ_ADDR;
+            read_req_total_size[(READ_MASTER * 8) +: 8] =
+                CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_REQ_SIZE;
+            read_req_id[(READ_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_REQ_ID;
+            read_req_bypass[READ_MASTER] = 1'b0;
+            read_req_valid[READ_MASTER] = 1'b1;
+
+            timeout = 80;
+            while (!mmio_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[READ_MASTER]) begin
+                    accepted_seen = 1'b1;
+                    accepted_id_seen =
+                        read_req_accepted_id[(READ_MASTER * ID_BITS) +: ID_BITS];
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending mode transition RW MMIO AR timeout");
+            end
+            #1;
+            expect_no_ddr_activity();
+            if (mmio_axi_araddr != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_ARADDR ||
+                mmio_axi_arlen != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_ARLEN ||
+                mmio_axi_arsize != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_ARSIZE ||
+                mmio_axi_arburst != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_ARBURST ||
+                mmio_axi_arid != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_ARID) begin
+                fail_now("C++ trace pending mode transition RW MMIO AR mismatch");
+            end
+            seen_mmio_arid = mmio_axi_arid;
+            mmio_axi_arready = 1'b1;
+            @(posedge clk);
+            #1;
+            if (read_req_accepted[READ_MASTER]) begin
+                accepted_seen = 1'b1;
+                accepted_id_seen =
+                    read_req_accepted_id[(READ_MASTER * ID_BITS) +: ID_BITS];
+            end
+            if (!accepted_seen ||
+                accepted_id_seen != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_REQ_ID) begin
+                fail_now("C++ trace pending mode transition RW read accept mismatch");
+            end
+            @(negedge clk);
+            read_req_valid[READ_MASTER] = 1'b0;
+            read_req_bypass[READ_MASTER] = 1'b0;
+            mmio_axi_arready = 1'b0;
+
+            accepted_seen = 1'b0;
+            write_req_addr[(WRITE_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_REQ_ADDR;
+            write_req_total_size[(WRITE_MASTER * 8) +: 8] =
+                CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_REQ_SIZE;
+            write_req_id[(WRITE_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_REQ_ID;
+            write_req_wdata[(WRITE_MASTER * LINE_BITS) +: LINE_BITS] =
+                CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_REQ_WDATA;
+            write_req_wstrb[(WRITE_MASTER * LINE_BYTES) +: LINE_BYTES] =
+                CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_REQ_WSTRB[LINE_BYTES-1:0];
+            write_req_bypass[WRITE_MASTER] = 1'b0;
+            write_req_valid[WRITE_MASTER] = 1'b1;
+
+            timeout = 80;
+            while (!mmio_axi_awvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (write_req_accepted[WRITE_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending mode transition RW MMIO AW timeout");
+            end
+            #1;
+            expect_no_ddr_activity();
+            if (mmio_axi_awaddr != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_AWADDR ||
+                mmio_axi_awlen != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_AWLEN ||
+                mmio_axi_awsize != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_AWSIZE ||
+                mmio_axi_awburst != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_AWBURST ||
+                mmio_axi_awid != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_AWID) begin
+                fail_now("C++ trace pending mode transition RW MMIO AW mismatch");
+            end
+            seen_mmio_awid = mmio_axi_awid;
+            mmio_axi_awready = 1'b1;
+            @(posedge clk);
+            #1;
+            if (write_req_accepted[WRITE_MASTER]) begin
+                accepted_seen = 1'b1;
+            end
+            if (!accepted_seen) begin
+                fail_now("C++ trace pending mode transition RW write accept missing");
+            end
+            @(negedge clk);
+            write_req_valid[WRITE_MASTER] = 1'b0;
+            write_req_bypass[WRITE_MASTER] = 1'b0;
+            mmio_axi_awready = 1'b0;
+
+            timeout = 80;
+            while (!mmio_axi_wvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending mode transition RW MMIO W timeout");
+            end
+            #1;
+            expect_no_ddr_activity();
+            if (mmio_axi_wdata !=
+                    CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_WBEAT0[MMIO_DATA_BITS-1:0] ||
+                mmio_axi_wstrb !=
+                    CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_WSTRB0[MMIO_STRB_BITS-1:0] ||
+                mmio_axi_wlast != CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_WLAST0) begin
+                fail_now("C++ trace pending mode transition RW MMIO W mismatch");
+            end
+            mmio_axi_wready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_wready = 1'b0;
+
+            mode_req = MODE_MAPPED;
+            repeat (4) begin
+                @(posedge clk);
+                #1;
+                if (active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed with MMIO read/write pending");
+                end
+            end
+
+            @(negedge clk);
+            mmio_axi_bid = seen_mmio_awid;
+            mmio_axi_bresp = AXI_RESP_OKAY;
+            mmio_axi_bvalid = 1'b1;
+            #1;
+            if (!mmio_axi_bready) begin
+                fail_now("C++ trace pending mode transition RW B was backpressured");
+            end
+            if (active_mode == MODE_MAPPED) begin
+                fail_now("mode transition completed in pending RW B handshake cycle");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_bvalid = 1'b0;
+
+            timeout = 120;
+            while (!write_resp_valid[WRITE_MASTER] && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed before pending RW write response");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending mode transition RW write response timeout");
+            end
+            #1;
+            if (write_resp_id[(WRITE_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_RESP_ID ||
+                write_resp_code[(WRITE_MASTER * 2) +: 2] !=
+                    CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_RESP_CODE) begin
+                fail_now("C++ trace pending mode transition RW write response mismatch");
+            end
+
+            @(negedge clk);
+            write_resp_ready[WRITE_MASTER] = 1'b1;
+            #1;
+            if (write_resp_id[(WRITE_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_RESP_ID ||
+                write_resp_code[(WRITE_MASTER * 2) +: 2] !=
+                    CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_WRITE_RESP_CODE ||
+                active_mode == MODE_MAPPED) begin
+                fail_now("C++ trace pending mode transition RW write retire mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            write_resp_ready[WRITE_MASTER] = 1'b0;
+
+            repeat (4) begin
+                @(posedge clk);
+                #1;
+                if (active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed after B before pending R");
+                end
+            end
+
+            @(negedge clk);
+            mmio_axi_rid = seen_mmio_arid;
+            mmio_axi_rdata =
+                CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_RBEAT0[MMIO_DATA_BITS-1:0];
+            mmio_axi_rresp = AXI_RESP_OKAY;
+            mmio_axi_rlast = 1'b1;
+            mmio_axi_rvalid = 1'b1;
+            #1;
+            if (!mmio_axi_rready) begin
+                fail_now("C++ trace pending mode transition RW R was backpressured");
+            end
+            if (active_mode == MODE_MAPPED) begin
+                fail_now("mode transition completed in pending RW R handshake cycle");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_rvalid = 1'b0;
+            mmio_axi_rlast = 1'b0;
+
+            timeout = 120;
+            while (!read_resp_valid[READ_MASTER] && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (active_mode == MODE_MAPPED) begin
+                    fail_now("mode transition completed before pending RW read response");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace pending mode transition RW read response timeout");
+            end
+            #1;
+            if (read_resp_id[(READ_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_RESP_ID ||
+                read_resp_data[(READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_RESP_DATA) begin
+                fail_now("C++ trace pending mode transition RW read response mismatch");
+            end
+
+            @(negedge clk);
+            read_resp_ready[READ_MASTER] = 1'b1;
+            #1;
+            if (read_resp_id[(READ_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_RESP_ID ||
+                read_resp_data[(READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    CPP_MODE1_TO_MODE2_PENDING_MMIO_RW_READ_RESP_DATA ||
+                active_mode == MODE_MAPPED) begin
+                fail_now("C++ trace pending mode transition RW read retire mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            read_resp_ready[READ_MASTER] = 1'b0;
+
+            timeout = 10000;
+            while (((active_mode != MODE_MAPPED) || reconfig_busy) &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("mode transition did not complete after pending RW retired");
+            end
+            #1;
+            if (active_offset != 32'h3000_0000) begin
+                fail_now("mode transition active offset mismatch after pending RW");
+            end
+        end
+    endtask
+
     task issue_overlapped_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -8470,6 +8743,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
             1'b0,
             CPP_MODE1_TO_MODE2_PENDING_MMIO_WRITE_RESP_ID,
             CPP_MODE1_TO_MODE2_PENDING_MMIO_WRITE_RESP_CODE);
+        issue_mode1_to_mode2_pending_mmio_rw_and_check();
 
         $display("tb_axi_llc_subsystem_dual_cpp_trace_contract PASS");
         $finish(0);

@@ -2208,6 +2208,228 @@ WriteTrace run_mode1_to_mode2_pending_mmio_write_trace(
   return trace;
 }
 
+InvalidateAllMmioReadWriteTrace
+run_mode1_to_mode2_pending_mmio_read_write_trace(
+    const std::string &prefix, uint32_t read_addr, uint8_t read_size,
+    uint8_t read_id, uint32_t read_data_word, uint32_t write_addr,
+    uint8_t write_size, uint8_t write_id,
+    const axi_interconnect::WideWriteData_t &write_data,
+    const axi_interconnect::WideWriteStrb_t &write_strobe) {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+
+  InvalidateAllMmioReadWriteTrace trace{};
+  trace.prefix = prefix;
+  trace.read.prefix = prefix + "_READ";
+  trace.read.req_addr = read_addr;
+  trace.read.req_size = read_size;
+  trace.read.req_id = read_id;
+  trace.read.beat_count = 1;
+  trace.write.prefix = prefix + "_WRITE";
+  trace.write.req_addr = write_addr;
+  trace.write.req_size = write_size;
+  trace.write.req_id = write_id;
+  trace.write.req_wdata = wide_write_words(write_data);
+  trace.write.req_wstrb = write_strobe_mask(write_strobe);
+
+  auto &read_req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+  read_req.valid = true;
+  read_req.addr = read_addr;
+  read_req.total_size = read_size;
+  read_req.id = read_id;
+  read_req.bypass = false;
+  dut.comb_inputs();
+  require(read_req.ready,
+          "C++ mode1-to-mode2 pending RW MMIO read was not ready");
+  require(dut.axi_mmio_io.ar.arvalid,
+          "C++ mode1-to-mode2 pending RW MMIO read did not issue AR");
+  require(!dut.axi_ddr_io.ar.arvalid,
+          "C++ mode1-to-mode2 pending RW MMIO read escaped to DDR AR");
+  trace.read.araddr = static_cast<uint32_t>(dut.axi_mmio_io.ar.araddr);
+  trace.read.arlen = static_cast<uint8_t>(dut.axi_mmio_io.ar.arlen);
+  trace.read.arsize = static_cast<uint8_t>(dut.axi_mmio_io.ar.arsize);
+  trace.read.arburst = static_cast<uint8_t>(dut.axi_mmio_io.ar.arburst);
+  trace.read.arid = static_cast<uint8_t>(dut.axi_mmio_io.ar.arid);
+  dut.seq();
+  ++sim_time;
+  idle_request_outputs(dut);
+
+  require(enqueue_write(dut, write_addr, write_size, write_data, write_strobe,
+                        write_id),
+          "C++ mode1-to-mode2 pending RW MMIO write was not accepted");
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  dut.comb_inputs();
+  require(dut.axi_mmio_io.aw.awvalid,
+          "C++ mode1-to-mode2 pending RW MMIO write did not issue AW");
+  require(!dut.axi_ddr_io.aw.awvalid && !dut.axi_ddr_io.w.wvalid,
+          "C++ mode1-to-mode2 pending RW MMIO write escaped to DDR");
+  trace.write.awaddr = static_cast<uint32_t>(dut.axi_mmio_io.aw.awaddr);
+  trace.write.awlen = static_cast<uint8_t>(dut.axi_mmio_io.aw.awlen);
+  trace.write.awsize = static_cast<uint8_t>(dut.axi_mmio_io.aw.awsize);
+  trace.write.awburst = static_cast<uint8_t>(dut.axi_mmio_io.aw.awburst);
+  trace.write.awid = static_cast<uint8_t>(dut.axi_mmio_io.aw.awid);
+  trace.write.beat_count = static_cast<uint32_t>(trace.write.awlen) + 1u;
+  dut.seq();
+  ++sim_time;
+
+  for (uint32_t beat = 0; beat < trace.write.beat_count; ++beat) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    dut.comb_inputs();
+    require(dut.axi_mmio_io.w.wvalid,
+            "C++ mode1-to-mode2 pending RW MMIO write W missing");
+    require(!dut.axi_ddr_io.w.wvalid,
+            "C++ mode1-to-mode2 pending RW MMIO write W escaped to DDR");
+    trace.write.wbeats[beat] = axi_words(dut.axi_mmio_io.w.wdata);
+    trace.write.wstrb[beat] = axi_strobe_mask(dut.axi_mmio_io.w.wstrb);
+    trace.write.wlast[beat] = dut.axi_mmio_io.w.wlast ? 1 : 0;
+    dut.seq();
+    ++sim_time;
+  }
+
+  dut.mode = 2u;
+  dut.llc_mapped_offset = 0x30000000u;
+  trace.blocked_before_resp = true;
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    const bool blocked = dut.active_mode() != 2u;
+    trace.blocked_before_resp = trace.blocked_before_resp && blocked;
+    require(blocked,
+            "C++ mode transition completed with MMIO read/write pending");
+    dut.seq();
+    ++sim_time;
+  }
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  dut.axi_mmio_io.b.bvalid = true;
+  dut.axi_mmio_io.b.bid = trace.write.awid;
+  dut.axi_mmio_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  trace.bready_while_pending = dut.axi_mmio_io.b.bready;
+  require(trace.bready_while_pending,
+          "C++ mode1-to-mode2 pending RW MMIO B was backpressured");
+  dut.comb_inputs();
+  require(dut.active_mode() != 2u,
+          "C++ mode transition completed in MMIO B handshake cycle");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  dut.comb_outputs();
+  const auto &held_write =
+      dut.write_ports[axi_interconnect::MASTER_DCACHE_W].resp;
+  require(held_write.valid,
+          "C++ mode1-to-mode2 pending RW write response was not held");
+  dut.comb_inputs();
+  require(dut.active_mode() != 2u,
+          "C++ mode transition completed while write response held");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  dut.write_ports[axi_interconnect::MASTER_DCACHE_W].resp.ready = true;
+  dut.comb_outputs();
+  const auto &write_resp =
+      dut.write_ports[axi_interconnect::MASTER_DCACHE_W].resp;
+  require(write_resp.valid,
+          "C++ mode1-to-mode2 pending RW write response was not valid");
+  trace.write.resp_id = static_cast<uint8_t>(write_resp.id);
+  trace.write.resp_code = static_cast<uint8_t>(write_resp.resp);
+  dut.comb_inputs();
+  require(dut.active_mode() != 2u,
+          "C++ mode transition completed before MMIO R returned");
+  dut.seq();
+  ++sim_time;
+
+  trace.blocked_after_read_retire = true;
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    const bool blocked = dut.active_mode() != 2u;
+    trace.blocked_after_read_retire = trace.blocked_after_read_retire && blocked;
+    require(blocked,
+            "C++ mode transition completed after B before pending R");
+    dut.seq();
+    ++sim_time;
+  }
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  dut.axi_mmio_io.r.rvalid = true;
+  dut.axi_mmio_io.r.rid = trace.read.arid;
+  dut.axi_mmio_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+  dut.axi_mmio_io.r.rlast = true;
+  dut.axi_mmio_io.r.rdata = {};
+  axi_compat::set_u32(dut.axi_mmio_io.r.rdata, 0, read_data_word);
+  trace.read.rbeats[0] = axi_words(dut.axi_mmio_io.r.rdata);
+  dut.comb_outputs();
+  trace.rready_while_pending = dut.axi_mmio_io.r.rready;
+  require(trace.rready_while_pending,
+          "C++ mode1-to-mode2 pending RW MMIO R was backpressured");
+  dut.comb_inputs();
+  require(dut.active_mode() != 2u,
+          "C++ mode transition completed in MMIO R handshake cycle");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  dut.comb_outputs();
+  const auto &held_read =
+      dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp;
+  require(held_read.valid,
+          "C++ mode1-to-mode2 pending RW read response was not held");
+  dut.comb_inputs();
+  trace.blocked_while_both_held = dut.active_mode() != 2u;
+  require(trace.blocked_while_both_held,
+          "C++ mode transition completed while read response held");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp.ready = true;
+  dut.comb_outputs();
+  const auto &read_resp =
+      dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp;
+  require(read_resp.valid,
+          "C++ mode1-to-mode2 pending RW read response was not valid");
+  trace.read.resp_id = static_cast<uint8_t>(read_resp.id);
+  trace.read.resp_data = wide_read_words(read_resp.data);
+  dut.comb_inputs();
+  require(dut.active_mode() != 2u,
+          "C++ mode transition completed before read response retired");
+  dut.seq();
+  ++sim_time;
+
+  for (int retry = 0; retry < 64; ++retry) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    dut.seq();
+    ++sim_time;
+    if (dut.active_mode() == 2u &&
+        dut.active_llc_mapped_offset() == 0x30000000u) {
+      trace.accepted_after_both_retire = true;
+      return trace;
+    }
+  }
+  require(false,
+          "C++ mode transition did not complete after MMIO read/write retired");
+  return trace;
+}
+
 OverlapReadTrace run_overlapped_read_trace() {
   axi_interconnect::AXI_Interconnect dut;
   init_dut(dut);
@@ -6898,6 +7120,11 @@ void emit_vectors(std::ostream &os) {
       run_mode1_to_mode2_pending_mmio_write_trace(
           "CPP_MODE1_TO_MODE2_PENDING_MMIO_WRITE", 0x100000e4u, 3, 0xCu,
           single_word_data(0xface00e4u), byte_strobe(0xfu));
+  const auto mode1_to_mode2_pending_mmio_read_write =
+      run_mode1_to_mode2_pending_mmio_read_write_trace(
+          "CPP_MODE1_TO_MODE2_PENDING_MMIO_RW", 0x100000e8u, 3, 0xDu,
+          0xabcd00e8u, 0x10000128u, 3, 0xEu,
+          single_word_data(0xface0128u), byte_strobe(0xfu));
 
   os << "`ifndef AXI_DUAL_CPP_TRACE_VECTORS_VH\n";
   os << "`define AXI_DUAL_CPP_TRACE_VECTORS_VH\n";
@@ -6976,6 +7203,8 @@ void emit_vectors(std::ostream &os) {
   emit_read(os, mode1_to_mode2_mmio_above_read4);
   emit_read(os, mode1_to_mode2_pending_mmio_read);
   emit_write(os, mode1_to_mode2_pending_mmio_write);
+  emit_read(os, mode1_to_mode2_pending_mmio_read_write.read);
+  emit_write(os, mode1_to_mode2_pending_mmio_read_write.write);
   os << "\n`endif\n";
 }
 
