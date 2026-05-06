@@ -1249,7 +1249,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   对照 `../local_logs/dual_axi_ec_20260506/linux_large_bpu_5m_a9ee8e8_20260506_102229.log`，
   两者同为退出码 0、5000005 commit、2078844 cycles、IPC 2.405185；L1D AMAT
   2.373202、L1D miss penalty 61.364674 cycles、LLC->DDR read avg 52.000000 cycles
-  也完全一致，因此本轮 cycle delta=0、IPC delta=0，未出现可观测性能回退。
+  也完全一致，因此本轮 cycle delta=0、IPC delta=0，未出现可观测性能回退。2026-05-06
+  submodule 继续推进到 `605012b` 后只新增 trace/TB/docs，不改变生产 C++/RTL
+  路径；用同一 large+BPU binary 再跑 300k quick：
+  `../local_logs/dual_axi_ec_20260506/linux_large_bpu_300k_605012b_20260506_124549.log`，
+  结果为退出码 0、300001 commit、120687 cycles、IPC 2.485777、load/store
+  40586/51609、L1D AMAT 2.776803；与 `0dce8d4` 300k baseline 完全一致。
 
 ## Multi-Agent 并行推进边界
 
