@@ -25,6 +25,17 @@
   加当前实际 data/meta SRAM `.db` 组成。SRAM 是 hard macro，只参与 link/reference
   解析，不作为可映射的标准单元 target。
 
+2026-05-06 复核 `/share/personal/S/chengshuyao/Qimeng_3_syn/dc_core.tcl` 后确认：
+当前 full compile 入口与组内模板保持相同的关键综合策略，包括 `uniquify`、
+`create_clock -period 1`、0 input/output delay、`set_fix_multiple_port_nets
+-all -buffer_constant -feedthrough`、`SED/DEL/LANQ/CLK/PULL` `dont_use` 规则、
+`compile_ultra -retime`、`change_names -rules verilog -hierarchy`、`set_svf -off`
+以及 netlist/ddc/sdc/sdf/spf 输出。当前脚本的有意差异仅为：
+使用本仓库 RTL/flist/top、使用 SMIC12 9T20 RVT/LVT 与实际 data/meta SRAM `.db`、
+将 SRAM hard macro 作为 link-only 而非 target cell、去掉本子模块不需要的 IO/PLL
+库映射、并额外保留 pre/post QoR、timing、area、constraint、power、check_design
+等报告。
+
 ## 快速 link sanity
 
 在 `eda-05`/`eda-09`/`eda-10` 等可用节点上运行。启动前先确认当前节点的 Synopsys
