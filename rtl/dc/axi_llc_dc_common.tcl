@@ -37,6 +37,7 @@ proc axi_llc_init_run {default_tag} {
     file mkdir [file join $out_root db]
     file mkdir [file join $out_root sdc]
     file mkdir [file join $out_root sdf]
+    file mkdir [file join $out_root spf]
 
     define_design_lib WORK -path [file join $work_root WORK]
 }
@@ -72,7 +73,8 @@ proc axi_llc_setup_libraries {} {
     set_app_var search_path [list $rtl_root [file join $rtl_root include] [file join $rtl_root src] $run_root]
     set_app_var target_library $std_db
     set_app_var synthetic_library [list standard.sldb dw_foundation.sldb]
-    set_app_var link_library [concat [list *] $std_db [list $data_db $meta_db] [get_app_var synthetic_library]]
+    set link_db [concat [list *] $std_db [list $data_db $meta_db] [get_app_var synthetic_library]]
+    set_app_var link_library [concat [list *] $std_db [get_app_var synthetic_library]]
     set hdlin_while_loop_iterations 6000
 
     puts "=== DC_STD_DB $std_db ==="
@@ -90,6 +92,7 @@ proc axi_llc_setup_libraries {} {
     read_db $meta_db
     puts "=== DC_STAGE read_meta_db_done [clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] ==="
     flush stdout
+    set_app_var link_library $link_db
 }
 
 proc axi_llc_read_rtl_flist {flist_path} {
@@ -169,37 +172,24 @@ proc axi_llc_apply_1g_constraints {} {
     set clock_period 1.0
 
     create_clock -period $clock_period -name $clock_name [get_ports clk]
-    set_clock_uncertainty 0.05 [get_clocks $clock_name]
 
     set non_clock_inputs [remove_from_collection [all_inputs] [get_ports {clk rst_n}]]
     if {[sizeof_collection $non_clock_inputs] > 0} {
-        set_input_delay 0.05 -clock $clock_name $non_clock_inputs
+        set_input_delay 0.0 -clock $clock_name $non_clock_inputs
     }
     if {[sizeof_collection [all_outputs]] > 0} {
-        set_output_delay 0.05 -clock $clock_name [all_outputs]
+        set_output_delay 0.0 -clock $clock_name [all_outputs]
     }
 
-    set_fix_multiple_port_nets -all -buffer_constants [current_design]
+    set_fix_multiple_port_nets -all -buffer_constant -feedthrough
 }
 
-proc axi_llc_apply_hierarchy_guards {} {
-    set macro_cells [get_cells -hierarchical -quiet *u_macro*]
-    if {[sizeof_collection $macro_cells] > 0} {
-        set_ungroup $macro_cells false
-        set_boundary_optimization $macro_cells false
-        set_dont_touch $macro_cells true
-    }
-
-    set protect_cells [get_cells -hierarchical -quiet [list \
-        compat \
-        compat/core \
-        compat/core/data_store \
-        compat/core/meta_store \
-        bridge]]
-    if {[sizeof_collection $protect_cells] > 0} {
-        set_ungroup $protect_cells false
-        set_boundary_optimization $protect_cells false
-    }
+proc axi_llc_apply_group_template_cell_rules {} {
+    set_dont_use [get_lib_cells */SED*]
+    set_dont_use [get_lib_cells */DEL*]
+    set_dont_use [get_lib_cells */*LANQ*]
+    set_dont_use [get_lib_cells */*CLK*]
+    set_dont_use [get_lib_cells */*PULL*]
 }
 
 proc axi_llc_write_link_checkpoint {stem} {
@@ -209,6 +199,7 @@ proc axi_llc_write_link_checkpoint {stem} {
 
 proc axi_llc_write_reports {stem} {
     global rpt_root
+    redirect -file [file join $rpt_root ${stem}_check_timing.rpt] {check_timing}
     redirect -file [file join $rpt_root ${stem}_timing.rpt] {report_timing -delay max -max_paths 1}
     redirect -file [file join $rpt_root ${stem}_timing_max80.rpt] {report_timing -delay max -max_paths 80}
     redirect -file [file join $rpt_root ${stem}_qor.rpt] {report_qor}
@@ -227,4 +218,5 @@ proc axi_llc_write_mapped_outputs {stem} {
     write -format db -hierarchy -output [file join $out_root db ${stem}.db]
     write_sdc [file join $out_root sdc ${stem}.sdc]
     write_sdf -version 1.0 [file join $out_root sdf ${stem}.sdf]
+    write_parasitics -output [file join $out_root spf ${stem}.spf]
 }

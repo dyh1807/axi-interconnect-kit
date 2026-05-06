@@ -18,14 +18,14 @@ axi_llc_analyze_elab_link $top_name $rtl_files
 axi_llc_check_link_clean
 axi_llc_write_link_checkpoint ${top_name}_post_link
 axi_llc_apply_1g_constraints
-axi_llc_apply_hierarchy_guards
+axi_llc_apply_group_template_cell_rules
 
 redirect -file [file join $rpt_root ${top_name}_qor_precompile.rpt] {report_qor}
 redirect -file [file join $rpt_root ${top_name}_timing_precompile.rpt] {report_timing -delay max -max_paths 20}
 
 puts "=== DC_STAGE compile_start [clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] ==="
 flush stdout
-compile_ultra -no_autoungroup
+compile_ultra -retime
 puts "=== DC_STAGE compile_done [clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] ==="
 flush stdout
 

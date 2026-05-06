@@ -15,6 +15,11 @@
   `SCC12NSFE_96SDB_7P5TC*` 7p5t 库作为收敛结论。
 - 默认时钟：`1.0ns`
 - 默认 `USE_SMIC12_STORES=1`，由 RTL parameter 默认值决定
+- full compile 入口按组内模板 `/share/personal/S/chengshuyao/Qimeng_3_syn/dc_core.tcl`
+  对齐：`create_clock -period 1`、I/O delay 为 0、`set_fix_multiple_port_nets
+  -all -buffer_constant -feedthrough`、模板中的 `dont_use` 规则，以及
+  `compile_ultra -retime`。当前脚本只应在 RTL/filelist、SMIC12 9T20+SRAM
+  `.db` 路径和额外 QoR/输出报告上偏离该模板。
 
 ## 快速 link sanity
 
@@ -47,6 +52,7 @@ dc_shell -f rtl/dc/run_dual_full_compile_1g.tcl | tee rtl/dc/runs/full_compile_1
 - `db/axi_llc_subsystem_dual_postcompile_1g.db`
 - `sdc/axi_llc_subsystem_dual_postcompile_1g.sdc`
 - `sdf/axi_llc_subsystem_dual_postcompile_1g.sdf`
+- `spf/axi_llc_subsystem_dual_postcompile_1g.spf`
 
 报告会保留在 `rtl/dc/runs/<run_tag>/reports/`，包括 timing/qor/area/reference/cell/
 constraint/power/check_design。

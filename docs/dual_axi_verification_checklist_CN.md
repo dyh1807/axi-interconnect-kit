@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=183 / open=7。本轮新增 MODE_OFF 同一 upstream write master 两笔
+当前计数：done=184 / open=7。本轮新增 MODE_OFF 同一 upstream write master 两笔
 DDR direct write 的多 ID / out-of-order `B` response actual C++ trace 到实际 RTL
 subsystem 一致性检查，并将 C++ direct write response 路径改为按 master queue
 buffer 外部 `B` response，避免上游 write response 被 hold 时无谓反压外部 `BREADY`；
@@ -42,7 +42,9 @@ write pending/B response held 时 `invalidate_all` 不提前 accepted、外部 M
 response 均 retire 后才接受 maintenance 的 pre-handshake actual C++ trace 到实际 RTL
 subsystem 一致性检查；并补齐 MODE_CACHE 同 64B hazard granule direct MMIO read
 pending write 持续保持时不提前外发 `AW/W` 的 actual C++ trace 到实际 RTL subsystem
-一致性检查；
+一致性检查；并补齐对称的 MODE_CACHE 同 64B hazard granule direct MMIO write
+pending read 场景，要求外部 `B` 未返回前 held read 不被错误接受、也不向 DDR/MMIO
+外发新的 `AR/AW/W`；
 并补齐 dual bridge 生产宽度下 DDR cacheline read/write 与 MMIO 32-bit read/write
 并发，以及 DDR cacheline read 与 MMIO 32-bit write 交叉并发、DDR cacheline
 write 与 MMIO 32-bit read 对称交叉并发的 bridge-level bounded formal；继续补入
@@ -873,6 +875,17 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_cpp_trace_mmio_same_line_20260506_110622`；全量 RTL contract
   复跑目录：`rtl/local_debug/vcs_all_contracts_20260506_110652_mmio_same_line`，
   wrapper log 为 `rtl/local_debug/run_all_contracts_mmio_same_line_20260506_110652.log`。
+- [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE 同 64B hazard granule
+  direct MMIO write-pending read 约束：已补 MMIO 4B write 发出 `AW/W` 且 `B`
+  未返回时，同 granule MMIO 4B read 持续保持的场景；actual C++ trace 与实际
+  RTL subsystem 均要求观察窗口内不向 DDR/MMIO 发出新的外部 `AR/AW/W`，且
+  read 在 pending write 清除前不被 accepted。该场景同步修正 C++ production
+  LLC-enabled read arbitration：direct-MMIO read 如果因同 granule write-pending
+  hazard 被阻断，不能继续 fall-through 到 LLC core accept 路径。最新 targeted
+  VCS 目录：`rtl/local_debug/vcs_cpp_trace_mmio_same_line_rw_20260506_112216`；
+  全量 RTL contract 复跑目录：
+  `rtl/local_debug/vcs_all_contracts_20260506_112239_mmio_same_line_rw`，wrapper log 为
+  `rtl/local_debug/run_all_contracts_mmio_same_line_rw_20260506_112239.log`。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE `invalidate_all`
   cache-refill + held MMIO read drain 第一组：已补 cacheable read miss/refill 已发
   DDR 64B refill `ARLEN=1`、另一 read master 的 MMIO 4B read 先返回并被 upstream
@@ -1062,7 +1075,19 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   旧 7p5t eda-10 长跑，并在 `eda-07` 启动新的 9T20 clean full 1GHz DC，PID
   `2673318`，run root 为
   `rtl/dc/runs/full_compile_1g_9t20_622b6e4_20260506_104636_eda07`；早期日志显示
-  已完成 analyze，进入 elaborate/build `axi_llc_subsystem_compat` 阶段。
+  已完成 analyze，进入 elaborate/build `axi_llc_subsystem_compat` 阶段。后续用户补充
+  DC 脚本还必须与组内模板
+  `/share/personal/S/chengshuyao/Qimeng_3_syn/dc_core.tcl` 保持等价，只允许 RTL/filelist、
+  SRAM `.db` 和额外 QoR/输出报告差异；检查发现此前脚本额外使用了 0.05ns
+  clock uncertainty/I/O delay、`compile_ultra -no_autoungroup` 和局部 hierarchy
+  guard，不能作为严格模板 signoff 入口。已修正 `rtl/dc/run_dual_full_compile_1g.tcl`
+  / `rtl/dc/axi_llc_dc_common.tcl`，回到模板语义：1ns clock、0 I/O delay、
+  `set_fix_multiple_port_nets -all -buffer_constant -feedthrough`、模板 `dont_use`
+  规则、`compile_ultra -retime`，并保留 9T20+SRAM `.db`、QoR/report、netlist/ddc/db/
+  sdc/sdf/spf 输出。修正后在 `eda-10` 执行 library setup smoke，9T20 RVT/LVT 与
+  data/meta SRAM `.db` 均加载通过，且无 `DDB-24`/Error/Warning；run root 为
+  `rtl/dc/runs/lib_setup_smoke_template_9t20_20260506_112133_eda10`。因此当前 eda-07
+  已启动长跑最多作为调试参考，最终 clean signoff 应使用修正后的脚本重新启动。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
   `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
   后最新全量 RTL contract 53/53 目录为
@@ -1080,7 +1105,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_all_contracts_push_check_20260506_001441_eda10`。2026-05-06
   新增 `invalidate_all` + pending MMIO read/write 组合 trace 后，又复跑全量 RTL
   contract 53/53，目录为
-  `rtl/local_debug/vcs_all_contracts_20260506_103930_mmio_rw`。
+  `rtl/local_debug/vcs_all_contracts_20260506_103930_mmio_rw`；新增同 64B direct
+  MMIO read-pending write 后复跑 53/53，目录为
+  `rtl/local_debug/vcs_all_contracts_20260506_110652_mmio_same_line`；新增对称的
+  direct MMIO write-pending read 与 C++ fall-through 修复后再次复跑 53/53，目录为
+  `rtl/local_debug/vcs_all_contracts_20260506_112239_mmio_same_line_rw`。
 - [x] 受 `axi_llc_subsystem_compat.v` 影响的 actual dual-subsystem hw-cbmc 子集：
   compat signedness cleanup 后已复跑稳定 manifest 中 16 个 `subsystem_dual_*`
   proof，全部通过，覆盖 MMIO read/write route/response、DDR/MMIO independent、
@@ -1098,7 +1127,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `local_debug/ctest_after_accepted_id_20260505.log`。2026-05-06 新增 trace-only
   `invalidate_all` + pending MMIO read/write 组合后再次执行同一 ctest 命令，24/24
   通过；同日新增同 64B hazard granule direct MMIO read-pending write trace 后又复跑
-  同一 ctest 命令，24/24 通过。
+  同一 ctest 命令，24/24 通过；随后新增对称的 direct MMIO write-pending read trace
+  及 C++ fall-through 修复后再次复跑同一 ctest 命令，24/24 通过。
 - [x] Linux/image 级 300k/5M 功能与性能 sanity：父仓库临时适配 cacheability/MMIO
   分类后，large + `CONFIG_BPU` + `../img/linux.bin` 已补跑 300k 与 5M commit。
   之前失败点是约 58,695 commit 后父仓库 MSHR 以 cacheline read 请求
