@@ -4,7 +4,13 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=207 / open=2。本轮继续新增 MODE_CACHE cacheable write miss/refill
+当前计数：done=208 / open=2。本轮继续新增 MODE_CACHE cacheable write miss/refill
+与 MMIO read/write 三路并发下的 `invalidate_all` drain/dirty-blocked 检查：
+DCache write miss 发出 DDR refill `AR`，MMIO read/write 分别发出 MMIO `AR/AW/W`；
+`invalidate_all` pending 时 MMIO `RREADY/BREADY` 和 held MMIO response 期间的 DDR
+refill `RREADY` 都不能被回压，三类 response retire 后由于 cache write 留下 dirty
+resident line，`invalidate_all` 仍必须保持 blocked。本轮此前新增 MODE_CACHE
+cacheable write miss/refill
 与 MMIO read/write 三路并发下的 target-line `invalidate_line` drain/recovery 检查：
 DCache write miss 发出 DDR refill `AR`，MMIO read/write 分别发出 MMIO `AR/AW/W`；
 `invalidate_line` pending 时 MMIO `RREADY/BREADY` 和 held MMIO response 期间的
@@ -1205,6 +1211,15 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_invline_cache_write_mmio_rw_20260506_165824_eda-10`，
   全量 RTL contract 目录：
   `rtl/local_debug/vcs_all_contracts_invline_cache_write_mmio_rw_20260506_165836_eda-10`；
+  本轮继续补齐 cache write miss/refill + MMIO read/write 三路并发下的
+  `invalidate_all` drain/dirty-blocked：DCache write miss 发出 DDR refill `AR`，
+  MMIO read/write 分别发出 MMIO `AR/AW/W`；`invalidate_all` pending 时
+  MMIO `RREADY/BREADY` 和 held MMIO response 期间的 DDR refill `RREADY` 均保持 1，
+  三类 response 都 retire 后由于 cache write 留下 dirty resident line，
+  `invalidate_all` 仍保持 blocked。最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_invall_cache_write_mmio_rw_20260506_170711_eda-10`，
+  全量 RTL contract 目录：
+  `rtl/local_debug/vcs_all_contracts_invall_cache_write_mmio_rw_20260506_170725_eda-10`；
   后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
   maintenance/recovery 组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
@@ -1379,6 +1394,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_invline_cache_write_mmio_rw_20260506_165824_eda-10`，
   latest 全量 RTL contract 53/53 目录为
   `rtl/local_debug/vcs_all_contracts_invline_cache_write_mmio_rw_20260506_165836_eda-10`。
+  继续新增 cache write miss/refill + MMIO read/write 三路并发下的 `invalidate_all`
+  drain/dirty-blocked trace 后，C++ regression 24/24 通过；latest targeted VCS 为
+  `rtl/local_debug/vcs_dual_cpp_trace_invall_cache_write_mmio_rw_20260506_170711_eda-10`，
+  latest 全量 RTL contract 53/53 目录为
+  `rtl/local_debug/vcs_all_contracts_invall_cache_write_mmio_rw_20260506_170725_eda-10`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
@@ -1616,7 +1636,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   simulator/RTL 路径；本轮新增 target-line `invalidate_line` + cache write +
   MMIO read/write 三路并发 trace 同样只改测试生成器、generated include、RTL contract
   TB 和文档，不改变 production simulator/RTL 路径，因此继续沿用上述 cycle delta=0、
-  IPC delta=0 结论；如果下一轮修改 production C++/RTL，则 Linux
+  IPC delta=0 结论；本轮新增 `invalidate_all` + cache write + MMIO read/write
+  dirty-blocked trace 仍只改同类测试/文档文件，也不改变 production simulator/RTL 路径。
+  如果下一轮修改 production C++/RTL，则 Linux
   5M 结论必须同时报告 error/difftest、cycles、IPC、相对 baseline delta 和是否可接受。
 
 ## Multi-Agent 并行推进边界
@@ -1717,7 +1739,10 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   accepted；本轮继续补齐 cacheable write miss/refill + pending MMIO read/write +
   target-line `invalidate_line` 组合，要求 MMIO `RREADY/BREADY` 与 DDR refill
   `RREADY` 都不被 maintenance/held response 回压，MMIO read/write response 与 cache
-  write response 都 retire 后才 accepted。
+  write response 都 retire 后才 accepted；本轮继续补齐 cacheable write miss/refill +
+  pending MMIO read/write + `invalidate_all` 组合，要求同样不回压 MMIO `RREADY/BREADY`
+  或 DDR refill `RREADY`，且三类 response 都 retire 后仍因 dirty resident line 保持
+  blocked。
 - [ ] C++ reference 与 RTL 端到端形式 EC；当前已有 production-helper read issue
   shape 切片，但完整 C++ class / RTL top 同 harness 仍未完成。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate。
