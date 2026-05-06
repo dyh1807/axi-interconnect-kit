@@ -679,6 +679,16 @@ struct InvalidateAllCacheMmioReadTrace {
   bool accepted_after_resp_retire = false;
 };
 
+struct InvalidateAllCacheMmioWriteTrace {
+  CacheWriteMissMmioWriteTrace flow;
+  std::string prefix;
+  bool mmio_bready_while_invalidate_pending = false;
+  bool ddr_rready_while_mmio_resp_held = false;
+  bool blocked_while_mmio_resp_held = false;
+  bool blocked_while_cache_resp_held = false;
+  bool accepted_after_resp_retire = false;
+};
+
 struct InvalidateAllMmioReadWriteTrace {
   ReadTrace read;
   WriteTrace write;
@@ -3056,6 +3066,245 @@ CacheWriteMissMmioWriteTrace run_mode1_cache_write_miss_mmio_write_trace() {
   return trace;
 }
 
+InvalidateAllCacheMmioWriteTrace
+run_mode1_invalidate_all_cache_mmio_write_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+  InvalidLlcTableDriver table_driver(dut.get_llc_config());
+
+  InvalidateAllCacheMmioWriteTrace trace{};
+  trace.prefix = "CPP_MODE1_INVALL_CACHE_MMIO_WRITE";
+  auto &flow = trace.flow;
+  flow.cache.prefix = "CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE";
+  flow.cache.req_addr = 0x40000c04u;
+  flow.cache.req_size = 3;
+  flow.cache.req_id = 0x8u;
+  const auto cache_data = single_word_data(0x24681357u);
+  const auto cache_strobe = byte_strobe(0xfu);
+  flow.cache.req_wdata = wide_write_words(cache_data);
+  flow.cache.req_wstrb = write_strobe_mask(cache_strobe);
+  flow.refill.prefix = "CPP_MODE1_INVALL_CACHE_MMIO_WRITE_REFILL";
+  flow.refill.req_addr = flow.cache.req_addr;
+  flow.refill.req_size = 63;
+  flow.refill.req_id = 0;
+  flow.refill.beat_count = 2;
+  flow.refill.resp_data.assign(axi_interconnect::MAX_READ_TRANSACTION_WORDS,
+                               0);
+  flow.mmio.prefix = "CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO";
+  flow.mmio.req_addr = 0x100000bcu;
+  flow.mmio.req_size = 3;
+  flow.mmio.req_id = 0x9u;
+  const auto mmio_data = single_word_data(0xface00bcu);
+  const auto mmio_strobe = byte_strobe(0xfu);
+  flow.mmio.req_wdata = wide_write_words(mmio_data);
+  flow.mmio.req_wstrb = write_strobe_mask(mmio_strobe);
+  flow.cache_master = axi_interconnect::MASTER_DCACHE_W;
+  flow.mmio_master = axi_interconnect::MASTER_UNCORE_LSU_W;
+
+  bool accepted = false;
+  bool ar_seen = false;
+  bool request_active = true;
+  for (int cycle = 0; cycle < 120 && !ar_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    const bool ready_snapshot = dut.write_ports[flow.cache_master].req.ready;
+    if (request_active) {
+      auto &req = dut.write_ports[flow.cache_master].req;
+      req.valid = true;
+      req.addr = flow.cache.req_addr;
+      req.total_size = flow.cache.req_size;
+      req.id = flow.cache.req_id;
+      req.wdata = cache_data;
+      req.wstrb = cache_strobe;
+      req.bypass = false;
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (request_active && ready_snapshot) {
+      accepted = true;
+      request_active = false;
+    }
+    if (dut.axi_ddr_io.ar.arvalid) {
+      require(!dut.axi_mmio_io.ar.arvalid,
+              "C++ invall cache/MMIO write DDR AR overlapped with MMIO AR");
+      flow.refill.araddr = static_cast<uint32_t>(dut.axi_ddr_io.ar.araddr);
+      flow.refill.arlen = static_cast<uint8_t>(dut.axi_ddr_io.ar.arlen);
+      flow.refill.arsize = static_cast<uint8_t>(dut.axi_ddr_io.ar.arsize);
+      flow.refill.arburst = static_cast<uint8_t>(dut.axi_ddr_io.ar.arburst);
+      flow.refill.arid = static_cast<uint8_t>(dut.axi_ddr_io.ar.arid);
+      ar_seen = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  require(accepted, "C++ invall cache/MMIO write miss was not accepted");
+  require(ar_seen, "C++ invall cache/MMIO write did not issue DDR refill AR");
+  require(flow.refill.beat_count ==
+              static_cast<uint32_t>(flow.refill.arlen) + 1u,
+          "C++ invall cache/MMIO write refill beat count mismatch");
+
+  issue_write_and_capture_axi(dut, flow.mmio, flow.mmio_master,
+                              axi_interconnect::DownstreamPort::MMIO,
+                              mmio_data, mmio_strobe);
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
+  dut.axi_mmio_io.b.bvalid = true;
+  dut.axi_mmio_io.b.bid = flow.mmio.awid;
+  dut.axi_mmio_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+  dut.comb_outputs();
+  trace.mmio_bready_while_invalidate_pending = dut.axi_mmio_io.b.bready;
+  flow.mmio_bready_while_resp_stalled =
+      trace.mmio_bready_while_invalidate_pending;
+  require(dut.axi_mmio_io.b.bready,
+          "C++ invall cache/MMIO write MMIO B was backpressured");
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_all_accepted(),
+          "C++ invall cache/MMIO write accepted in MMIO B handshake cycle");
+  dut.seq();
+  ++sim_time;
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
+  dut.comb_outputs();
+  require(dut.write_ports[flow.mmio_master].resp.valid,
+          "C++ invall cache/MMIO write MMIO response was not held");
+  require(!dut.write_ports[flow.cache_master].resp.valid,
+          "C++ invall cache/MMIO write cache response appeared before refill");
+  trace.blocked_while_mmio_resp_held = !dut.llc_invalidate_all_accepted();
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_all_accepted(),
+          "C++ invall cache/MMIO write accepted while MMIO response held");
+  dut.seq();
+  ++sim_time;
+
+  trace.ddr_rready_while_mmio_resp_held = true;
+  for (uint32_t beat = 0; beat < flow.refill.beat_count; ++beat) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
+    dut.axi_ddr_io.r.rvalid = true;
+    dut.axi_ddr_io.r.rid = flow.refill.arid;
+    dut.axi_ddr_io.r.rresp = sim_ddr::AXI_RESP_OKAY;
+    dut.axi_ddr_io.r.rlast = beat == flow.refill.beat_count - 1u;
+    dut.axi_ddr_io.r.rdata = ddr_read_beat(0xd00d0c00u + beat * 0x100u);
+    flow.refill.rbeats[beat] = axi_words(dut.axi_ddr_io.r.rdata);
+    dut.comb_outputs();
+    trace.ddr_rready_while_mmio_resp_held =
+        trace.ddr_rready_while_mmio_resp_held && dut.axi_ddr_io.r.rready;
+    flow.ddr_rready_while_resp_stalled =
+        trace.ddr_rready_while_mmio_resp_held;
+    require(dut.axi_ddr_io.r.rready,
+            "C++ invall cache/MMIO write DDR R was backpressured");
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_all_accepted(),
+            "C++ invall cache/MMIO write accepted in DDR R handshake cycle");
+    dut.seq();
+    ++sim_time;
+  }
+
+  bool cache_resp_seen = false;
+  for (int cycle = 0; cycle < 180 && !cache_resp_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
+    dut.comb_outputs();
+    require(dut.write_ports[flow.mmio_master].resp.valid,
+            "C++ invall cache/MMIO write MMIO response dropped while held");
+    auto &cache_resp = dut.write_ports[flow.cache_master].resp;
+    if (cache_resp.valid) {
+      cache_resp_seen = true;
+      flow.cache.resp_id = static_cast<uint8_t>(cache_resp.id);
+      flow.cache.resp_code = static_cast<uint8_t>(cache_resp.resp);
+      trace.blocked_while_cache_resp_held =
+          !dut.llc_invalidate_all_accepted();
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_all_accepted(),
+            "C++ invall cache/MMIO write accepted while cache response held");
+    dut.seq();
+    ++sim_time;
+  }
+  require(cache_resp_seen, "C++ invall cache/MMIO write cache response timeout");
+
+  bool mmio_retired = false;
+  for (int cycle = 0; cycle < 8 && !mmio_retired; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
+    dut.write_ports[flow.mmio_master].resp.ready = true;
+    dut.comb_outputs();
+    auto &mmio_resp = dut.write_ports[flow.mmio_master].resp;
+    if (!mmio_resp.valid) {
+      mmio_retired = true;
+      break;
+    }
+    flow.mmio.resp_id = static_cast<uint8_t>(mmio_resp.id);
+    flow.mmio.resp_code = static_cast<uint8_t>(mmio_resp.resp);
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_all_accepted(),
+            "C++ invall cache/MMIO write accepted before MMIO response retired");
+    dut.seq();
+    ++sim_time;
+  }
+  require(mmio_retired,
+          "C++ invall cache/MMIO write MMIO response did not retire");
+
+  bool cache_retired = false;
+  for (int cycle = 0; cycle < 8 && !cache_retired; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
+    dut.write_ports[flow.cache_master].resp.ready = true;
+    dut.comb_outputs();
+    if (!dut.write_ports[flow.cache_master].resp.valid) {
+      cache_retired = true;
+      break;
+    }
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_all_accepted(),
+            "C++ invall cache/MMIO write accepted before cache response retired");
+    dut.seq();
+    ++sim_time;
+  }
+  require(cache_retired,
+          "C++ invall cache/MMIO write cache response did not retire");
+
+  for (int retry = 0; retry < 32; ++retry) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_all_accepted(),
+            "C++ invall cache/MMIO write accepted with dirty resident line");
+    dut.seq();
+    ++sim_time;
+  }
+  trace.accepted_after_resp_retire = false;
+  dut.set_llc_invalidate_all(false);
+  return trace;
+}
+
 DirtyVictimMmioWriteTrace run_mode1_dirty_victim_mmio_write_trace() {
   axi_interconnect::AXI_Interconnect dut;
   init_cache_trace_dut(dut);
@@ -5009,6 +5258,21 @@ void emit_invalidate_all_cache_mmio_read(
      << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
 }
 
+void emit_invalidate_all_cache_mmio_write(
+    std::ostream &os, const InvalidateAllCacheMmioWriteTrace &trace) {
+  emit_cache_write_miss_mmio_write(os, trace.flow);
+  os << "localparam " << trace.prefix << "_MMIO_BREADY_PENDING = 1'b"
+     << (trace.mmio_bready_while_invalidate_pending ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_DDR_RREADY_MMIO_HELD = 1'b"
+     << (trace.ddr_rready_while_mmio_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_BLOCKED_MMIO_HELD = 1'b"
+     << (trace.blocked_while_mmio_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_BLOCKED_CACHE_HELD = 1'b"
+     << (trace.blocked_while_cache_resp_held ? 1 : 0) << ";\n";
+  os << "localparam " << trace.prefix << "_ACCEPTED_AFTER_RETIRE = 1'b"
+     << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
+}
+
 void emit_invalidate_all_mmio_read_write(
     std::ostream &os, const InvalidateAllMmioReadWriteTrace &trace) {
   emit_read(os, trace.read);
@@ -5101,6 +5365,8 @@ void emit_vectors(std::ostream &os) {
       run_mode1_invalidate_all_cache_mmio_read_trace();
   const auto mode1_cache_write_miss_mmio_write =
       run_mode1_cache_write_miss_mmio_write_trace();
+  const auto mode1_invalidate_all_cache_mmio_write =
+      run_mode1_invalidate_all_cache_mmio_write_trace();
   const auto mode1_dirty_victim_mmio_write =
       run_mode1_dirty_victim_mmio_write_trace();
   const auto mode2_mapped_local = run_mode2_mapped_local_write_read_trace();
@@ -5217,6 +5483,8 @@ void emit_vectors(std::ostream &os) {
   emit_invalidate_all_cache_mmio_read(os,
                                       mode1_invalidate_all_cache_mmio_read);
   emit_cache_write_miss_mmio_write(os, mode1_cache_write_miss_mmio_write);
+  emit_invalidate_all_cache_mmio_write(
+      os, mode1_invalidate_all_cache_mmio_write);
   emit_dirty_victim_mmio_write(os, mode1_dirty_victim_mmio_write);
   emit_mode2_mapped_local(os, mode2_mapped_local);
   emit_mode2_mapped_local(os, mode2_mapped_low_boundary);

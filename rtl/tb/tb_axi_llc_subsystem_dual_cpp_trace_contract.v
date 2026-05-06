@@ -2984,6 +2984,287 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_invalidate_all_cache_mmio_write_and_check;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            write_resp_ready = {NUM_WRITE_MASTERS{1'b0}};
+            ddr_axi_arready = 1'b0;
+            ddr_axi_awready = 1'b0;
+            ddr_axi_wready = 1'b0;
+            mmio_axi_awready = 1'b0;
+            mmio_axi_wready = 1'b0;
+            invalidate_all_valid = 1'b0;
+
+            write_req_addr[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_REQ_ADDR;
+            write_req_total_size[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER * 8) +: 8] =
+                CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_REQ_SIZE;
+            write_req_id[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_REQ_ID;
+            write_req_wdata[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER * LINE_BITS) +: LINE_BITS] =
+                CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_REQ_WDATA;
+            write_req_wstrb[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER * LINE_BYTES) +: LINE_BYTES] =
+                CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_REQ_WSTRB[LINE_BYTES-1:0];
+            write_req_bypass[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER] = 1'b0;
+            write_req_valid[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER] = 1'b1;
+            timeout = 180;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (write_req_accepted[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (!accepted_seen) begin
+                fail_now("C++ trace invall cache/MMIO write cache accept timeout");
+            end
+            write_req_valid[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER] = 1'b0;
+            @(negedge clk);
+
+            timeout = 260;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace invall cache/MMIO write refill AR timeout");
+            end
+            #1;
+            if (ddr_axi_araddr != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_REFILL_ARADDR ||
+                ddr_axi_arlen != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_REFILL_ARLEN ||
+                ddr_axi_arsize != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_REFILL_ARSIZE ||
+                ddr_axi_arburst != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_REFILL_ARBURST ||
+                ddr_axi_arid != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_REFILL_ARID ||
+                mmio_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid) begin
+                fail_now("C++ trace invall cache/MMIO write refill AR mismatch");
+            end
+            seen_ddr_arid = ddr_axi_arid;
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+
+            write_req_addr[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_REQ_ADDR;
+            write_req_total_size[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER * 8) +: 8] =
+                CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_REQ_SIZE;
+            write_req_id[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_REQ_ID;
+            write_req_wdata[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER * LINE_BITS) +: LINE_BITS] =
+                CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_REQ_WDATA;
+            write_req_wstrb[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER * LINE_BYTES) +: LINE_BYTES] =
+                CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_REQ_WSTRB[LINE_BYTES-1:0];
+            write_req_bypass[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER] = 1'b0;
+            write_req_valid[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER] = 1'b1;
+            timeout = 180;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (write_req_accepted[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (!accepted_seen) begin
+                fail_now("C++ trace invall cache/MMIO write MMIO accept timeout");
+            end
+            write_req_valid[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER] = 1'b0;
+            @(negedge clk);
+
+            timeout = 140;
+            while (!mmio_axi_awvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace invall cache/MMIO write MMIO AW timeout");
+            end
+            #1;
+            if (mmio_axi_awaddr != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_AWADDR ||
+                mmio_axi_awlen != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_AWLEN ||
+                mmio_axi_awsize != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_AWSIZE ||
+                mmio_axi_awburst != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_AWBURST ||
+                mmio_axi_awid != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_AWID ||
+                ddr_axi_awvalid) begin
+                fail_now("C++ trace invall cache/MMIO write MMIO AW mismatch");
+            end
+            seen_mmio_awid = mmio_axi_awid;
+            mmio_axi_awready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_awready = 1'b0;
+
+            timeout = 140;
+            while (!mmio_axi_wvalid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace invall cache/MMIO write MMIO W timeout");
+            end
+            #1;
+            if (mmio_axi_wdata !=
+                    CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_WBEAT0[MMIO_DATA_BITS-1:0] ||
+                mmio_axi_wstrb !=
+                    CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_WSTRB0[MMIO_STRB_BITS-1:0] ||
+                mmio_axi_wlast != CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_WLAST0 ||
+                ddr_axi_wvalid) begin
+                fail_now("C++ trace invall cache/MMIO write MMIO W mismatch");
+            end
+            mmio_axi_wready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_wready = 1'b0;
+
+            invalidate_all_valid = 1'b1;
+            mmio_axi_bid = seen_mmio_awid;
+            mmio_axi_bresp = AXI_RESP_OKAY;
+            mmio_axi_bvalid = 1'b1;
+            #1;
+            if (mmio_axi_bready !== CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_BREADY_STALLED ||
+                mmio_axi_bready !== CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_BREADY_PENDING ||
+                invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache/MMIO write MMIO B mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            mmio_axi_bvalid = 1'b0;
+
+            timeout = 140;
+            while (!write_resp_valid[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER] &&
+                   (timeout > 0)) begin
+                #1;
+                if (invalidate_all_accepted) begin
+                    fail_now("C++ trace invall cache/MMIO write accepted before MMIO response");
+                end
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0 ||
+                write_resp_valid[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER]) begin
+                fail_now("C++ trace invall cache/MMIO write MMIO response owner mismatch");
+            end
+            #1;
+            if (write_resp_id[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_RESP_ID ||
+                write_resp_code[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER * 2) +: 2] !=
+                    CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_RESP_CODE ||
+                invalidate_all_accepted !==
+                    !CPP_MODE1_INVALL_CACHE_MMIO_WRITE_BLOCKED_MMIO_HELD) begin
+                fail_now("C++ trace invall cache/MMIO write MMIO response hold mismatch");
+            end
+
+            @(negedge clk);
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = CPP_MODE1_INVALL_CACHE_MMIO_WRITE_REFILL_RBEAT0;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b0;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVALL_CACHE_MMIO_WRITE_REFILL_RREADY_STALLED ||
+                ddr_axi_rready !== CPP_MODE1_INVALL_CACHE_MMIO_WRITE_DDR_RREADY_MMIO_HELD ||
+                invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache/MMIO write refill R beat0 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+
+            ddr_axi_rid = seen_ddr_arid;
+            ddr_axi_rdata = CPP_MODE1_INVALL_CACHE_MMIO_WRITE_REFILL_RBEAT1;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVALL_CACHE_MMIO_WRITE_REFILL_RREADY_STALLED ||
+                ddr_axi_rready !== CPP_MODE1_INVALL_CACHE_MMIO_WRITE_DDR_RREADY_MMIO_HELD ||
+                invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache/MMIO write refill R beat1 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 260;
+            while (!write_resp_valid[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER] &&
+                   (timeout > 0)) begin
+                #1;
+                if (!write_resp_valid[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER] ||
+                    invalidate_all_accepted) begin
+                    fail_now("C++ trace invall cache/MMIO write response drain ordering mismatch");
+                end
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace invall cache/MMIO write cache response timeout");
+            end
+            #1;
+            if (write_resp_id[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_RESP_ID ||
+                write_resp_code[(CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER * 2) +: 2] !=
+                    CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_RESP_CODE ||
+                invalidate_all_accepted !==
+                    !CPP_MODE1_INVALL_CACHE_MMIO_WRITE_BLOCKED_CACHE_HELD) begin
+                fail_now("C++ trace invall cache/MMIO write cache response hold mismatch");
+            end
+
+            write_resp_ready[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER] = 1'b1;
+            #1;
+            if (invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache/MMIO write accepted before MMIO retire");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            write_resp_ready[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_MMIO_MASTER] = 1'b0;
+
+            write_resp_ready[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER] = 1'b1;
+            #1;
+            if (invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache/MMIO write accepted before cache retire");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            write_resp_ready[CPP_MODE1_INVALL_CACHE_MMIO_WRITE_CACHE_MASTER] = 1'b0;
+
+            if (CPP_MODE1_INVALL_CACHE_MMIO_WRITE_ACCEPTED_AFTER_RETIRE) begin
+                timeout = 10000;
+                accepted_seen = 1'b0;
+                while (!accepted_seen && (timeout > 0)) begin
+                    #1;
+                    if (invalidate_all_accepted) begin
+                        accepted_seen = 1'b1;
+                    end
+                    @(posedge clk);
+                    timeout = timeout - 1;
+                end
+                if (!accepted_seen) begin
+                    fail_now("C++ trace invall cache/MMIO write final accept timeout");
+                end
+            end else begin
+                timeout = 64;
+                while (timeout > 0) begin
+                    #1;
+                    if (invalidate_all_accepted) begin
+                        fail_now("C++ trace invall cache/MMIO write accepted despite dirty line");
+                    end
+                    @(posedge clk);
+                    timeout = timeout - 1;
+                end
+            end
+            @(negedge clk);
+            invalidate_all_valid = 1'b0;
+        end
+    endtask
+
     task issue_mode1_invalidate_line_pending_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -6408,6 +6689,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         issue_mode1_same_line_mmio_write_pending_read_and_check();
         issue_mode1_invalidate_all_cache_mmio_read_and_check();
         issue_mode1_cache_write_miss_mmio_write_and_check();
+        issue_mode1_invalidate_all_cache_mmio_write_and_check();
         issue_mode1_dirty_victim_mmio_write_and_check();
         issue_mode2_mapped_local_write_read_and_check();
         issue_mmio_read_and_check(MODE_MAPPED,
