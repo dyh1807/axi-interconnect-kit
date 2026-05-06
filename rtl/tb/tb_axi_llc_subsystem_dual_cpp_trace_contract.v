@@ -6284,6 +6284,255 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_invalidate_all_cache_read_write_and_check;
+        integer timeout;
+        reg accepted_seen;
+        reg [AXI_ID_BITS-1:0] read_arid;
+        reg [AXI_ID_BITS-1:0] write_arid;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            write_resp_ready = {NUM_WRITE_MASTERS{1'b0}};
+            ddr_axi_arready = 1'b0;
+            invalidate_all_valid = 1'b0;
+
+            read_req_addr[(CPP_MODE1_INVALL_CACHE_RW_READ_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_INVALL_CACHE_RW_READ_REQ_ADDR;
+            read_req_total_size[(CPP_MODE1_INVALL_CACHE_RW_READ_MASTER * 8) +: 8] =
+                CPP_MODE1_INVALL_CACHE_RW_READ_REQ_SIZE;
+            read_req_id[(CPP_MODE1_INVALL_CACHE_RW_READ_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_INVALL_CACHE_RW_READ_REQ_ID;
+            read_req_bypass[CPP_MODE1_INVALL_CACHE_RW_READ_MASTER] = 1'b0;
+            read_req_valid[CPP_MODE1_INVALL_CACHE_RW_READ_MASTER] = 1'b1;
+            timeout = 240;
+            accepted_seen = 1'b0;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[CPP_MODE1_INVALL_CACHE_RW_READ_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0 || !accepted_seen) begin
+                fail_now("C++ trace invall cache RW read AR timeout");
+            end
+            #1;
+            if (ddr_axi_araddr != CPP_MODE1_INVALL_CACHE_RW_READ_ARADDR ||
+                ddr_axi_arlen != CPP_MODE1_INVALL_CACHE_RW_READ_ARLEN ||
+                ddr_axi_arsize != CPP_MODE1_INVALL_CACHE_RW_READ_ARSIZE ||
+                ddr_axi_arburst != CPP_MODE1_INVALL_CACHE_RW_READ_ARBURST ||
+                ddr_axi_arid != CPP_MODE1_INVALL_CACHE_RW_READ_ARID ||
+                mmio_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid) begin
+                fail_now("C++ trace invall cache RW read AR mismatch");
+            end
+            read_arid = ddr_axi_arid;
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+            read_req_valid[CPP_MODE1_INVALL_CACHE_RW_READ_MASTER] = 1'b0;
+
+            write_req_addr[(CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_INVALL_CACHE_RW_WRITE_REQ_ADDR;
+            write_req_total_size[(CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER * 8) +: 8] =
+                CPP_MODE1_INVALL_CACHE_RW_WRITE_REQ_SIZE;
+            write_req_id[(CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_INVALL_CACHE_RW_WRITE_REQ_ID;
+            write_req_wdata[(CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER * LINE_BITS) +: LINE_BITS] =
+                CPP_MODE1_INVALL_CACHE_RW_WRITE_REQ_WDATA;
+            write_req_wstrb[(CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER * LINE_BYTES) +: LINE_BYTES] =
+                CPP_MODE1_INVALL_CACHE_RW_WRITE_REQ_WSTRB[LINE_BYTES-1:0];
+            write_req_bypass[CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER] = 1'b0;
+            write_req_valid[CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER] = 1'b1;
+            timeout = 240;
+            accepted_seen = 1'b0;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (write_req_accepted[CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0 || !accepted_seen) begin
+                fail_now("C++ trace invall cache RW write AR timeout");
+            end
+            #1;
+            if (ddr_axi_araddr != CPP_MODE1_INVALL_CACHE_RW_WRITE_REFILL_ARADDR ||
+                ddr_axi_arlen != CPP_MODE1_INVALL_CACHE_RW_WRITE_REFILL_ARLEN ||
+                ddr_axi_arsize != CPP_MODE1_INVALL_CACHE_RW_WRITE_REFILL_ARSIZE ||
+                ddr_axi_arburst != CPP_MODE1_INVALL_CACHE_RW_WRITE_REFILL_ARBURST ||
+                ddr_axi_arid != CPP_MODE1_INVALL_CACHE_RW_WRITE_REFILL_ARID ||
+                mmio_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid) begin
+                fail_now("C++ trace invall cache RW write refill AR mismatch");
+            end
+            write_arid = ddr_axi_arid;
+            if (write_arid == read_arid) begin
+                fail_now("C++ trace invall cache RW reused ARID");
+            end
+            ddr_axi_arready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_arready = 1'b0;
+            write_req_valid[CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER] = 1'b0;
+
+            invalidate_all_valid = 1'b1;
+            ddr_axi_rid = read_arid;
+            ddr_axi_rdata = CPP_MODE1_INVALL_CACHE_RW_READ_RBEAT0;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b0;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVALL_CACHE_RW_READ_RREADY_PENDING ||
+                invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache RW read R beat0 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+
+            ddr_axi_rid = read_arid;
+            ddr_axi_rdata = CPP_MODE1_INVALL_CACHE_RW_READ_RBEAT1;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVALL_CACHE_RW_READ_RREADY_PENDING ||
+                invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache RW read R beat1 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 260;
+            while (!read_resp_valid[CPP_MODE1_INVALL_CACHE_RW_READ_MASTER] &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (invalidate_all_accepted) begin
+                    fail_now("C++ trace invall cache RW accepted before read response");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace invall cache RW read response timeout");
+            end
+            #1;
+            if (read_resp_id[(CPP_MODE1_INVALL_CACHE_RW_READ_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVALL_CACHE_RW_READ_RESP_ID ||
+                read_resp_data[(CPP_MODE1_INVALL_CACHE_RW_READ_MASTER * READ_RESP_BITS) +: READ_RESP_BITS] !=
+                    CPP_MODE1_INVALL_CACHE_RW_READ_RESP_DATA ||
+                (!invalidate_all_accepted) !== CPP_MODE1_INVALL_CACHE_RW_BLOCKED_READ_HELD) begin
+                fail_now("C++ trace invall cache RW read response mismatch");
+            end
+
+            ddr_axi_rid = write_arid;
+            ddr_axi_rdata = CPP_MODE1_INVALL_CACHE_RW_WRITE_REFILL_RBEAT0;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b0;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVALL_CACHE_RW_WRITE_RREADY_READ_HELD ||
+                !read_resp_valid[CPP_MODE1_INVALL_CACHE_RW_READ_MASTER] ||
+                invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache RW write refill R beat0 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+
+            ddr_axi_rid = write_arid;
+            ddr_axi_rdata = CPP_MODE1_INVALL_CACHE_RW_WRITE_REFILL_RBEAT1;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            ddr_axi_rvalid = 1'b1;
+            #1;
+            if (ddr_axi_rready !== CPP_MODE1_INVALL_CACHE_RW_WRITE_RREADY_READ_HELD ||
+                !read_resp_valid[CPP_MODE1_INVALL_CACHE_RW_READ_MASTER] ||
+                invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache RW write refill R beat1 mismatch");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            ddr_axi_rvalid = 1'b0;
+            ddr_axi_rlast = 1'b0;
+
+            timeout = 260;
+            while (!write_resp_valid[CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER] &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (!read_resp_valid[CPP_MODE1_INVALL_CACHE_RW_READ_MASTER] ||
+                    invalidate_all_accepted) begin
+                    fail_now("C++ trace invall cache RW response drain ordering mismatch");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace invall cache RW write response timeout");
+            end
+            #1;
+            if (write_resp_id[(CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER * ID_BITS) +: ID_BITS] !=
+                    CPP_MODE1_INVALL_CACHE_RW_WRITE_RESP_ID ||
+                write_resp_code[(CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER * 2) +: 2] !=
+                    CPP_MODE1_INVALL_CACHE_RW_WRITE_RESP_CODE ||
+                (!invalidate_all_accepted) !== CPP_MODE1_INVALL_CACHE_RW_BLOCKED_WRITE_HELD) begin
+                fail_now("C++ trace invall cache RW write response mismatch");
+            end
+
+            read_resp_ready[CPP_MODE1_INVALL_CACHE_RW_READ_MASTER] = 1'b1;
+            #1;
+            if (invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache RW accepted before read retire");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            read_resp_ready[CPP_MODE1_INVALL_CACHE_RW_READ_MASTER] = 1'b0;
+
+            write_resp_ready[CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER] = 1'b1;
+            #1;
+            if (invalidate_all_accepted) begin
+                fail_now("C++ trace invall cache RW accepted before write retire");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            write_resp_ready[CPP_MODE1_INVALL_CACHE_RW_WRITE_MASTER] = 1'b0;
+
+            if (CPP_MODE1_INVALL_CACHE_RW_ACCEPTED_AFTER_RETIRE) begin
+                timeout = 10000;
+                accepted_seen = 1'b0;
+                while (!accepted_seen && (timeout > 0)) begin
+                    #1;
+                    if (invalidate_all_accepted) begin
+                        accepted_seen = 1'b1;
+                    end
+                    @(posedge clk);
+                    timeout = timeout - 1;
+                end
+                if (!accepted_seen) begin
+                    fail_now("C++ trace invall cache RW final accept timeout");
+                end
+            end else begin
+                timeout = 64;
+                while (timeout > 0) begin
+                    #1;
+                    if (invalidate_all_accepted) begin
+                        fail_now("C++ trace invall cache RW accepted despite dirty line");
+                    end
+                    @(posedge clk);
+                    timeout = timeout - 1;
+                end
+            end
+            @(negedge clk);
+            invalidate_all_valid = 1'b0;
+        end
+    endtask
+
     task issue_mode1_invalidate_line_cache_mmio_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -10152,6 +10401,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         issue_mode1_invalidate_all_multi_read_and_check();
         issue_mode1_invalidate_line_multi_read_and_check();
         issue_mode1_invalidate_line_cache_read_write_and_check();
+        issue_mode1_invalidate_all_cache_read_write_and_check();
         issue_mode1_invalidate_line_cache_mmio_read_and_check();
         issue_mode1_same_line_read_pending_write_and_check();
         issue_mode1_same_line_mmio_read_pending_write_and_check();

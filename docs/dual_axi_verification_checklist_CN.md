@@ -4,7 +4,12 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=204 / open=2。本轮新增 MODE_CACHE cache read miss + cache write
+当前计数：done=205 / open=2。本轮新增 MODE_CACHE cache read miss + cache write
+miss 混合并发下的 `invalidate_all` drain/dirty-blocked 检查：DCache read/write
+各自发出不同 cache line 的 DDR refill `AR`，`invalidate_all` pending 时 read DDR
+`RREADY` 和 held read response 期间的 write refill `RREADY` 都不能被回压，read/write
+response 都 retire 后由于 cache write 留下 dirty resident line，`invalidate_all` 仍必须
+保持 blocked。本轮此前新增 MODE_CACHE cache read miss + cache write
 miss 混合并发下的 target-line `invalidate_line` drain 检查：DCache read/write 各自
 发出不同 cache line 的 DDR refill `AR`，`invalidate_line` pending 时 read DDR `RREADY`
 和 held read response 期间的 write refill `RREADY` 都不能被回压，read/write response
@@ -372,8 +377,14 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `rtl/local_debug/vcs_all_contracts_invline_cache_rw_20260506_161247_eda-10`。
+  `rtl/local_debug/vcs_all_contracts_invall_cache_rw_20260506_162215_eda-10`。
   本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE cache read
+  miss + cache write miss 混合并发下的 `invalidate_all` drain/dirty-blocked trace：
+  read/write 各自发出不同 cache line 的 DDR refill `AR`，read response held 时
+  write refill `RREADY` 仍必须 ready，两个 response 都 retire 后由于 cache write
+  留下 dirty resident line，全局 maintenance 仍必须保持 blocked。targeted 目录为
+  `rtl/local_debug/vcs_dual_cpp_trace_invall_cache_rw_20260506_162202_eda-10`。
+  此前本项新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE cache read
   miss + cache write miss 混合并发下的 target-line `invalidate_line` drain trace：
   read/write 各自发出不同 cache line 的 DDR refill `AR`，read response held 时
   write refill `RREADY` 仍必须 ready，两个 response 都 retire 后才允许目标 line
@@ -1158,6 +1169,14 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_invline_cache_rw_20260506_161212_eda-10`，
   全量 RTL contract 目录：
   `rtl/local_debug/vcs_all_contracts_invline_cache_rw_20260506_161247_eda-10`；
+  本轮继续补齐同一 cache read/write mixed 并发下的 `invalidate_all`
+  drain/dirty-blocked：DCache read/write 各自发出不同 cache line 的 DDR refill
+  `ARID=0/1`；read response held 时 write refill `RREADY` 仍为 1，read/write response
+  均 retire 后由于 cache write 留下 dirty resident line，`invalidate_all` 仍保持 blocked。
+  最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_dual_cpp_trace_invall_cache_rw_20260506_162202_eda-10`，
+  全量 RTL contract 目录：
+  `rtl/local_debug/vcs_all_contracts_invall_cache_rw_20260506_162215_eda-10`；
   后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
   maintenance/recovery 组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
@@ -1314,6 +1333,11 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/local_debug/vcs_dual_cpp_trace_invline_cache_rw_20260506_161212_eda-10`，
   latest 全量 RTL contract 53/53 目录为
   `rtl/local_debug/vcs_all_contracts_invline_cache_rw_20260506_161247_eda-10`。
+  继续新增同一 cache read/write mixed 并发下的 `invalidate_all` drain/dirty-blocked
+  trace 后，C++ regression 24/24 通过；latest targeted VCS 为
+  `rtl/local_debug/vcs_dual_cpp_trace_invall_cache_rw_20260506_162202_eda-10`，
+  latest 全量 RTL contract 53/53 目录为
+  `rtl/local_debug/vcs_all_contracts_invall_cache_rw_20260506_162215_eda-10`。
 - [ ] RTL 可综合性与 1GHz pre-DC hygiene gate：VCS/formal 只能证明已覆盖功能，不等价于
   可综合性或 1GHz 时序余量。后续在进入长 DC 前至少应补一组快速综合/结构检查：
   no-latch/no-multi-driver/no-unsized-debug-only 语句、实际 production RTL flist 可被
@@ -1544,7 +1568,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   include、RTL contract TB 和文档，不改变 production simulator/RTL 路径，因此仍沿用
   上述 cycle delta=0、IPC delta=0 结论。本轮新增 target-line `invalidate_line`
   cache read/write mixed drain trace 同样只修改 trace generator、generated TB include、
-  RTL contract TB 和文档，不改变 production simulator/RTL 路径；如果下一轮修改 production C++/RTL，则 Linux
+  RTL contract TB 和文档，不改变 production simulator/RTL 路径；本轮新增 `invalidate_all`
+  cache read/write mixed dirty-blocked trace 也只改同类测试/文档文件；如果下一轮修改 production C++/RTL，则 Linux
   5M 结论必须同时报告 error/difftest、cycles、IPC、相对 baseline delta 和是否可接受。
 
 ## Multi-Agent 并行推进边界
