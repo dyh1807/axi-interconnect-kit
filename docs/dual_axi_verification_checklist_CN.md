@@ -1105,7 +1105,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `rtl/dc/runs/link_sanity_probe_strict_template_9t20_20260506_115105_eda10`，
   结果已越过此前失败点：RVT/LVT target db 均加载完成，出现 `analyze_done` 和
   `elaborate_start`，随后在 build `axi_llc_subsystem_compat` 阶段因 120s 探针超时退出；
-  该超时符合预期，不是早期配置失败。
+  该超时符合预期，不是早期配置失败。修正提交 `e4a6434` 推送后，已用
+  foreground unified exec 会话启动新的 clean full DC，run root 为
+  `rtl/dc/runs/full_compile_1g_strict_template_9t20_e4a6434_20260506_115655_eda10_live`；
+  早期日志已完成 `analyze_done` 并进入 `elaborate_start`，正在 build
+  `axi_llc_subsystem_compat`。此前尝试用普通 `nohup` 后台方式启动的两轮会被当前执行
+  环境清理，均停在加载 RVT db 附近，不能作为有效 DC。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
   `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
   后最新全量 RTL contract 53/53 目录为
