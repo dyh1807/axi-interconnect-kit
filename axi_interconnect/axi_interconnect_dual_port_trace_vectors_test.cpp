@@ -2483,6 +2483,124 @@ run_mode0_same_line_write_pending_read_trace() {
   return trace;
 }
 
+SameLineReadPendingWriteTrace
+run_mode1_same_line_mmio_read_pending_write_trace() {
+  axi_interconnect::AXI_Interconnect dut;
+  init_cache_trace_dut(dut);
+  clear_inputs(dut);
+
+  SameLineReadPendingWriteTrace trace{};
+  trace.read.prefix = "CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ";
+  trace.read.req_addr = 0x10000140u;
+  trace.read.req_size = 3;
+  trace.read.req_id = 0x5u;
+  trace.read.beat_count = 1;
+  trace.write.prefix = "CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE";
+  trace.write.req_addr = 0x10000144u;
+  trace.write.req_size = 3;
+  trace.write.req_id = 0xAu;
+  const auto write_data = single_word_data(0xface0144u);
+  const auto write_strobe = byte_strobe(0xfu);
+  trace.write.req_wdata = wide_write_words(write_data);
+  trace.write.req_wstrb = write_strobe_mask(write_strobe);
+  trace.read_master = axi_interconnect::MASTER_DCACHE_R;
+  trace.write_master = axi_interconnect::MASTER_DCACHE_W;
+
+  bool accepted = false;
+  bool ar_seen = false;
+  bool request_active = true;
+  for (int cycle = 0; cycle < 32 && !ar_seen; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    if (request_active) {
+      auto &req = dut.read_ports[trace.read_master].req;
+      req.valid = true;
+      req.addr = trace.read.req_addr;
+      req.total_size = trace.read.req_size;
+      req.id = trace.read.req_id;
+      req.bypass = false;
+    }
+    dut.comb_outputs();
+    dut.comb_inputs();
+    if (request_active && dut.read_ports[trace.read_master].req.ready) {
+      accepted = true;
+      request_active = false;
+    }
+    if (dut.axi_mmio_io.ar.arvalid) {
+      require(!dut.axi_ddr_io.ar.arvalid,
+              "C++ same-line MMIO read pending escaped read to DDR");
+      trace.read.araddr = static_cast<uint32_t>(dut.axi_mmio_io.ar.araddr);
+      trace.read.arlen = static_cast<uint8_t>(dut.axi_mmio_io.ar.arlen);
+      trace.read.arsize = static_cast<uint8_t>(dut.axi_mmio_io.ar.arsize);
+      trace.read.arburst = static_cast<uint8_t>(dut.axi_mmio_io.ar.arburst);
+      trace.read.arid = static_cast<uint8_t>(dut.axi_mmio_io.ar.arid);
+      ar_seen = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  require(accepted, "C++ same-line MMIO pending read was not accepted");
+  require(ar_seen, "C++ same-line MMIO pending read did not issue MMIO AR");
+  require(trace.read.beat_count == static_cast<uint32_t>(trace.read.arlen) + 1u,
+          "C++ same-line MMIO pending read beat count mismatch");
+
+  clear_inputs(dut);
+  set_downstream_ready(dut);
+  auto &write_req = dut.write_ports[trace.write_master].req;
+  write_req.valid = true;
+  write_req.addr = trace.write.req_addr;
+  write_req.total_size = trace.write.req_size;
+  write_req.id = trace.write.req_id;
+  write_req.wdata = write_data;
+  write_req.wstrb = write_strobe;
+  write_req.bypass = false;
+  dut.comb_outputs();
+  dut.comb_inputs();
+  trace.write.req_ready = dut.write_ports[trace.write_master].req.ready;
+  trace.write_accepted_while_read_pending =
+      dut.write_ports[trace.write_master].req.accepted;
+  trace.no_external_issue_while_read_pending =
+      !dut.axi_ddr_io.aw.awvalid && !dut.axi_ddr_io.w.wvalid &&
+      !dut.axi_ddr_io.ar.arvalid && !dut.axi_mmio_io.aw.awvalid &&
+      !dut.axi_mmio_io.w.wvalid && !dut.axi_mmio_io.ar.arvalid;
+  require(trace.no_external_issue_while_read_pending,
+          "C++ same-line MMIO write escaped externally while read R was pending");
+  dut.seq();
+  ++sim_time;
+
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    clear_inputs(dut);
+    set_downstream_ready(dut);
+    if (!trace.write_accepted_while_read_pending) {
+      auto &held_write_req = dut.write_ports[trace.write_master].req;
+      held_write_req.valid = true;
+      held_write_req.addr = trace.write.req_addr;
+      held_write_req.total_size = trace.write.req_size;
+      held_write_req.id = trace.write.req_id;
+      held_write_req.wdata = write_data;
+      held_write_req.wstrb = write_strobe;
+      held_write_req.bypass = false;
+    }
+    dut.comb_outputs();
+    dut.comb_inputs();
+    trace.write_accepted_while_read_pending =
+        trace.write_accepted_while_read_pending ||
+        dut.write_ports[trace.write_master].req.accepted;
+    const bool no_external_issue =
+        !dut.axi_ddr_io.aw.awvalid && !dut.axi_ddr_io.w.wvalid &&
+        !dut.axi_ddr_io.ar.arvalid && !dut.axi_mmio_io.aw.awvalid &&
+        !dut.axi_mmio_io.w.wvalid && !dut.axi_mmio_io.ar.arvalid;
+    trace.no_external_issue_while_read_pending =
+        trace.no_external_issue_while_read_pending && no_external_issue;
+    require(no_external_issue,
+            "C++ same-line MMIO pending write issued externally before R");
+    dut.seq();
+    ++sim_time;
+  }
+
+  return trace;
+}
+
 InvalidateAllCacheMmioReadTrace
 run_mode1_invalidate_all_cache_mmio_read_trace() {
   axi_interconnect::AXI_Interconnect dut;
@@ -4961,6 +5079,8 @@ void emit_vectors(std::ostream &os) {
           "CPP_MODE1_INVALIDATE_ALL_PENDING_MMIO_RW", 0x100000b0u, 3, 0x3u,
           0xabcd00b0u, 0x10000110u, 3, 0x4u,
           single_word_data(0xface00b4u), byte_strobe(0xfu));
+  const auto mode1_same_line_mmio_read_pending_write =
+      run_mode1_same_line_mmio_read_pending_write_trace();
   const auto mode1_invalidate_all_pre_ar_mmio_read =
       run_mode1_invalidate_all_pre_ar_mmio_read_trace(
           "CPP_MODE1_INVALIDATE_ALL_PRE_AR_MMIO_READ", 0x100000a8u, 3, 0xDu,
@@ -5033,6 +5153,8 @@ void emit_vectors(std::ostream &os) {
   emit_write(os, mode1_invalidate_all_pending_mmio_write);
   emit_invalidate_all_mmio_read_write(
       os, mode1_invalidate_all_pending_mmio_read_write);
+  emit_same_line_read_pending_write(
+      os, mode1_same_line_mmio_read_pending_write);
   emit_read(os, mode1_invalidate_all_pre_ar_mmio_read);
   emit_write(os, mode1_invalidate_all_pre_aw_w_mmio_write);
   emit_read(os, mode1_to_mode2_mmio_above_read4);

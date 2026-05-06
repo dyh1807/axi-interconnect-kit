@@ -3214,6 +3214,117 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         end
     endtask
 
+    task issue_mode1_same_line_mmio_read_pending_write_and_check;
+        integer timeout;
+        reg accepted_seen;
+        begin
+            reset_dut();
+            enter_mode(MODE_CACHE);
+            @(negedge clk);
+            read_resp_ready = {NUM_READ_MASTERS{1'b0}};
+            write_resp_ready = {NUM_WRITE_MASTERS{1'b0}};
+            mmio_axi_arready = 1'b0;
+
+            read_req_addr[(CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_REQ_ADDR;
+            read_req_total_size[(CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_MASTER * 8) +: 8] =
+                CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_REQ_SIZE;
+            read_req_id[(CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_REQ_ID;
+            read_req_bypass[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_MASTER] = 1'b0;
+            read_req_valid[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_MASTER] = 1'b1;
+
+            timeout = 160;
+            accepted_seen = 1'b0;
+            while (!mmio_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (read_req_accepted[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("C++ trace same-line MMIO pending read AR timeout");
+            end
+            #1;
+            if (mmio_axi_araddr != CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_ARADDR ||
+                mmio_axi_arlen != CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_ARLEN ||
+                mmio_axi_arsize != CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_ARSIZE ||
+                mmio_axi_arburst != CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_ARBURST ||
+                mmio_axi_arid != CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_ARID ||
+                ddr_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid ||
+                mmio_axi_awvalid || mmio_axi_wvalid) begin
+                fail_now("C++ trace same-line MMIO pending read AR mismatch");
+            end
+            mmio_axi_arready = 1'b1;
+            @(posedge clk);
+            #1;
+            if (read_req_accepted[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_MASTER]) begin
+                accepted_seen = 1'b1;
+            end
+            if (!accepted_seen) begin
+                fail_now("C++ trace same-line MMIO pending read accept missing");
+            end
+            @(negedge clk);
+            read_req_valid[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_MASTER] = 1'b0;
+            read_req_bypass[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_READ_MASTER] = 1'b0;
+            mmio_axi_arready = 1'b0;
+
+            write_req_addr[(CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER * ADDR_BITS) +: ADDR_BITS] =
+                CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_REQ_ADDR;
+            write_req_total_size[(CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER * 8) +: 8] =
+                CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_REQ_SIZE;
+            write_req_id[(CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER * ID_BITS) +: ID_BITS] =
+                CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_REQ_ID;
+            write_req_wdata[(CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER * LINE_BITS) +: LINE_BITS] =
+                CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_REQ_WDATA;
+            write_req_wstrb[(CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER * LINE_BYTES) +: LINE_BYTES] =
+                CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_REQ_WSTRB[LINE_BYTES-1:0];
+            write_req_bypass[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER] = 1'b0;
+            write_req_valid[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER] = 1'b1;
+            accepted_seen = 1'b0;
+            #1;
+            if (write_req_accepted[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER]) begin
+                accepted_seen = 1'b1;
+            end
+            if (!CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_NO_EXTERNAL_ISSUE_WHILE_READ_PENDING ||
+                ddr_axi_awvalid || ddr_axi_wvalid || ddr_axi_arvalid ||
+                mmio_axi_awvalid || mmio_axi_wvalid || mmio_axi_arvalid) begin
+                $display("same-line MMIO pending write external issue mismatch: accepted=%0b ddr_aw=%0b ddr_w=%0b ddr_ar=%0b mmio_aw=%0b mmio_w=%0b mmio_ar=%0b",
+                         accepted_seen,
+                         ddr_axi_awvalid, ddr_axi_wvalid, ddr_axi_arvalid,
+                         mmio_axi_awvalid, mmio_axi_wvalid, mmio_axi_arvalid);
+                fail_now("C++ trace same-line MMIO pending read write mismatch");
+            end
+            repeat (4) begin
+                @(posedge clk);
+                #1;
+                if (write_req_accepted[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER]) begin
+                    accepted_seen = 1'b1;
+                end
+                if (!CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_NO_EXTERNAL_ISSUE_WHILE_READ_PENDING ||
+                    ddr_axi_awvalid || ddr_axi_wvalid || ddr_axi_arvalid ||
+                    mmio_axi_awvalid || mmio_axi_wvalid || mmio_axi_arvalid) begin
+                    fail_now("C++ trace same-line MMIO pending write issued before R");
+                end
+                @(negedge clk);
+                if (accepted_seen) begin
+                    write_req_valid[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER] = 1'b0;
+                end
+            end
+            if (accepted_seen !==
+                CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_ACCEPTED_WHILE_READ_PENDING) begin
+                $display("same-line MMIO pending write accept mismatch: accepted_seen=%0b expected=%0b",
+                         accepted_seen,
+                         CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_ACCEPTED_WHILE_READ_PENDING);
+                fail_now("C++ trace same-line MMIO pending write accept mismatch");
+            end
+            write_req_valid[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER] = 1'b0;
+            write_req_bypass[CPP_MODE1_SAME_LINE_MMIO_READ_PENDING_WRITE_MASTER] = 1'b0;
+        end
+    endtask
+
     task issue_mode0_same_line_write_pending_read_and_check;
         integer timeout;
         reg accepted_seen;
@@ -6157,6 +6268,7 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
         issue_mode1_cache_mmio_overlap_read_and_check();
         issue_mode1_invalidate_line_pending_read_and_check();
         issue_mode1_same_line_read_pending_write_and_check();
+        issue_mode1_same_line_mmio_read_pending_write_and_check();
         issue_mode1_invalidate_all_cache_mmio_read_and_check();
         issue_mode1_cache_write_miss_mmio_write_and_check();
         issue_mode1_dirty_victim_mmio_write_and_check();

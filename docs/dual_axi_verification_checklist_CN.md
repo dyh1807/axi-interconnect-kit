@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=182 / open=7。本轮新增 MODE_OFF 同一 upstream write master 两笔
+当前计数：done=183 / open=7。本轮新增 MODE_OFF 同一 upstream write master 两笔
 DDR direct write 的多 ID / out-of-order `B` response actual C++ trace 到实际 RTL
 subsystem 一致性检查，并将 C++ direct write response 路径改为按 master queue
 buffer 外部 `B` response，避免上游 write response 被 hold 时无谓反压外部 `BREADY`；
@@ -40,7 +40,9 @@ write pending/B response held 时 `invalidate_all` 不提前 accepted、外部 M
 到实际 RTL subsystem 一致性检查；并补齐 external MMIO `AR/AW/WVALID` 已经拉起
 但尚未 handshake 时 `invalidate_all` 不能提前 accepted，直到对应 `R/B` 和 upstream
 response 均 retire 后才接受 maintenance 的 pre-handshake actual C++ trace 到实际 RTL
-subsystem 一致性检查；
+subsystem 一致性检查；并补齐 MODE_CACHE 同 64B hazard granule direct MMIO read
+pending write 持续保持时不提前外发 `AW/W` 的 actual C++ trace 到实际 RTL subsystem
+一致性检查；
 并补齐 dual bridge 生产宽度下 DDR cacheline read/write 与 MMIO 32-bit read/write
 并发，以及 DDR cacheline read 与 MMIO 32-bit write 交叉并发、DDR cacheline
 write 与 MMIO 32-bit read 对称交叉并发的 bridge-level bounded formal；继续补入
@@ -861,6 +863,16 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   response 都 retire 后才允许 `invalidate_all` accepted。最新 targeted VCS 目录：
   `rtl/local_debug/vcs_cpp_trace_rw_20260506_103904`；全量 RTL contract 复跑目录：
   `rtl/local_debug/vcs_all_contracts_20260506_103930_mmio_rw`。
+- [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE 同 64B hazard granule
+  direct MMIO read-pending write 约束：已补 MMIO 4B read 发出 `AR` 且 `R` 未返回时，
+  同 granule MMIO 4B write 持续保持的场景；actual C++ trace 与实际 RTL subsystem
+  均要求在观察窗口内不向 DDR/MMIO 发出新的外部 `AR/AW/W`，并最终允许内部 accepted。
+  该 contract 有意不比较该场景的 `ready` 相位细节，避免把 C++ 两阶段 comb 观察点和
+  RTL registered ready 相位差误判为外部协议差异；强约束是 `accepted` 与无外发
+  `AW/W`。最新 targeted VCS 目录：
+  `rtl/local_debug/vcs_cpp_trace_mmio_same_line_20260506_110622`；全量 RTL contract
+  复跑目录：`rtl/local_debug/vcs_all_contracts_20260506_110652_mmio_same_line`，
+  wrapper log 为 `rtl/local_debug/run_all_contracts_mmio_same_line_20260506_110652.log`。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_CACHE `invalidate_all`
   cache-refill + held MMIO read drain 第一组：已补 cacheable read miss/refill 已发
   DDR 64B refill `ARLEN=1`、另一 read master 的 MMIO 4B read 先返回并被 upstream
@@ -1085,7 +1097,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `local_debug/axi_interconnect_dual_port_test_accepted_id_20260505.log`；最新 ctest log：
   `local_debug/ctest_after_accepted_id_20260505.log`。2026-05-06 新增 trace-only
   `invalidate_all` + pending MMIO read/write 组合后再次执行同一 ctest 命令，24/24
-  通过。
+  通过；同日新增同 64B hazard granule direct MMIO read-pending write trace 后又复跑
+  同一 ctest 命令，24/24 通过。
 - [x] Linux/image 级 300k/5M 功能与性能 sanity：父仓库临时适配 cacheability/MMIO
   分类后，large + `CONFIG_BPU` + `../img/linux.bin` 已补跑 300k 与 5M commit。
   之前失败点是约 58,695 commit 后父仓库 MSHR 以 cacheline read 请求
