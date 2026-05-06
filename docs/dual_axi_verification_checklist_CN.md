@@ -1095,9 +1095,17 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `read_data_db_start`，并确认加载 9T20 RVT/LVT 与 data/meta SRAM `.db`。
   后续复核组内模板差异时发现该版本仍显式加入了 `standard.sldb/dw_foundation.sldb`，
   不属于 RTL/filelist、SRAM `.db` 或 QoR/report 输出差异；已修正为不显式设置
-  `synthetic_library`，且 `target_library/link_library` 只包含 9T20 RVT/LVT 与实际
-  data/meta SRAM `.db`。因此 `4ac96ae` 长跑不能作为最终 strict-template signoff，
-  需要用修正后的脚本重新启动 clean full DC。
+  `synthetic_library`，且 `target_library` 只包含 9T20 RVT/LVT，`link_library`
+  包含 9T20 RVT/LVT 与实际 data/meta SRAM `.db`。这样仍满足新增 SRAM `.db` 的需求，
+  同时避免把 hard macro 放入可映射 standard-cell target 集合。此前短暂尝试把 SRAM
+  也加入 `target_library` 时，DC 在 analyze 后加载 target db 阶段直接退出，未进入
+  elaborate，因此不能作为有效长跑。`4ac96ae` 长跑也不能作为最终 strict-template
+  signoff，需要用修正后的脚本重新启动 clean full DC。修正后执行 120s 限时
+  link-sanity probe，run root 为
+  `rtl/dc/runs/link_sanity_probe_strict_template_9t20_20260506_115105_eda10`，
+  结果已越过此前失败点：RVT/LVT target db 均加载完成，出现 `analyze_done` 和
+  `elaborate_start`，随后在 build `axi_llc_subsystem_compat` 阶段因 120s 探针超时退出；
+  该超时符合预期，不是早期配置失败。
 - [x] RTL contract 回归：实际 RTL 改动后已重跑 `rtl/run_all_contracts.sh` 和
   `rtl/run_dual_axi_contracts.sh`；当前通过 53/53 与 4/4。compat signedness cleanup
   后最新全量 RTL contract 53/53 目录为

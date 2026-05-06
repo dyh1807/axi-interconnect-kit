@@ -21,8 +21,9 @@
   `compile_ultra -retime`。当前脚本只应在 RTL/filelist、SMIC12 9T20+SRAM
   `.db` 路径和额外 QoR/输出报告上偏离该模板。
 - 库语义按模板保持收敛：不显式加入额外 `synthetic_library`/DesignWare 库；
-  `target_library` 与 `link_library` 只由 SMIC12 9T20 RVT/LVT 和当前实际 data/meta
-  SRAM `.db` 组成。
+  `target_library` 只由 SMIC12 9T20 RVT/LVT 组成，`link_library` 由 9T20 RVT/LVT
+  加当前实际 data/meta SRAM `.db` 组成。SRAM 是 hard macro，只参与 link/reference
+  解析，不作为可映射的标准单元 target。
 
 ## 快速 link sanity
 
