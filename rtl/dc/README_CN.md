@@ -134,6 +134,12 @@
   link sanity 通过，post-link DDC 已写出；进程仍在运行，RSS 约 `88.9GB`，`eda-09`
   available memory 约 `502GiB`。当前已有 precompile QoR report，但尚无 postcompile
   QoR/timing/area/netlist signoff 产物。
+- 2026-05-07 00:05 CST 复查该 `eda-09` run：进程仍在运行，DC PID `3230092`
+  CPU 约 `99%`，RSS 约 `95.0GB`，`eda-09` available memory 约 `498GiB`。
+  `compile_start` 已在 00:01:53 CST 出现，当前正在执行
+  `compile_ultra -retime`；新增 precompile timing report
+  `reports/axi_llc_subsystem_dual_timing_precompile.rpt`。尚无 postcompile
+  QoR/timing/area/netlist signoff 产物，因此不能标记 DC/timing 完成。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
