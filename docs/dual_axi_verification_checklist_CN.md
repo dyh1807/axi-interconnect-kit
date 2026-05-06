@@ -430,13 +430,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
-  `rtl/local_debug/vcs_all_contracts_seeded_maintenance_20260506_190155_eda-10`。
+  `local_debug/vcs_all_contracts_seeded_maintenance_20260506_190155_eda-10`。
   本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中固定 32 seed 的 MODE_CACHE
   maintenance/recovery suite：实际 C++ 模型生成 `CPP_SEEDED_MAINT_*` 数组，RTL 逐
   seed replay；seed 随机化地址、`ICACHE/DCACHE_R` master 顺序和 `invalidate_all` /
   target-line `invalidate_line`，并检查 accepted 后对应 line miss/refill 或 survivor
   hit/no-external。targeted 目录为
-  `rtl/local_debug/vcs_dual_cpp_trace_seeded_maintenance_20260506_190137_eda-10`。
+  `local_debug/vcs_dual_cpp_trace_seeded_maintenance_20260506_190137_eda-10`。
   本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中 MODE_CACHE
   `ICACHE` + `DCACHE_R` multi-master target-line `invalidate_line` recovery/scope
   trace：两个 read master 先各自填充 clean cache line，只 invalidate second-master

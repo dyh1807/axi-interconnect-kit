@@ -1,0 +1,80 @@
+# Dual AXI 当前目标审计
+
+审计时间：2026-05-06 19:28 CST，主机 `eda-10`。
+
+本文档把当前 active goal 拆成可检查交付项，并记录实际证据。结论：Linux quick
+perf/difftest 和短期 EC category gate 已有证据闭合；DC/timing 尚未闭合，因此整体目标
+不能标记完成。
+
+## 目标拆解
+
+| 要求 | 成功标准 | 当前状态 | 证据 |
+| --- | --- | --- | --- |
+| Linux quick perf/difftest 300k | large + `CONFIG_BPU`，对比 baseline，报告 cycles/IPC/commits/load/store delta | 已通过，exact match | `tools/compare_linux_boot_perf.py --require-exact ../local_logs/dual_axi_ec_20260506/linux_large_bpu_300k_0397b98_prodeq_0dce8d4_20260506_133657.log ../local_logs/dual_axi_ec_20260506/linux_large_bpu_300k_invline_quiescent_20260506_180629.log` |
+| Linux quick perf/difftest 5M | 300k 正常后跑 5M，同样报告性能指标 | 已通过，exact match | `tools/compare_linux_boot_perf.py --require-exact ../local_logs/dual_axi_ec_20260506/linux_large_bpu_5m_0397b98_prodeq_0dce8d4_20260506_133746.log ../local_logs/dual_axi_ec_20260506/linux_large_bpu_5m_invline_quiescent_20260506_180710.log` |
+| C++ unit regression | 当前 C++ reference 测试全通过 | 已通过 24/24 | `local_debug/ctest_invline_cache_mmio_write_20260506_130721.log` |
+| Trace-based C++/RTL EC | 实际 `AXI_Interconnect` 生成 trace，实际 RTL replay | 短期 category gate 已冻结并通过代表场景 | `docs/dual_axi_ec_closure_plan_CN.md`，`local_debug/vcs_dual_cpp_trace_seeded_maintenance_20260506_190137_eda-10/run.log` |
+| RTL contract suite | 全量 contract 通过 | 已通过 53/53 | `local_debug/vcs_all_contracts_seeded_maintenance_20260506_190155_eda-10/driver.log` |
+| hw-cbmc invariant gate | 当前 stable targeted invariant gate 通过 | 已通过 6/6 | `local_debug/hw_cbmc_invariant_gate_20260506_191142.log` |
+| EC 扩展策略 | 避免继续无边界补同类 directed case | 已冻结 | `docs/dual_axi_ec_closure_plan_CN.md`，`docs/dual_axi_verification_checklist_CN.md` |
+| DC 脚本产物保留 | 保留 report/results/QoR/timing/netlist/ddc/svf/sdc/sdf/spf | 脚本已覆盖，等待实际 full DC 产出 | `rtl/dc/run_dual_full_compile_1g.tcl`，`rtl/dc/axi_llc_dc_common.tcl` |
+| DC/timing | eda-10 full DC 使用 9T20 + SMIC12 SRAM，完成后检查 timing/QoR/netlist | 未完成 | `rtl/dc/runs/full_compile_1g_strict_template_9t20_e4a6434_20260506_115655_eda10_live/full_compile_1g.console.log` |
+
+## Linux 指标
+
+300k quick gate：
+
+- cycles `120687 -> 120687`，delta `0`
+- commits `300001 -> 300001`，delta `0`
+- IPC `2.485777 -> 2.485777`，delta `0`
+- loads/stores `40586/51609 -> 40586/51609`
+
+5M gate：
+
+- cycles `2078844 -> 2078844`，delta `0`
+- commits `5000005 -> 5000005`，delta `0`
+- IPC `2.405185 -> 2.405185`，delta `0`
+- loads/stores `530423/921658 -> 530423/921658`
+- L1D AMAT、miss penalty、AXI read latency、LLC->DDR read avg 均 exact match
+
+因此，当前 C++ queue / invalidate-line 相关 production 语义修复没有可观测性能回退。
+后续若 production C++/RTL 再变化，必须重新跑 300k/5M 并用同样口径报告。
+
+## EC 结论
+
+短期 EC 不再继续开放式补同类 directed case。当前闭合依据是：
+
+- deterministic trace matrix 覆盖地址分类、DDR/MMIO 形状、outstanding/ID、same-line
+  AR/AW hazard、lower response 不回压、maintenance drain/recovery、dirty victim 和
+  production-width smoke。
+- 固定 32 seed maintenance/recovery suite 已落地并通过 targeted VCS。
+- 全量 RTL contract 通过 `53/53`。
+- targeted hw-cbmc invariant gate 通过 `6/6`。
+
+仍未声称完成的是“完整 C++ class / RTL top 同 harness 的端到端形式 EC”。该项属于长期
+探索，不作为继续无限补 directed case 的理由。
+
+## DC 状态
+
+当前 full DC：
+
+- run dir：`rtl/dc/runs/full_compile_1g_strict_template_9t20_e4a6434_20260506_115655_eda10_live`
+- 状态：仍在 `elaborate_start` 后的 `axi_llc_subsystem_compat` PRESTO/Building 阶段
+- 进程：`dc_shell` 子进程仍以约 100% CPU 运行，约 28GB RSS
+- 当前已有产物：`outputs/axi_llc_subsystem_dual.svf`
+- 尚未产生 post-compile QoR/timing/area/netlist/ddc 等完整结果
+
+并行 compat link sanity：
+
+- run dir：`rtl/dc/runs/compat_link_sanity_9t20_536c510_20260506_192341_eda10`
+- 状态：仍在 `elaborate_start` 后运行，早期 `read_db/analyze` 已完成，未见路径/库早期错误
+- 该 run 有 `timeout 7200` 限制，用于判断 compat elaborate 是否能在较短窗口内完成
+
+## 下一步
+
+1. 继续等待并定期检查 `full_compile_1g_strict_template_9t20_e4a6434_20260506_115655_eda10_live`。
+2. 先等 `compat_link_sanity_9t20_536c510_20260506_192341_eda10` 的 2h 结果；若 timeout，
+   记录为 compat elaborate bottleneck 的强证据，再决定是否做 compat 参数化切片或 RTL
+   结构整改。
+3. 不再新增 EC directed case，除非发现真实 bug、production 语义变化，或能抽象为新的
+   production helper/formal invariant。

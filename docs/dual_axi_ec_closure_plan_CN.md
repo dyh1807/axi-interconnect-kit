@@ -81,8 +81,8 @@ comb/seq 路径生成 `CPP_SEEDED_MAINT_*` 数组，`tb_axi_llc_subsystem_dual_c
 在 RTL 中 replay。该 suite 当前覆盖随机化地址、`ICACHE/DCACHE_R` master 顺序、
 `invalidate_all` / target-line `invalidate_line`、maintenance accepted 后的 miss/refill
 或 survivor hit/no-external。C++ `ctest` 24/24、targeted VCS
-`rtl/local_debug/vcs_dual_cpp_trace_seeded_maintenance_20260506_190137_eda-10` 和全量
-RTL contract `rtl/local_debug/vcs_all_contracts_seeded_maintenance_20260506_190155_eda-10`
+`local_debug/vcs_dual_cpp_trace_seeded_maintenance_20260506_190137_eda-10` 和全量
+RTL contract `local_debug/vcs_all_contracts_seeded_maintenance_20260506_190155_eda-10`
 均通过。后续只有在发现真实 bug 或矩阵缺口时再扩展 seed 维度。
 
 ## 形式化/不变量 Gate
