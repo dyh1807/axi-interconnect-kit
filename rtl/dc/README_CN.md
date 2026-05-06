@@ -55,6 +55,14 @@
   活跃。因此若后续 full DC 被确认失败或无法接受地长时间无进展，下一步优先做
   `AXI_LLC_DC_TOP=axi_llc_subsystem_compat` 的限时 link sanity/compile 诊断，而不是
   直接重复 full top。
+- 2026-05-06 对 `axi_llc_subsystem_compat` 做静态规模复核：在生产参数
+  `NUM_READ_MASTERS=4`、`READ_RESP_QUEUE_DEPTH=32`、`READ_RESP_BITS=2048` 下，
+  仅 `rd_resp_q_data` 就是 `4*32*2048=262144` bit 的寄存器阵列；compat 内部
+  主要显式寄存器阵列合计约 `338338` bit，且组合逻辑中存在多个对
+  `MAX_OUTSTANDING` / `RD_SLOT_COUNT` / `WR_SLOT_COUNT` / `RD_RESP_SLOT_COUNT`
+  的扫描。因此 compat elaborate/compile 很慢可能是 RTL 结构规模问题，不只是
+  SRAM macro 或库路径问题。若限时 compat link sanity 超时，优先评估 read-response
+  payload queue 的存储方式、深度/宽度拆分和扫描结构，而不是只重复启动 full DC。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10
