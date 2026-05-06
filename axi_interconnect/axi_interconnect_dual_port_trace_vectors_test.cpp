@@ -631,6 +631,9 @@ struct DirtyVictimMmioWriteTrace {
   uint8_t mmio_master = 0;
   bool mmio_bready_while_resp_stalled = false;
   bool ddr_bready_while_resp_stalled = false;
+  bool blocked_while_mmio_resp_held = false;
+  bool blocked_while_cache_resp_held = false;
+  bool accepted_after_resp_retire = false;
 };
 
 struct SameLineReadPendingWriteTrace {
@@ -3935,6 +3938,7 @@ DirtyVictimMmioWriteTrace run_mode1_dirty_victim_mmio_write_trace() {
 
   clear_inputs(dut);
   table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
   dut.axi_mmio_io.b.bvalid = true;
   dut.axi_mmio_io.b.bid = trace.mmio.awid;
   dut.axi_mmio_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
@@ -3944,11 +3948,14 @@ DirtyVictimMmioWriteTrace run_mode1_dirty_victim_mmio_write_trace() {
           "C++ dirty victim/MMIO B was backpressured");
   dut.comb_inputs();
   table_driver.observe(dut);
+  require(!dut.llc_invalidate_all_accepted(),
+          "C++ dirty victim accepted invalidate_all in MMIO B handshake");
   dut.seq();
   ++sim_time;
 
   clear_inputs(dut);
   table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
   dut.comb_outputs();
   dut.comb_inputs();
   table_driver.observe(dut);
@@ -3956,11 +3963,15 @@ DirtyVictimMmioWriteTrace run_mode1_dirty_victim_mmio_write_trace() {
           "C++ dirty victim/MMIO response was not held");
   require(!dut.write_ports[trace.cache_master].resp.valid,
           "C++ dirty victim cache response appeared before victim B");
+  trace.blocked_while_mmio_resp_held = !dut.llc_invalidate_all_accepted();
+  require(trace.blocked_while_mmio_resp_held,
+          "C++ dirty victim accepted invalidate_all while MMIO response held");
   dut.seq();
   ++sim_time;
 
   clear_inputs(dut);
   table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
   dut.axi_ddr_io.b.bvalid = true;
   dut.axi_ddr_io.b.bid = trace.writeback.awid;
   dut.axi_ddr_io.b.bresp = sim_ddr::AXI_RESP_OKAY;
@@ -3970,26 +3981,48 @@ DirtyVictimMmioWriteTrace run_mode1_dirty_victim_mmio_write_trace() {
           "C++ dirty victim DDR B was backpressured");
   dut.comb_inputs();
   table_driver.observe(dut);
+  require(!dut.llc_invalidate_all_accepted(),
+          "C++ dirty victim accepted invalidate_all in victim B handshake");
   dut.seq();
   ++sim_time;
 
-  capture_write_response_with_table(dut, table_driver, trace.mmio,
-                                    trace.mmio_master);
+  clear_inputs(dut);
+  table_driver.drive(dut);
+  dut.set_llc_invalidate_all(true);
+  dut.write_ports[trace.mmio_master].resp.ready = true;
+  dut.comb_outputs();
+  auto &mmio_resp = dut.write_ports[trace.mmio_master].resp;
+  require(mmio_resp.valid,
+          "C++ dirty victim/MMIO response dropped before ready");
+  trace.mmio.resp_id = static_cast<uint8_t>(mmio_resp.id);
+  trace.mmio.resp_code = static_cast<uint8_t>(mmio_resp.resp);
+  dut.comb_inputs();
+  table_driver.observe(dut);
+  require(!dut.llc_invalidate_all_accepted(),
+          "C++ dirty victim accepted invalidate_all before MMIO response retired");
+  dut.seq();
+  ++sim_time;
 
   bool cache_resp_seen = false;
   for (int cycle = 0; cycle < 240 && !cache_resp_seen; ++cycle) {
     clear_inputs(dut);
     table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
     dut.comb_outputs();
     auto &resp = dut.write_ports[trace.cache_master].resp;
     if (resp.valid) {
       cache_resp_seen = true;
       trace.cache.resp_id = static_cast<uint8_t>(resp.id);
       trace.cache.resp_code = static_cast<uint8_t>(resp.resp);
+      trace.blocked_while_cache_resp_held = !dut.llc_invalidate_all_accepted();
+      require(trace.blocked_while_cache_resp_held,
+              "C++ dirty victim accepted invalidate_all while cache response held");
       resp.ready = true;
       dut.comb_outputs();
       require(resp.valid,
               "C++ dirty victim cache response dropped before ready");
+      require(!dut.llc_invalidate_all_accepted(),
+              "C++ dirty victim accepted invalidate_all before cache response retired");
     }
     dut.comb_inputs();
     table_driver.observe(dut);
@@ -3997,6 +4030,21 @@ DirtyVictimMmioWriteTrace run_mode1_dirty_victim_mmio_write_trace() {
     ++sim_time;
   }
   require(cache_resp_seen, "C++ dirty victim cache response timeout");
+
+  for (int retry = 0; retry < 32; ++retry) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_all(true);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    require(!dut.llc_invalidate_all_accepted(),
+            "C++ dirty victim accepted invalidate_all with dirty resident line");
+    dut.seq();
+    ++sim_time;
+  }
+  trace.accepted_after_resp_retire = false;
+  dut.set_llc_invalidate_all(false);
   return trace;
 }
 
@@ -5654,6 +5702,12 @@ void emit_dirty_victim_mmio_write(std::ostream &os,
   emit_write(os, trace.mmio);
   os << "localparam " << trace.mmio.prefix << "_BREADY_STALLED = 1'b"
      << (trace.mmio_bready_while_resp_stalled ? 1 : 0) << ";\n";
+  os << "localparam CPP_MODE1_DIRTY_VICTIM_INVALL_BLOCKED_MMIO_HELD = 1'b"
+     << (trace.blocked_while_mmio_resp_held ? 1 : 0) << ";\n";
+  os << "localparam CPP_MODE1_DIRTY_VICTIM_INVALL_BLOCKED_CACHE_HELD = 1'b"
+     << (trace.blocked_while_cache_resp_held ? 1 : 0) << ";\n";
+  os << "localparam CPP_MODE1_DIRTY_VICTIM_INVALL_ACCEPTED_AFTER_RETIRE = 1'b"
+     << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
 }
 
 void emit_mode2_mapped_local(std::ostream &os,

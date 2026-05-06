@@ -4925,11 +4925,13 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
             @(negedge clk);
             mmio_axi_wready = 1'b0;
 
+            invalidate_all_valid = 1'b1;
             mmio_axi_bid = seen_mmio_awid;
             mmio_axi_bresp = AXI_RESP_OKAY;
             mmio_axi_bvalid = 1'b1;
             #1;
-            if (mmio_axi_bready !== CPP_MODE1_DIRTY_VICTIM_MMIO_BREADY_STALLED) begin
+            if (mmio_axi_bready !== CPP_MODE1_DIRTY_VICTIM_MMIO_BREADY_STALLED ||
+                invalidate_all_accepted) begin
                 fail_now("C++ trace dirty-victim MMIO BREADY mismatch");
             end
             @(posedge clk);
@@ -4939,6 +4941,10 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
             timeout = 160;
             while (!write_resp_valid[CPP_MODE1_DIRTY_VICTIM_MMIO_MASTER] &&
                    (timeout > 0)) begin
+                #1;
+                if (invalidate_all_accepted) begin
+                    fail_now("C++ trace dirty-victim accepted before MMIO response");
+                end
                 @(posedge clk);
                 timeout = timeout - 1;
             end
@@ -4946,12 +4952,18 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
                 write_resp_valid[CPP_MODE1_DIRTY_VICTIM_CACHE_MASTER]) begin
                 fail_now("C++ trace dirty-victim MMIO/cache response owner mismatch");
             end
+            #1;
+            if (invalidate_all_accepted !==
+                    !CPP_MODE1_DIRTY_VICTIM_INVALL_BLOCKED_MMIO_HELD) begin
+                fail_now("C++ trace dirty-victim MMIO held invalidate mismatch");
+            end
 
             ddr_axi_bid = seen_ddr_awid;
             ddr_axi_bresp = AXI_RESP_OKAY;
             ddr_axi_bvalid = 1'b1;
             #1;
-            if (ddr_axi_bready !== CPP_MODE1_DIRTY_VICTIM_WB_BREADY_STALLED) begin
+            if (ddr_axi_bready !== CPP_MODE1_DIRTY_VICTIM_WB_BREADY_STALLED ||
+                invalidate_all_accepted) begin
                 fail_now("C++ trace dirty-victim DDR BREADY mismatch");
             end
             @(posedge clk);
@@ -4962,10 +4974,15 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
             if (write_resp_id[(CPP_MODE1_DIRTY_VICTIM_MMIO_MASTER * ID_BITS) +: ID_BITS] !=
                     CPP_MODE1_DIRTY_VICTIM_MMIO_RESP_ID ||
                 write_resp_code[(CPP_MODE1_DIRTY_VICTIM_MMIO_MASTER * 2) +: 2] !=
-                    CPP_MODE1_DIRTY_VICTIM_MMIO_RESP_CODE) begin
+                    CPP_MODE1_DIRTY_VICTIM_MMIO_RESP_CODE ||
+                invalidate_all_accepted) begin
                 fail_now("C++ trace dirty-victim MMIO response payload mismatch");
             end
             write_resp_ready[CPP_MODE1_DIRTY_VICTIM_MMIO_MASTER] = 1'b1;
+            #1;
+            if (invalidate_all_accepted) begin
+                fail_now("C++ trace dirty-victim accepted before MMIO retire");
+            end
             @(posedge clk);
             @(negedge clk);
             write_resp_ready[CPP_MODE1_DIRTY_VICTIM_MMIO_MASTER] = 1'b0;
@@ -4973,6 +4990,10 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
             timeout = 260;
             while (!write_resp_valid[CPP_MODE1_DIRTY_VICTIM_CACHE_MASTER] &&
                    (timeout > 0)) begin
+                #1;
+                if (invalidate_all_accepted) begin
+                    fail_now("C++ trace dirty-victim accepted before cache response");
+                end
                 @(posedge clk);
                 timeout = timeout - 1;
             end
@@ -4983,12 +5004,31 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
             if (write_resp_id[(CPP_MODE1_DIRTY_VICTIM_CACHE_MASTER * ID_BITS) +: ID_BITS] !=
                     CPP_MODE1_DIRTY_VICTIM_CACHE_WRITE_RESP_ID ||
                 write_resp_code[(CPP_MODE1_DIRTY_VICTIM_CACHE_MASTER * 2) +: 2] !=
-                    CPP_MODE1_DIRTY_VICTIM_CACHE_WRITE_RESP_CODE) begin
+                    CPP_MODE1_DIRTY_VICTIM_CACHE_WRITE_RESP_CODE ||
+                invalidate_all_accepted !==
+                    !CPP_MODE1_DIRTY_VICTIM_INVALL_BLOCKED_CACHE_HELD) begin
                 fail_now("C++ trace dirty-victim cache response payload mismatch");
             end
             write_resp_ready[CPP_MODE1_DIRTY_VICTIM_CACHE_MASTER] = 1'b1;
+            #1;
+            if (invalidate_all_accepted) begin
+                fail_now("C++ trace dirty-victim accepted before cache retire");
+            end
             @(posedge clk);
             @(negedge clk);
+            write_resp_ready[CPP_MODE1_DIRTY_VICTIM_CACHE_MASTER] = 1'b0;
+
+            timeout = 32;
+            while (timeout > 0) begin
+                #1;
+                if (invalidate_all_accepted !==
+                    CPP_MODE1_DIRTY_VICTIM_INVALL_ACCEPTED_AFTER_RETIRE) begin
+                    fail_now("C++ trace dirty-victim final invalidate mismatch");
+                end
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            invalidate_all_valid = 1'b0;
         end
     endtask
 
