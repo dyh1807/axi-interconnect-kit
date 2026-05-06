@@ -47,6 +47,7 @@ tests=(
   "dual_port_resp_mux"
   "dual_port_route_shape"
   "cache_ctrl_dirty_evict_writeback"
+  "cache_ctrl_table_oracle_dirty_evict_then_read"
   "cache_ctrl_partial_write_miss_refill"
   "cache_ctrl_read_miss_refill_response"
   "cache_ctrl_table_oracle_read_miss_refill_then_read"
