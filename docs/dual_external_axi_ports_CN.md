@@ -577,7 +577,9 @@ Linux boot smoke 不能只按退出码、`Difftest: error` 或 `DEADLOCK` 判定
 5M commit gate 都应同时记录并比较 `sim-time(cycle)`、`ipc`、commit/load/store
 计数和关键 memory latency。对 deterministic boot quick gate，若本轮改动理论上不应
 影响性能，则 cycle/IPC 应尽量一致；任何 cycle 上升或 IPC 下降都需要给出百分比和
-原因，超过约 1% 或无法解释时按性能回归处理。
+原因，超过约 1% 或无法解释时按性能回归处理。可用
+`tools/compare_linux_boot_perf.py --require-exact <baseline.log> <current.log>` 比较
+确定性 5M gate；允许微小抖动时使用脚本默认的 1% cycle/IPC 阈值。
 
 - `make default BUILD_DIR=build_dual_axi_default_20260428 -j8`
 - `./build_dual_axi_default_20260428/simulator -c 1000 baremetal/sha-test.bin`
