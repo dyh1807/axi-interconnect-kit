@@ -90,9 +90,10 @@
   `MAX_OUTSTANDING=32` 个共享 pool slot。read-response backing 从旧结构约
   `262656` bit 降至约 `66720` bit，减少约 `195936` bit。全量 RTL contract
   53/53 已通过，目录为
-  `rtl/local_debug/vcs_all_contracts_resp_pool_20260506_201648_eda10`。该修改
-  supersede 此前所有 compat link sanity；下一轮 sanity/DC 必须基于包含 response-pool
-  的 current HEAD 启动。
+  `rtl/local_debug/vcs_all_contracts_resp_pool_idx_cleanup_20260506_202344_eda10`。
+  DC elaborate 早期暴露的新增 pool-index signedness warning 已通过 8-bit pool index
+  类型 cleanup 消除。该修改 supersede 此前所有 compat link sanity；下一轮 sanity/DC
+  必须基于包含 response-pool 和 signedness cleanup 的 current HEAD 启动。
 
 ```sh
 source /centos7/eda-tools/eda-software/synopsys/source-scripts/bash_eda10

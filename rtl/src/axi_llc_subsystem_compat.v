@@ -255,7 +255,7 @@ module axi_llc_subsystem_compat #(
     reg [7:0]                    next_port;
     reg [7:0]                    write_port_w;
     integer                      slot_idx;
-    integer                      pool_slot_idx;
+    reg [7:0]                    pool_slot_idx;
     reg [15:0]                   total_read_outstanding_w;
     reg [15:0]                   total_write_outstanding_w;
     reg                          rd_select_found_w;
@@ -742,7 +742,7 @@ module axi_llc_subsystem_compat #(
         input [ID_BITS-1:0] req_id_value;
         integer depth_idx;
         integer slot_value;
-        integer pool_slot_value;
+        reg [7:0] pool_slot_value;
         integer direct_idx;
         reg [7:0] resp_ptr;
         begin
@@ -1787,7 +1787,7 @@ module axi_llc_subsystem_compat #(
                         rd_resp_pool_valid[pool_slot_idx] <= 1'b1;
                         rd_resp_pool_data[pool_slot_idx] <= core_up_resp_rdata_w;
                         rd_resp_pool_id[pool_slot_idx] <= core_resp_orig_id_w;
-                        rd_resp_q_pool_idx[slot_idx] <= pool_slot_idx[7:0];
+                        rd_resp_q_pool_idx[slot_idx] <= pool_slot_idx;
                         rd_resp_q_tail[core_resp_master_w] <=
                             next_rd_resp_ptr(rd_resp_q_tail[core_resp_master_w]);
                         rd_resp_q_count[core_resp_master_w] <=
@@ -1821,7 +1821,7 @@ module axi_llc_subsystem_compat #(
                         rd_resp_pool_valid[pool_slot_idx] <= 1'b1;
                         rd_resp_pool_data[pool_slot_idx] <= bypass_resp_rdata;
                         rd_resp_pool_id[pool_slot_idx] <= direct_resp_orig_id_w;
-                        rd_resp_q_pool_idx[slot_idx] <= pool_slot_idx[7:0];
+                        rd_resp_q_pool_idx[slot_idx] <= pool_slot_idx;
                         rd_resp_q_tail[direct_resp_master_w] <=
                             next_rd_resp_ptr(rd_resp_q_tail[direct_resp_master_w]);
                         rd_resp_q_count[direct_resp_master_w] <=

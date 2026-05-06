@@ -229,10 +229,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   MSHR valid/status/address/tag/way 等控制状态清零。
 - [x] 2026-05-06 compat read response shared payload pool 复核：`git diff --check`
   通过；全量 RTL contract 53/53 通过，目录
-  `rtl/local_debug/vcs_all_contracts_resp_pool_20260506_201648_eda10`。该修改将
+  `rtl/local_debug/vcs_all_contracts_resp_pool_idx_cleanup_20260506_202344_eda10`。该修改将
   per-master read response FIFO 的 2048-bit payload 存储改为 `MAX_OUTSTANDING=32`
   个共享 pool slot，per-master FIFO 只保存 pool index 和顺序；利用全局 read
   outstanding 上限，把 read-response backing 从约 `262656` bit 降至约 `66720` bit。
+  DC elaborate 早期暴露的新增 pool-index signedness warning 已通过 8-bit pool index
+  类型 cleanup 消除，cleanup 后同样复跑全量 RTL contract 53/53。
 - [x] 2026-05-06 same-master write response queue 复核：targeted VCS
   `tb_axi_llc_subsystem_dual_cpp_trace_contract` 通过，目录
   `rtl/local_debug/vcs_dual_cpp_trace_same_master_write_20260506_020403_eda07`；
