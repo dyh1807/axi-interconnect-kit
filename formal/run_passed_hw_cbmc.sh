@@ -55,6 +55,7 @@ tests=(
   "cache_ctrl_partial_write_hit_merge"
   "cache_ctrl_table_oracle_write_then_read"
   "cache_ctrl_invalidate_line_hit"
+  "cache_ctrl_table_oracle_invalidate_then_read_miss"
   "dual_bridge_read_route"
   "dual_bridge_read_r_response"
   "dual_bridge_write_route"

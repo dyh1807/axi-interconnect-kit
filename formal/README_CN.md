@@ -20,7 +20,7 @@ formal/run_passed_hw_cbmc.sh
 ```
 
 该入口当前默认设置 `HW_CBMC_TIMEOUT_SEC=600`，只包含已能返回
-`VERIFICATION SUCCESSFUL` 的项目。2026-05-06 当前 stable manifest 为 82 项；
+`VERIFICATION SUCCESSFUL` 的项目。2026-05-07 当前 stable manifest 为 83 项；
 其中前 71 项已有 split-run 证据：
 `local_debug/run_passed_hw_cbmc_manifest71_20260505_144134.log` 完成前 20 项，
 并在第 21 项本体已 `VERIFICATION SUCCESSFUL` 后因旧 240s wrapper timeout 退出；
@@ -43,7 +43,10 @@ table-oracle shadow row proof 原型，targeted logs 包括
 `local_debug/hw_cbmc_cache_ctrl_table_oracle_write_then_read_20260506_233439.log` 和
 `local_debug/hw_cbmc_cache_ctrl_table_oracle_read_miss_refill_then_read_20260506.log`、
 `local_debug/hw_cbmc_cache_ctrl_table_oracle_partial_write_miss_refill_then_read_20260506.log`。
-当前 `formal/*/run_hw_cbmc.sh` 共有 84 个入口，未纳入 stable manifest 的 2 个入口
+2026-05-07 继续新增 `formal/cache_ctrl_table_oracle_invalidate_then_read_miss`，targeted
+log 为
+`local_debug/hw_cbmc_cache_ctrl_table_oracle_invalidate_then_read_miss_20260507.log`。
+当前 `formal/*/run_hw_cbmc.sh` 共有 85 个入口，未纳入 stable manifest 的 2 个入口
 已明确归类为 experimental/non-stable，见下方“非稳定实验入口”。它们不作为当前生产
 RTL 失败结论，也不应在未收敛前加入 `formal/run_passed_hw_cbmc.sh`。
 
@@ -1637,6 +1640,38 @@ formal/cache_ctrl_invalidate_line_hit/run_hw_cbmc.sh
 - 不覆盖 pending MSHR/victim hazard；这些由 subsystem trace/VCS contract 覆盖。
 - 不覆盖 `invalidate_all` dirty-line blocked 语义；该语义依赖 subsystem/core 级 drain
   与 dirty resident state。
+
+### `formal/cache_ctrl_table_oracle_invalidate_then_read_miss`
+
+状态：已通过，并已计入 `formal/run_passed_hw_cbmc.sh`。
+
+运行：
+
+```sh
+formal/cache_ctrl_table_oracle_invalidate_then_read_miss/run_hw_cbmc.sh
+```
+
+实际生产对象：
+
+- `rtl/src/llc_cache_ctrl.v`
+- 消费者：`rtl/src/axi_llc_subsystem_core.v`
+
+覆盖范围：
+
+- 直接实例化生产 cache-control FSM，formal top 在 data/meta/valid/repl 表边界提供
+  一个 tracked set 的 shadow row oracle。
+- 初始 tracked set 中 way0 为 clean valid hit；`invalidate_line` 被接受后，proof
+  观测 actual valid 表写口并更新 shadow valid bits。
+- 后续同地址 read 不得命中旧 line，必须发 lower-memory refill read。
+- refill response 后，proof 观测实际 data/meta/valid/repl 写表端口并检查 upstream
+  read response 返回 refill line。
+
+明确不覆盖：
+
+- 不证明 store primitive 自身的 latency、mask 和同 set read/write corner；这些应由
+  独立 store proof 或 VCS contract 负责。
+- 不实例化完整 native dual top 和 DDR AXI bridge。
+- 不替代 C++/RTL trace-based 功能 EC，只补强真实 RTL table 边界的形式 cutpoint。
 
 ## 已通过的 actual bridge bounded smoke
 

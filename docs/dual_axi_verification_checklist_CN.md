@@ -383,8 +383,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   最新 targeted VCS 目录：`rtl/local_debug/vcs_llc_cache_cpp_trace_dvpw_20260504_081121`。
   该项是 trace-based 功能 EC，meta/valid/repl 只做 C++ 抽象表项到 RTL row encoding
   的接口适配。
-- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 82 项；
-  `formal/*/run_hw_cbmc.sh` 当前共有 84 个入口，其中 2 个实验/未收敛入口暂未纳入
+- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 83 项；
+  `formal/*/run_hw_cbmc.sh` 当前共有 85 个入口，其中 2 个实验/未收敛入口暂未纳入
   稳定 manifest。原 68/68 已有 split-run 通过证据。前 20 项见
   `local_debug/run_passed_hw_cbmc_after_ddr_write_mmio_read_20260504_202454.log`；
   该 log 在 `dual_bridge_prod_width_ddr_read_mmio_write_independent` 处因默认 240s
@@ -733,6 +733,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   的 side-effect safety 仍由 `tb_llc_cache_ctrl_cpp_trace_contract` 直接覆盖，最近一次
   targeted VCS 目录为
   `rtl/local_debug/vcs_llc_cache_ctrl_cpp_trace_invline_formal_boundary_20260506_133152_eda10`。
+- [x] actual cache-control table-oracle invalidate then read miss bounded formal：
+  `formal/cache_ctrl_table_oracle_invalidate_then_read_miss/run_hw_cbmc.sh` 当前通过；
+  直接实例化实际 `llc_cache_ctrl.v`，在 data/meta/valid/repl 表边界使用 tracked set
+  shadow row，覆盖 `invalidate_line` valid clear 后，同地址 read 必须 miss 并发
+  lower-memory refill read，不能继续命中旧 line。targeted log 为
+  `local_debug/hw_cbmc_cache_ctrl_table_oracle_invalidate_then_read_miss_20260507.log`。
 - [x] actual native dual subsystem MMIO read-route bounded formal：
   `formal/subsystem_dual_mmio_read_route/run_hw_cbmc.sh` 当前通过；直接实例化实际
   `axi_llc_subsystem_dual.v`，覆盖 4B MMIO read 被接受后只向 MMIO `AR` 发出，且
@@ -871,6 +877,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 - [x] `formal/cache_ctrl_table_oracle_write_then_read`：actual `llc_cache_ctrl.v`
   table-oracle/state-IO bounded smoke，覆盖 tracked set shadow row 下 partial write
   hit 后同地址 read 必须返回 merge 后数据，不展开整张 cache table。
+- [x] `formal/cache_ctrl_table_oracle_invalidate_then_read_miss`：actual
+  `llc_cache_ctrl.v` table-oracle/state-IO bounded smoke，覆盖 tracked set shadow row
+  下 invalidate valid clear 后同地址 read 必须 miss/refill。
 - [x] `formal/dual_bridge_read_route`：actual bridge/dual-bridge 小参数 bounded
   read-route smoke，覆盖 supported DDR/MMIO read 被接受后只能向对应 `AR` 口发出。
 - [x] `formal/dual_bridge_read_r_response`：actual bridge/dual-bridge 小参数 bounded
@@ -976,8 +985,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 ## 待继续收敛的生产边界
 
 - [x] 未纳入稳定 manifest 的 formal 入口已按优先级分流：
-  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 82 个稳定入口，`formal/*/run_hw_cbmc.sh`
-  当前共有 84 个入口，剩余未纳入入口为
+  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 83 个稳定入口，`formal/*/run_hw_cbmc.sh`
+  当前共有 85 个入口，剩余未纳入入口为
   `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response` 和
   `formal/subsystem_core_dirty_evict_writeback` 两项；二者均已明确归类为
   experimental/non-stable，不计入稳定回归缺口。dual bridge production-width

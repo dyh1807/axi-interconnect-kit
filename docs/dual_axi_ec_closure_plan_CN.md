@@ -122,19 +122,22 @@ data/meta/valid/repl 表作为 PI/PO 展开，而应采用 table-oracle / state-
 - store primitive 的 latency/mask 行为仍由独立 proof 或 VCS contract 负责。
 
 具体规划见 [formal_table_oracle_cutpoints_CN.md](formal_table_oracle_cutpoints_CN.md)。
-2026-05-06 已落地四个原型：`formal/cache_ctrl_table_oracle_write_then_read` 证明
+2026-05-06/07 已落地五个原型：`formal/cache_ctrl_table_oracle_write_then_read` 证明
 partial write hit 后同地址 read 返回 merge 后数据；
 `formal/cache_ctrl_table_oracle_read_miss_refill_then_read` 证明 read miss
 refill/install 后同地址 read 返回 refill data；
 `formal/cache_ctrl_table_oracle_partial_write_miss_refill_then_read` 证明 partial write
 miss refill/merge/install 后同地址 read 返回 merge 后数据；
 `formal/cache_ctrl_table_oracle_dirty_evict_then_read` 证明 dirty victim writeback 后
-install/post-B hit。四者都直接实例化实际
+install/post-B hit；
+`formal/cache_ctrl_table_oracle_invalidate_then_read_miss` 证明 invalidate valid clear 后
+同地址 read 必须 miss/refill。五者都直接实例化实际
 `llc_cache_ctrl.v`，在 table 边界使用 tracked set shadow row。targeted logs 包括
 `local_debug/hw_cbmc_cache_ctrl_table_oracle_dirty_evict_then_read_20260506.log`、
 `local_debug/hw_cbmc_cache_ctrl_table_oracle_write_then_read_20260506_233439.log` 和
 `local_debug/hw_cbmc_cache_ctrl_table_oracle_read_miss_refill_then_read_20260506.log`、
-`local_debug/hw_cbmc_cache_ctrl_table_oracle_partial_write_miss_refill_then_read_20260506.log`。
+`local_debug/hw_cbmc_cache_ctrl_table_oracle_partial_write_miss_refill_then_read_20260506.log`、
+`local_debug/hw_cbmc_cache_ctrl_table_oracle_invalidate_then_read_miss_20260507.log`。
 该方向是后续结构化补强，不是重新打开 directed case 笛卡尔积。
 
 ## Linux / Performance Gate
