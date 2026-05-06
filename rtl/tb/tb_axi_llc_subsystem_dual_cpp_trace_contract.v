@@ -5312,6 +5312,25 @@ module tb_axi_llc_subsystem_dual_cpp_trace_contract;
                 timeout = timeout - 1;
             end
             invalidate_all_valid = 1'b0;
+
+            invalidate_line_addr = CPP_MODE1_DIRTY_VICTIM_INVLINE_ADDR;
+            invalidate_line_valid = 1'b1;
+            timeout = 260;
+            accepted_seen = 1'b0;
+            while (!accepted_seen && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (invalidate_line_accepted) begin
+                    accepted_seen = 1'b1;
+                end
+                timeout = timeout - 1;
+            end
+            if (accepted_seen !==
+                CPP_MODE1_DIRTY_VICTIM_INVLINE_ACCEPTED_AFTER_RETIRE) begin
+                fail_now("C++ trace dirty-victim invalidate_line final mismatch");
+            end
+            invalidate_line_valid = 1'b0;
+            invalidate_line_addr = {ADDR_BITS{1'b0}};
         end
     endtask
 

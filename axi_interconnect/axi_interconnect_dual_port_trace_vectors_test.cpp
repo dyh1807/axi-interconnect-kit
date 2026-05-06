@@ -634,6 +634,8 @@ struct DirtyVictimMmioWriteTrace {
   bool blocked_while_mmio_resp_held = false;
   bool blocked_while_cache_resp_held = false;
   bool accepted_after_resp_retire = false;
+  uint32_t invalidate_line_addr = 0;
+  bool invalidate_line_accepted_after_resp_retire = false;
 };
 
 struct SameLineReadPendingWriteTrace {
@@ -4103,6 +4105,7 @@ DirtyVictimMmioWriteTrace run_mode1_dirty_victim_mmio_write_trace() {
   const auto cache_data = line_write_data(0x71000000u);
   trace.cache.req_wdata = wide_write_words(cache_data);
   trace.cache.req_wstrb = write_strobe_mask(setup_strobe);
+  trace.invalidate_line_addr = trace.cache.req_addr;
 
   trace.writeback.prefix = "CPP_MODE1_DIRTY_VICTIM_WB";
   trace.writeback.req_addr = trace.setup0.req_addr;
@@ -4300,6 +4303,25 @@ DirtyVictimMmioWriteTrace run_mode1_dirty_victim_mmio_write_trace() {
   }
   trace.accepted_after_resp_retire = false;
   dut.set_llc_invalidate_all(false);
+
+  bool invalidate_line_accepted = false;
+  for (int retry = 0; retry < 96 && !invalidate_line_accepted; ++retry) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    dut.set_llc_invalidate_line(true, trace.invalidate_line_addr);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    if (dut.llc_invalidate_line_accepted()) {
+      invalidate_line_accepted = true;
+    }
+    dut.seq();
+    ++sim_time;
+  }
+  trace.invalidate_line_accepted_after_resp_retire = invalidate_line_accepted;
+  require(invalidate_line_accepted,
+          "C++ dirty victim invalidate_line did not accept after drain");
+  dut.set_llc_invalidate_line(false, 0);
   return trace;
 }
 
@@ -5963,6 +5985,10 @@ void emit_dirty_victim_mmio_write(std::ostream &os,
      << (trace.blocked_while_cache_resp_held ? 1 : 0) << ";\n";
   os << "localparam CPP_MODE1_DIRTY_VICTIM_INVALL_ACCEPTED_AFTER_RETIRE = 1'b"
      << (trace.accepted_after_resp_retire ? 1 : 0) << ";\n";
+  os << "localparam CPP_MODE1_DIRTY_VICTIM_INVLINE_ADDR = "
+     << hex_u32(trace.invalidate_line_addr) << ";\n";
+  os << "localparam CPP_MODE1_DIRTY_VICTIM_INVLINE_ACCEPTED_AFTER_RETIRE = 1'b"
+     << (trace.invalidate_line_accepted_after_resp_retire ? 1 : 0) << ";\n";
 }
 
 void emit_mode2_mapped_local(std::ostream &os,

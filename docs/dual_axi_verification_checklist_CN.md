@@ -4,7 +4,7 @@
 contract 的覆盖进度。原则是：放进 formal 的对象必须来自实际生产路径，不能使用单独
 重写的 formal-only 逻辑替代生产 RTL/C helper。
 
-当前计数：done=190 / open=2。本轮新增 actual `llc_cache_ctrl.v`
+当前计数：done=191 / open=2。本轮新增 actual `llc_cache_ctrl.v`
 `invalidate_line` hit bounded formal，证明 accepted 后在 bounded window 内出现与 C++
 trace 对齐的 valid clear payload；side-effect safety 仍由实际 RTL VCS trace contract
 覆盖。本轮新增 MODE_CACHE `invalidate_line` 与 cacheable
@@ -1021,7 +1021,9 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   本轮继续补齐 target-line `invalidate_line` 与 cacheable write miss/refill + MMIO write
   同时在途时的 drain/recovery 组合；
   本轮继续补齐 dirty victim writeback + pending MMIO write + `invalidate_all`
-  同时存在时的 drain/blocked 组合；
+  同时存在时的 drain/blocked 组合；本轮继续补齐同一路径 drain 后 targeted dirty
+  resident line `invalidate_line` 可被 accepted 的 C++/RTL 对齐检查，最新 targeted VCS
+  目录：`rtl/local_debug/vcs_dual_cpp_trace_dirty_victim_invline_20260506_134755_eda10`；
   后续主要剩更长随机 trace，以及更高覆盖度的 multi-master/multi-outstanding
   maintenance/recovery 组合。
 - [x] 实际 C++ `AXI_Interconnect` trace-based EC 的 MODE_OFF DDR/MMIO 并发第一组：
@@ -1311,6 +1313,18 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `../local_logs/dual_axi_ec_20260506/linux_large_bpu_300k_605012b_20260506_124549.log`，
   结果为退出码 0、300001 commit、120687 cycles、IPC 2.485777、load/store
   40586/51609、L1D AMAT 2.776803；与 `0dce8d4` 300k baseline 完全一致。
+  2026-05-06 submodule 继续推进到 `0397b98` 后仍只新增 trace/formal/TB/docs/DC
+  脚本，不改变 production simulator 路径；用同一 large+BPU binary 再跑 300k 与
+  5M gate。300k log：
+  `../local_logs/dual_axi_ec_20260506/linux_large_bpu_300k_0397b98_prodeq_0dce8d4_20260506_133657.log`，
+  对照 `a9ee8e8` baseline，结果同为 300001 commit、120687 cycles、IPC 2.485777。
+  5M log：
+  `../local_logs/dual_axi_ec_20260506/linux_large_bpu_5m_0397b98_prodeq_0dce8d4_20260506_133746.log`，
+  对照 `../local_logs/dual_axi_ec_20260506/linux_large_bpu_5m_a9ee8e8_20260506_102229.log`，
+  两者同为退出码 0、5000005 commit、2078844 cycles、IPC 2.405185、load/store
+  530423/921658；L1D AMAT 2.373202、L1D miss penalty 61.364674 cycles、
+  LLC->DDR read avg 52.000000 cycles 也完全一致，因此本轮 cycle delta=0、IPC
+  delta=0，未出现可观测性能回退。
   后续所有 Linux 5M 或更长 boot gate 都必须沿用这个判定标准：不允许只报告
   pass/error，必须同时给出 cycles、IPC 及相对 baseline 的 delta；若当前改动理论上不应
   影响性能，任何非零 cycle/IPC 差异都需要先解释来源，再决定是否接受。
