@@ -1237,6 +1237,13 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   partial write miss/refill/MMIO write direct-bypass、MODE_CACHE dirty victim/MMIO
   write direct-bypass 已由 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 覆盖；后续如继续
   扩展，应优先做随机 trace 和更复杂 maintenance/recovery 与并发请求组合。
+- [x] 实际 C++ LLC/AXI integration stress：2026-05-06 直接运行
+  `./build_dual_axi_scope_20260428/axi_interconnect_llc_axi4_test`，29/29 pass，覆盖
+  seeded small-depth stress、seeded mixed read/write coherence stress、seeded
+  invalidate-all epoch stress，以及 `invalidate_line` same-cycle upstream write /
+  bypass-write hazard。log 位于 `/tmp/axi_interconnect_llc_axi4_test_20260506_164634.log`。
+  该项证明当前实际 C++ golden reference 自身语义自洽，但不替代下一项 C++/RTL 同
+  harness EC。
 - [ ] 实际 C++ request/response 状态机 vs RTL bridge/subsystem 的 hw-cbmc 同 harness
   bounded EC：当前已有 trace-based 功能 EC，但还没有把实际 C++ 对象和实际 RTL top
   放进同一个 hw-cbmc harness；后续需要解决 C++ 标准库/frontend 接入或建立可复用的
