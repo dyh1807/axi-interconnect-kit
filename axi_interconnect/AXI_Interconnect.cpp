@@ -798,6 +798,9 @@ void AXI_Interconnect::init() {
     llc_upstream_req[i] = {};
     llc_upstream_capture_c[i] = {};
     llc_upstream_accept_c[i] = false;
+    llc_read_resp_valid_[i] = false;
+    llc_read_resp_data_[i].clear();
+    llc_read_resp_id_[i] = 0;
   }
   for (int i = 0; i < NUM_WRITE_MASTERS; ++i) {
     llc_upstream_write_req[i] = {};
@@ -886,6 +889,7 @@ void AXI_Interconnect::init() {
     w_resp_id[i] = 0;
     w_resp_resp[i] = 0;
     w_resp_queue[i].clear();
+    llc_write_resp_delay[i].clear();
     write_req_accepted[i] = false;
   }
 
@@ -1038,6 +1042,11 @@ bool AXI_Interconnect::llc_path_quiescent() const {
   }
   for (int master = 0; master < NUM_READ_MASTERS; ++master) {
     if (req_ready_r[master] || read_req_hold[master].valid) {
+      return false;
+    }
+  }
+  for (int master = 0; master < NUM_READ_MASTERS; ++master) {
+    if (llc_read_resp_valid_[master]) {
       return false;
     }
   }
@@ -1426,6 +1435,10 @@ bool AXI_Interconnect::has_read_id_conflict(uint8_t master_id,
     if (llc_upstream_req[master_id].valid && llc_upstream_req[master_id].id == orig_id) {
       return true;
     }
+    if (llc_read_resp_valid_[master_id] &&
+        llc_read_resp_id_[master_id] == orig_id) {
+      return true;
+    }
     if (llc.io.regs.read_resp_valid_r[master_id] &&
         llc.io.regs.read_resp_id_r[master_id] == orig_id) {
       return true;
@@ -1525,8 +1538,13 @@ void AXI_Interconnect::prepare_llc_inputs(bool sample_upstream_ready) {
       llc.io.ext_in.upstream.read_req[master].mode2_ddr_aligned =
           llc_core_req_stage_.read.mode2_ddr_aligned;
     }
+    // RTL compat adds a registered response boundary after the LLC core. The
+    // C++ core keeps fresh responses visible for one full cycle; consume them
+    // into the compat boundary only after that fresh cycle and only when the
+    // boundary slot is free.
     llc.io.ext_in.upstream.read_resp[master].ready =
-        sample_upstream_ready && read_ports[master].resp.ready &&
+        sample_upstream_ready && !llc_read_resp_valid_[master] &&
+        !llc.io.regs.read_resp_fresh_r[master] &&
         !has_direct_read_response(static_cast<uint8_t>(master));
     if (llc_resp_trace_active() && master == MASTER_DCACHE_R &&
         (read_ports[master].resp.ready ||
@@ -1565,8 +1583,8 @@ void AXI_Interconnect::prepare_llc_inputs(bool sample_upstream_ready) {
           llc_core_req_stage_.write.mode2_ddr_aligned;
     }
     llc.io.ext_in.upstream.write_resp[master].ready =
-        sample_upstream_ready && write_ports[master].resp.ready &&
-        !w_resp_valid[master];
+        sample_upstream_ready && !w_resp_valid[master] &&
+        llc_write_resp_delay[master].size() < 2;
   }
 
   llc.io.ext_in.mem.prefetch_allow =
@@ -1696,9 +1714,9 @@ void AXI_Interconnect::comb_outputs() {
   if (llc_enabled()) {
     for (int i = 0; i < NUM_READ_MASTERS; ++i) {
       if (!read_ports[i].resp.valid) {
-        read_ports[i].resp.valid = llc.io.ext_out.upstream.read_resp[i].valid;
-        read_ports[i].resp.data = llc.io.ext_out.upstream.read_resp[i].data;
-        read_ports[i].resp.id = llc.io.ext_out.upstream.read_resp[i].id;
+        read_ports[i].resp.valid = llc_read_resp_valid_[i];
+        read_ports[i].resp.data = llc_read_resp_data_[i];
+        read_ports[i].resp.id = llc_read_resp_id_[i];
       }
       if (llc_resp_trace_active() && i == MASTER_DCACHE_R &&
           (read_ports[i].resp.valid || read_ports[i].resp.ready)) {
@@ -1716,9 +1734,9 @@ void AXI_Interconnect::comb_outputs() {
         write_ports[i].resp.id = w_resp_id[i];
         write_ports[i].resp.resp = w_resp_resp[i];
       } else {
-        write_ports[i].resp.valid = llc.io.ext_out.upstream.write_resp[i].valid;
-        write_ports[i].resp.id = llc.io.ext_out.upstream.write_resp[i].id;
-        write_ports[i].resp.resp = llc.io.ext_out.upstream.write_resp[i].resp;
+        write_ports[i].resp.valid = false;
+        write_ports[i].resp.id = 0;
+        write_ports[i].resp.resp = 0;
       }
     }
   }
@@ -3038,26 +3056,67 @@ void AXI_Interconnect::seq() {
   // ========== Write Channel ==========
 
   if (llc_enabled()) {
-    // LLC read-response ownership lives entirely inside AXI_LLC::comb().
-    // Duplicating retirement here races with same-cycle slot reuse once a
-    // master can keep multiple misses in flight, and can erase a fresh
-    // response before llc.seq() commits it.
+    bool llc_read_resp_accept[NUM_READ_MASTERS] = {};
+    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+      const bool direct_resp_displayed = has_direct_read_response(static_cast<uint8_t>(i));
+      const bool compat_resp_displayed =
+          llc_read_resp_valid_[i] && read_ports[i].resp.valid &&
+          read_ports[i].resp.ready && !direct_resp_displayed &&
+          static_cast<uint8_t>(read_ports[i].resp.id) == llc_read_resp_id_[i];
+      if (compat_resp_displayed) {
+        llc_read_resp_valid_[i] = false;
+        llc_read_resp_data_[i].clear();
+        llc_read_resp_id_[i] = 0;
+      }
+      llc_read_resp_accept[i] =
+          llc.io.ext_out.upstream.read_resp[i].valid &&
+          llc.io.ext_in.upstream.read_resp[i].ready &&
+          !llc.io.regs.read_resp_fresh_r[i];
+    }
+
     for (int i = 0; i < NUM_WRITE_MASTERS; ++i) {
       if (w_resp_valid[i] && write_ports[i].resp.ready) {
         w_resp_valid[i] = false;
         w_resp_id[i] = 0;
         w_resp_resp[i] = 0;
-      } else if (llc.io.regs.write_resp_valid_r[i] &&
-                 write_ports[i].resp.ready) {
+      }
+      for (auto &entry : llc_write_resp_delay[i]) {
+        if (entry.age < 1) {
+          entry.age++;
+        }
+      }
+      if (!llc_write_resp_delay[i].empty() &&
+          llc_write_resp_delay[i].front().age >= 1 && !w_resp_valid[i]) {
+        const auto entry = llc_write_resp_delay[i].front().entry;
+        llc_write_resp_delay[i].pop_front();
+        enqueue_write_resp(static_cast<uint8_t>(i), entry.id, entry.resp);
+      }
+      if (llc.io.ext_out.upstream.write_resp[i].valid &&
+          llc.io.ext_in.upstream.write_resp[i].ready) {
+        llc_write_resp_delay[i].push_back(DelayedWriteRespEntry{
+            WriteRespEntry{
+                static_cast<uint8_t>(llc.io.ext_out.upstream.write_resp[i].id),
+                static_cast<uint8_t>(llc.io.ext_out.upstream.write_resp[i].resp)},
+            0});
         llc.io.reg_write.write_resp_valid_r[i] = false;
         llc.io.reg_write.write_resp_id_r[i] = 0;
         llc.io.reg_write.write_resp_code_r[i] = 0;
+        llc.io.reg_write.write_resp_line_addr_r[i] = 0;
       }
       if (!write_size_supported(write_ports[i].req.total_size)) {
         continue;
       }
     }
     promote_write_resp_queue();
+
+    for (int i = 0; i < NUM_READ_MASTERS; ++i) {
+      if (llc_read_resp_accept[i]) {
+        llc_read_resp_valid_[i] = true;
+        llc_read_resp_data_[i] = llc.io.ext_out.upstream.read_resp[i].data;
+        llc_read_resp_id_[i] =
+            static_cast<uint8_t>(llc.io.ext_out.upstream.read_resp[i].id);
+      }
+    }
 
     for (int k = 0; k < NUM_WRITE_MASTERS; ++k) {
       const int idx = (w_arb_rr_idx + k) % NUM_WRITE_MASTERS;

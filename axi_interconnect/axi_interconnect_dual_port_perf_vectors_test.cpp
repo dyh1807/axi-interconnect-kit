@@ -28,6 +28,16 @@ namespace {
 constexpr int kReadLatency = 2;
 constexpr int kWriteRespLatency = 2;
 constexpr int kMaxCycles = 80;
+constexpr uint32_t kCacheSetCount = 2048;
+constexpr uint32_t kCacheWayCount = 2;
+constexpr uint32_t kCacheLineBytes = 64;
+constexpr uint32_t kLlcHitReadAddr = 0x40005000u;
+constexpr uint32_t kLlcHitWriteAddr = 0x40005000u;
+constexpr uint32_t kLlcMissReadAddr = 0x40006000u;
+constexpr uint8_t kLlcHitFillId = 1;
+constexpr uint8_t kLlcHitReadId = 12;
+constexpr uint8_t kLlcMissReadId = 13;
+constexpr uint8_t kLlcHitWriteId = 14;
 
 enum class PerfPort : uint8_t {
   DDR = 0,
@@ -90,6 +100,15 @@ struct WriteResp {
 
 struct ScenarioResult {
   Scenario scenario;
+  std::map<std::string, int> cycles;
+};
+
+struct LlcHitPerfResult {
+  std::map<std::string, int> cycles;
+  bool no_external_issue = true;
+};
+
+struct LlcMissPerfResult {
   std::map<std::string, int> cycles;
 };
 
@@ -165,6 +184,165 @@ axi_interconnect::WideWriteStrb_t word_strobe() {
   return strobe;
 }
 
+axi_interconnect::AXI_LLC_Bytes_t zero_llc_bytes(size_t bytes) {
+  axi_interconnect::AXI_LLC_Bytes_t out{};
+  out.resize(bytes);
+  return out;
+}
+
+axi_interconnect::AXI_LLC_Bytes_t repl_payload(uint32_t way) {
+  axi_interconnect::AXI_LLC_Bytes_t out{};
+  out.resize(axi_interconnect::AXI_LLC_REPL_BYTES);
+  if (out.size() != 0) {
+    out.data()[0] = static_cast<uint8_t>(way & 0xffu);
+  }
+  return out;
+}
+
+class StatefulLlcTableDriver {
+public:
+  explicit StatefulLlcTableDriver(const axi_interconnect::AXI_LLCConfig &cfg)
+      : cfg_(cfg) {
+    reset();
+  }
+
+  void drive(axi_interconnect::AXI_Interconnect &dut) {
+    dut.set_llc_lookup_in(pending_valid_ ? pending_
+                                         : axi_interconnect::AXI_LLC_LookupIn_t{});
+    pending_valid_ = false;
+  }
+
+  void observe(const axi_interconnect::AXI_Interconnect &dut) {
+    const auto &out = dut.get_llc_table_out();
+    if (out.invalidate_all) {
+      reset();
+      return;
+    }
+
+    if (out.data.enable && out.data.write) {
+      apply_way_write(row(out.data.index).data, out.data.way, cfg_.line_bytes,
+                      out.data.payload, out.data.byte_enable);
+    }
+    if (out.meta.enable && out.meta.write) {
+      apply_way_write(row(out.meta.index).meta, out.meta.way,
+                      axi_interconnect::AXI_LLC_META_ENTRY_BYTES,
+                      out.meta.payload, out.meta.byte_enable);
+    }
+    if (out.valid.enable && out.valid.write) {
+      apply_valid_write(row(out.valid.index).valid, out.valid.way,
+                        out.valid.payload);
+    }
+    if (out.repl.enable && out.repl.write) {
+      apply_payload(row(out.repl.index).repl, 0, out.repl.payload,
+                    out.repl.byte_enable);
+    }
+
+    if (!out.data.enable || out.data.write || !out.meta.enable ||
+        out.meta.write || !out.valid.enable || out.valid.write ||
+        !out.repl.enable || out.repl.write) {
+      return;
+    }
+    pending_ = lookup_row(out.data.index);
+    pending_valid_ = true;
+  }
+
+private:
+  struct Row {
+    axi_interconnect::AXI_LLC_Bytes_t data{};
+    axi_interconnect::AXI_LLC_Bytes_t meta{};
+    axi_interconnect::AXI_LLC_Bytes_t valid{};
+    axi_interconnect::AXI_LLC_Bytes_t repl{};
+  };
+
+  void reset() {
+    rows_.assign(cfg_.set_count(), Row{});
+    for (auto &entry : rows_) {
+      entry.data =
+          zero_llc_bytes(static_cast<size_t>(cfg_.ways) * cfg_.line_bytes);
+      entry.meta = zero_llc_bytes(static_cast<size_t>(cfg_.ways) *
+                                  axi_interconnect::AXI_LLC_META_ENTRY_BYTES);
+      entry.valid =
+          zero_llc_bytes(axi_interconnect::AXI_LLC::valid_row_bytes(cfg_));
+      entry.repl = repl_payload(0);
+    }
+    pending_ = {};
+    pending_valid_ = false;
+  }
+
+  Row &row(uint32_t index) {
+    require(!rows_.empty(), "C++ stateful LLC table has no rows");
+    return rows_[index % rows_.size()];
+  }
+
+  const Row &row(uint32_t index) const {
+    require(!rows_.empty(), "C++ stateful LLC table has no rows");
+    return rows_[index % rows_.size()];
+  }
+
+  static void apply_payload(axi_interconnect::AXI_LLC_Bytes_t &target,
+                            size_t offset,
+                            const axi_interconnect::AXI_LLC_Bytes_t &payload,
+                            const std::vector<uint8_t> &byte_enable) {
+    for (size_t idx = 0; idx < payload.size(); ++idx) {
+      if (offset + idx >= target.size()) {
+        break;
+      }
+      const bool enabled =
+          byte_enable.empty() ||
+          (idx < byte_enable.size() && byte_enable[idx] != 0);
+      if (enabled) {
+        target.data()[offset + idx] = payload.data()[idx];
+      }
+    }
+  }
+
+  static void apply_way_write(axi_interconnect::AXI_LLC_Bytes_t &target,
+                              uint32_t way, uint32_t way_bytes,
+                              const axi_interconnect::AXI_LLC_Bytes_t &payload,
+                              const std::vector<uint8_t> &byte_enable) {
+    apply_payload(target, static_cast<size_t>(way) * way_bytes, payload,
+                  byte_enable);
+  }
+
+  static void apply_valid_write(axi_interconnect::AXI_LLC_Bytes_t &target,
+                                uint32_t way,
+                                const axi_interconnect::AXI_LLC_Bytes_t &payload) {
+    const size_t byte_idx = static_cast<size_t>(way >> 3);
+    const uint8_t bit_mask = static_cast<uint8_t>(1u << (way & 0x7u));
+    if (byte_idx >= target.size()) {
+      return;
+    }
+    const bool new_value =
+        byte_idx < payload.size() && ((payload.data()[byte_idx] & bit_mask) != 0);
+    if (new_value) {
+      target.data()[byte_idx] =
+          static_cast<uint8_t>(target.data()[byte_idx] | bit_mask);
+    } else {
+      target.data()[byte_idx] =
+          static_cast<uint8_t>(target.data()[byte_idx] & ~bit_mask);
+    }
+  }
+
+  axi_interconnect::AXI_LLC_LookupIn_t lookup_row(uint32_t index) const {
+    const auto &entry = row(index);
+    axi_interconnect::AXI_LLC_LookupIn_t in{};
+    in.data_valid = true;
+    in.meta_valid = true;
+    in.valid_valid = true;
+    in.repl_valid = true;
+    in.data = entry.data;
+    in.meta = entry.meta;
+    in.valid = entry.valid;
+    in.repl = entry.repl;
+    return in;
+  }
+
+  axi_interconnect::AXI_LLCConfig cfg_{};
+  std::vector<Row> rows_{};
+  axi_interconnect::AXI_LLC_LookupIn_t pending_{};
+  bool pending_valid_ = false;
+};
+
 void clear_downstream_responses(axi_interconnect::AXI_Interconnect &dut) {
   dut.axi_ddr_io.r.rvalid = false;
   dut.axi_ddr_io.r.rid = 0;
@@ -224,6 +402,24 @@ void init_dut(axi_interconnect::AXI_Interconnect &dut) {
   clear_inputs(dut);
 }
 
+axi_interconnect::AXI_LLCConfig init_cache_dut(
+    axi_interconnect::AXI_Interconnect &dut) {
+  unsetenv("AXI_SUBMODULE_MODE");
+  unsetenv("AXI_SUBMODULE_OFFSET");
+  axi_interconnect::AXI_LLCConfig cfg{};
+  cfg.enable = true;
+  cfg.size_bytes = kCacheLineBytes * kCacheSetCount * kCacheWayCount;
+  cfg.line_bytes = kCacheLineBytes;
+  cfg.ways = kCacheWayCount;
+  cfg.mshr_num = 8;
+  cfg.lookup_latency = 3;
+  dut.set_llc_config(cfg);
+  dut.mode = 1;
+  dut.init();
+  clear_inputs(dut);
+  return cfg;
+}
+
 sim_ddr::axi_data_t perf_read_beat(uint32_t base) {
   sim_ddr::axi_data_t data{};
   for (uint32_t word = 0; word < sim_ddr::AXI_DATA_WORDS; ++word) {
@@ -261,6 +457,329 @@ void apply_write_response(axi_interconnect::AXI_Interconnect &dut,
   io.b.bvalid = true;
   io.b.bid = resp.id;
   io.b.bresp = sim_ddr::AXI_RESP_OKAY;
+}
+
+int find_due_read(const std::vector<ReadBeat> &beats, PerfPort port, int cycle);
+
+bool any_external_issue(const axi_interconnect::AXI_Interconnect &dut) {
+  return dut.axi_ddr_io.ar.arvalid || dut.axi_ddr_io.aw.awvalid ||
+         dut.axi_ddr_io.w.wvalid || dut.axi_mmio_io.ar.arvalid ||
+         dut.axi_mmio_io.aw.awvalid || dut.axi_mmio_io.w.wvalid;
+}
+
+void idle_cache_cycles(axi_interconnect::AXI_Interconnect &dut,
+                       StatefulLlcTableDriver &table_driver, int cycles) {
+  for (int cycle = 0; cycle < cycles; ++cycle) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+    dut.seq();
+    ++sim_time;
+  }
+}
+
+void fill_llc_line_for_hit(axi_interconnect::AXI_Interconnect &dut,
+                           StatefulLlcTableDriver &table_driver) {
+  std::vector<ReadBeat> pending_reads;
+  bool request_active = true;
+  bool request_accepted = false;
+  bool ar_seen = false;
+  bool resp_seen = false;
+
+  for (int cycle = 0; cycle < 240 && !resp_seen; ++cycle) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+
+    const int ddr_read_idx = find_due_read(pending_reads, PerfPort::DDR, cycle);
+    if (ddr_read_idx >= 0) {
+      apply_read_response(dut, pending_reads[static_cast<size_t>(ddr_read_idx)]);
+    }
+
+    if (request_active) {
+      auto &req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+      req.valid = true;
+      req.addr = kLlcHitReadAddr;
+      req.total_size = 63;
+      req.id = kLlcHitFillId;
+      req.bypass = false;
+    }
+
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+
+    if (request_active &&
+        dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req.ready) {
+      request_accepted = true;
+      request_active = false;
+    }
+
+    if (dut.axi_ddr_io.ar.arvalid && dut.axi_ddr_io.ar.arready) {
+      ar_seen = true;
+      require(dut.axi_ddr_io.ar.arlen == 1, "C++ LLC fill AR beat mismatch");
+      for (uint8_t beat = 0; beat < 2; ++beat) {
+        pending_reads.push_back(ReadBeat{PerfPort::DDR,
+                                         cycle + kReadLatency + beat,
+                                         static_cast<uint8_t>(
+                                             dut.axi_ddr_io.ar.arid),
+                                         beat, 2, "CPP_PERF_LLC_HIT_FILL"});
+      }
+    }
+
+    const auto &resp = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp;
+    if (resp.valid && static_cast<uint8_t>(resp.id) == kLlcHitFillId) {
+      resp_seen = true;
+    }
+
+    dut.seq();
+    ++sim_time;
+
+    if (ddr_read_idx >= 0) {
+      pending_reads.erase(pending_reads.begin() + ddr_read_idx);
+    }
+  }
+
+  require(request_accepted, "C++ LLC fill request was not accepted");
+  require(ar_seen, "C++ LLC fill did not issue DDR AR");
+  require(resp_seen, "C++ LLC fill response timeout");
+  idle_cache_cycles(dut, table_driver, 12);
+}
+
+LlcHitPerfResult run_llc_hit_scenario() {
+  axi_interconnect::AXI_Interconnect dut;
+  const auto cfg = init_cache_dut(dut);
+  StatefulLlcTableDriver table_driver(cfg);
+  fill_llc_line_for_hit(dut, table_driver);
+
+  LlcHitPerfResult result{};
+  bool request_active = true;
+
+  for (int cycle = 0; cycle < kMaxCycles; ++cycle) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    auto &resp = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp;
+    resp.ready = true;
+
+    if (request_active) {
+      auto &req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+      req.valid = true;
+      req.addr = kLlcHitReadAddr;
+      req.total_size = 63;
+      req.id = kLlcHitReadId;
+      req.bypass = false;
+    }
+
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+
+    if (request_active &&
+        dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req.ready) {
+      set_cycle_once(result.cycles, "CPP_PERF_LLC_HIT_READ64_REQ_READY",
+                     cycle);
+      request_active = false;
+    }
+
+    if (any_external_issue(dut)) {
+      result.no_external_issue = false;
+      set_cycle_once(result.cycles, "CPP_PERF_LLC_HIT_READ64_EXTERNAL",
+                     cycle);
+    }
+
+    if (resp.valid && resp.ready &&
+        static_cast<uint8_t>(resp.id) == kLlcHitReadId) {
+      set_cycle_once(result.cycles, "CPP_PERF_LLC_HIT_READ64_RESP", cycle);
+    }
+
+    dut.seq();
+    ++sim_time;
+
+    if (result.cycles.count("CPP_PERF_LLC_HIT_READ64_RESP") != 0) {
+      break;
+    }
+  }
+
+  require(result.cycles.count("CPP_PERF_LLC_HIT_READ64_REQ_READY") != 0,
+          "missing C++ LLC hit ready perf event");
+  require(result.cycles.count("CPP_PERF_LLC_HIT_READ64_RESP") != 0,
+          "missing C++ LLC hit response perf event");
+  require(result.no_external_issue, "C++ LLC read hit escaped externally");
+  return result;
+}
+
+LlcHitPerfResult run_llc_write_hit_scenario() {
+  axi_interconnect::AXI_Interconnect dut;
+  const auto cfg = init_cache_dut(dut);
+  StatefulLlcTableDriver table_driver(cfg);
+  fill_llc_line_for_hit(dut, table_driver);
+
+  LlcHitPerfResult result{};
+  bool request_active = true;
+  bool request_accepted = false;
+  const auto write_data = patterned_line(0x70000000u);
+  const auto write_strobe = full_line_strobe();
+
+  for (int cycle = 0; cycle < kMaxCycles; ++cycle) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+    auto &resp = dut.write_ports[axi_interconnect::MASTER_DCACHE_W].resp;
+    resp.ready = true;
+
+    if (request_active && !request_accepted) {
+      auto &req = dut.write_ports[axi_interconnect::MASTER_DCACHE_W].req;
+      req.valid = true;
+      req.addr = kLlcHitWriteAddr;
+      req.total_size = 63;
+      req.id = kLlcHitWriteId;
+      req.wdata = write_data;
+      req.wstrb = write_strobe;
+      req.bypass = false;
+    }
+
+    dut.comb_outputs();
+
+    if (request_active && !request_accepted &&
+        dut.write_ports[axi_interconnect::MASTER_DCACHE_W].req.ready) {
+      set_cycle_once(result.cycles, "CPP_PERF_LLC_HIT_WRITE64_REQ_READY",
+                     cycle);
+    }
+    if (dut.write_ports[axi_interconnect::MASTER_DCACHE_W].req.accepted) {
+      request_accepted = true;
+      request_active = false;
+    }
+    if (resp.valid && resp.ready &&
+        static_cast<uint8_t>(resp.id) == kLlcHitWriteId) {
+      set_cycle_once(result.cycles, "CPP_PERF_LLC_HIT_WRITE64_RESP", cycle);
+    }
+
+    dut.comb_inputs();
+    table_driver.observe(dut);
+
+    if (dut.write_ports[axi_interconnect::MASTER_DCACHE_W].req.accepted) {
+      request_accepted = true;
+      request_active = false;
+    }
+
+    if (any_external_issue(dut)) {
+      result.no_external_issue = false;
+      set_cycle_once(result.cycles, "CPP_PERF_LLC_HIT_WRITE64_EXTERNAL",
+                     cycle);
+    }
+
+    dut.seq();
+    ++sim_time;
+
+    if (result.cycles.count("CPP_PERF_LLC_HIT_WRITE64_RESP") != 0) {
+      break;
+    }
+  }
+
+  require(result.cycles.count("CPP_PERF_LLC_HIT_WRITE64_REQ_READY") != 0,
+          "missing C++ LLC write hit ready perf event");
+  require(result.cycles.count("CPP_PERF_LLC_HIT_WRITE64_RESP") != 0,
+          "missing C++ LLC write hit response perf event");
+  require(result.no_external_issue, "C++ LLC write hit escaped externally");
+  return result;
+}
+
+LlcMissPerfResult run_llc_miss_scenario() {
+  axi_interconnect::AXI_Interconnect dut;
+  const auto cfg = init_cache_dut(dut);
+  StatefulLlcTableDriver table_driver(cfg);
+
+  LlcMissPerfResult result{};
+  std::vector<ReadBeat> pending_reads;
+  bool request_active = true;
+  int r_seen = 0;
+
+  for (int cycle = 0; cycle < kMaxCycles; ++cycle) {
+    clear_inputs(dut);
+    table_driver.drive(dut);
+
+    const int ddr_read_idx = find_due_read(pending_reads, PerfPort::DDR, cycle);
+    if (ddr_read_idx >= 0) {
+      apply_read_response(dut, pending_reads[static_cast<size_t>(ddr_read_idx)]);
+    }
+
+    auto &resp = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].resp;
+    resp.ready = true;
+
+    if (request_active) {
+      auto &req = dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req;
+      req.valid = true;
+      req.addr = kLlcMissReadAddr;
+      req.total_size = 63;
+      req.id = kLlcMissReadId;
+      req.bypass = false;
+    }
+
+    dut.comb_outputs();
+    dut.comb_inputs();
+    table_driver.observe(dut);
+
+    if (request_active &&
+        dut.read_ports[axi_interconnect::MASTER_DCACHE_R].req.ready) {
+      set_cycle_once(result.cycles, "CPP_PERF_LLC_MISS_READ64_REQ_READY",
+                     cycle);
+      request_active = false;
+    }
+
+    if (dut.axi_ddr_io.ar.arvalid && dut.axi_ddr_io.ar.arready) {
+      set_cycle_once(result.cycles, "CPP_PERF_LLC_MISS_READ64_AR", cycle);
+      require(dut.axi_ddr_io.ar.arlen == 1,
+              "C++ LLC miss AR beat count mismatch");
+      for (uint8_t beat = 0; beat < 2; ++beat) {
+        pending_reads.push_back(ReadBeat{PerfPort::DDR,
+                                         cycle + kReadLatency + beat,
+                                         static_cast<uint8_t>(
+                                             dut.axi_ddr_io.ar.arid),
+                                         beat, 2,
+                                         "CPP_PERF_LLC_MISS_READ64"});
+      }
+    }
+    require(!dut.axi_mmio_io.ar.arvalid, "C++ LLC miss leaked to MMIO AR");
+    require(!dut.axi_ddr_io.aw.awvalid && !dut.axi_ddr_io.w.wvalid,
+            "C++ clean LLC read miss unexpectedly issued DDR write");
+    require(!dut.axi_mmio_io.aw.awvalid && !dut.axi_mmio_io.w.wvalid,
+            "C++ clean LLC read miss unexpectedly issued MMIO write");
+
+    if (ddr_read_idx >= 0) {
+      require(dut.axi_ddr_io.r.rready,
+              "C++ LLC miss lower R was unexpectedly backpressured");
+      const ReadBeat &pending =
+          pending_reads[static_cast<size_t>(ddr_read_idx)];
+      set_cycle_once(result.cycles,
+                     "CPP_PERF_LLC_MISS_READ64_R" + std::to_string(r_seen),
+                     cycle);
+      require(pending.beat == r_seen, "C++ LLC miss R beat order mismatch");
+      r_seen++;
+    }
+
+    if (resp.valid && resp.ready &&
+        static_cast<uint8_t>(resp.id) == kLlcMissReadId) {
+      set_cycle_once(result.cycles, "CPP_PERF_LLC_MISS_READ64_RESP", cycle);
+    }
+
+    dut.seq();
+    ++sim_time;
+
+    if (ddr_read_idx >= 0) {
+      pending_reads.erase(pending_reads.begin() + ddr_read_idx);
+    }
+
+    if (result.cycles.count("CPP_PERF_LLC_MISS_READ64_RESP") != 0) {
+      break;
+    }
+  }
+
+  for (const auto &event : {"REQ_READY", "AR", "R0", "R1", "RESP"}) {
+    require(result.cycles.count(std::string("CPP_PERF_LLC_MISS_READ64_") +
+                                event) != 0,
+            "missing C++ LLC miss perf event");
+  }
+  return result;
 }
 
 int find_due_read(const std::vector<ReadBeat> &beats, PerfPort port, int cycle) {
@@ -624,6 +1143,76 @@ void emit_write_spec(std::ostream &os, const WriteSpec &spec,
   }
 }
 
+void emit_llc_hit_spec(std::ostream &os, const LlcHitPerfResult &result) {
+  os << "\n// Scenario: LLC_HIT_READ64\n";
+  os << "localparam integer CPP_PERF_LLC_HIT_READ64_MASTER = "
+     << static_cast<unsigned>(axi_interconnect::MASTER_DCACHE_R) << ";\n";
+  os << "localparam [31:0] CPP_PERF_LLC_HIT_READ64_REQ_ADDR = "
+     << hex_u32(kLlcHitReadAddr) << ";\n";
+  os << "localparam [7:0] CPP_PERF_LLC_HIT_READ64_REQ_SIZE = 8'd63;\n";
+  os << "localparam [3:0] CPP_PERF_LLC_HIT_READ64_FILL_REQ_ID = 4'd"
+     << static_cast<unsigned>(kLlcHitFillId) << ";\n";
+  os << "localparam [3:0] CPP_PERF_LLC_HIT_READ64_REQ_ID = 4'd"
+     << static_cast<unsigned>(kLlcHitReadId) << ";\n";
+  os << "localparam integer CPP_PERF_LLC_HIT_READ64_NO_EXTERNAL = "
+     << (result.no_external_issue ? 1 : 0) << ";\n";
+  for (const auto &event : {"REQ_READY", "RESP", "EXTERNAL"}) {
+    os << "localparam integer CPP_PERF_LLC_HIT_READ64_" << event
+       << "_CYCLE = "
+       << cycle_or_neg1(result.cycles,
+                        std::string("CPP_PERF_LLC_HIT_READ64_") + event)
+       << ";\n";
+  }
+}
+
+void emit_llc_write_hit_spec(std::ostream &os,
+                             const LlcHitPerfResult &result) {
+  const auto write_data = patterned_line(0x70000000u);
+  const auto write_strobe = full_line_strobe();
+
+  os << "\n// Scenario: LLC_HIT_WRITE64\n";
+  os << "localparam integer CPP_PERF_LLC_HIT_WRITE64_MASTER = "
+     << static_cast<unsigned>(axi_interconnect::MASTER_DCACHE_W) << ";\n";
+  os << "localparam [31:0] CPP_PERF_LLC_HIT_WRITE64_REQ_ADDR = "
+     << hex_u32(kLlcHitWriteAddr) << ";\n";
+  os << "localparam [7:0] CPP_PERF_LLC_HIT_WRITE64_REQ_SIZE = 8'd63;\n";
+  os << "localparam [3:0] CPP_PERF_LLC_HIT_WRITE64_REQ_ID = 4'd"
+     << static_cast<unsigned>(kLlcHitWriteId) << ";\n";
+  os << "localparam [511:0] CPP_PERF_LLC_HIT_WRITE64_REQ_WDATA = "
+     << hex_words(write_words(write_data), 16) << ";\n";
+  os << "localparam [63:0] CPP_PERF_LLC_HIT_WRITE64_REQ_WSTRB = "
+     << hex_u64(static_cast<uint64_t>(write_strobe)) << ";\n";
+  os << "localparam integer CPP_PERF_LLC_HIT_WRITE64_NO_EXTERNAL = "
+     << (result.no_external_issue ? 1 : 0) << ";\n";
+  for (const auto &event : {"REQ_READY", "RESP", "EXTERNAL"}) {
+    os << "localparam integer CPP_PERF_LLC_HIT_WRITE64_" << event
+       << "_CYCLE = "
+       << cycle_or_neg1(result.cycles,
+                        std::string("CPP_PERF_LLC_HIT_WRITE64_") + event)
+       << ";\n";
+  }
+}
+
+void emit_llc_miss_spec(std::ostream &os, const LlcMissPerfResult &result) {
+  os << "\n// Scenario: LLC_MISS_READ64\n";
+  os << "localparam integer CPP_PERF_LLC_MISS_READ64_MASTER = "
+     << static_cast<unsigned>(axi_interconnect::MASTER_DCACHE_R) << ";\n";
+  os << "localparam integer CPP_PERF_LLC_MISS_READ64_PORT = 0;\n";
+  os << "localparam [31:0] CPP_PERF_LLC_MISS_READ64_REQ_ADDR = "
+     << hex_u32(kLlcMissReadAddr) << ";\n";
+  os << "localparam [7:0] CPP_PERF_LLC_MISS_READ64_REQ_SIZE = 8'd63;\n";
+  os << "localparam [3:0] CPP_PERF_LLC_MISS_READ64_REQ_ID = 4'd"
+     << static_cast<unsigned>(kLlcMissReadId) << ";\n";
+  os << "localparam integer CPP_PERF_LLC_MISS_READ64_BEATS = 2;\n";
+  for (const auto &event : {"REQ_READY", "AR", "R0", "R1", "RESP"}) {
+    os << "localparam integer CPP_PERF_LLC_MISS_READ64_" << event
+       << "_CYCLE = "
+       << cycle_or_neg1(result.cycles,
+                        std::string("CPP_PERF_LLC_MISS_READ64_") + event)
+       << ";\n";
+  }
+}
+
 std::vector<Scenario> build_scenarios() {
   return {
       Scenario{
@@ -633,12 +1222,31 @@ std::vector<Scenario> build_scenarios() {
                     0x40001000u, 63, 3, 2}},
           {}},
       Scenario{
+          "READ32_DDR",
+          {ReadSpec{"CPP_PERF_READ32_DDR",
+                    axi_interconnect::MASTER_DCACHE_R, PerfPort::DDR,
+                    0x40001020u, 3, 9, 1}},
+          {}},
+      Scenario{
+          "READ32_MMIO",
+          {ReadSpec{"CPP_PERF_READ32_MMIO",
+                    axi_interconnect::MASTER_UNCORE_LSU_R, PerfPort::MMIO,
+                    0x10000020u, 3, 10, 1}},
+          {}},
+      Scenario{
           "WRITE64_DDR",
           {},
           {WriteSpec{"CPP_PERF_WRITE64_DDR",
                      axi_interconnect::MASTER_DCACHE_W, PerfPort::DDR,
                      0x40002000u, 63, 4, 2, patterned_line(0x50000000u),
                      full_line_strobe()}}},
+      Scenario{
+          "WRITE32_MMIO",
+          {},
+          {WriteSpec{"CPP_PERF_WRITE32_MMIO",
+                     axi_interconnect::MASTER_UNCORE_LSU_W, PerfPort::MMIO,
+                     0x10000024u, 3, 11, 1, single_word_data(0xbeef0024u),
+                     word_strobe()}}},
       Scenario{
           "OVERLAP_READ",
           {ReadSpec{"CPP_PERF_OVERLAP_READ_DDR",
@@ -662,7 +1270,10 @@ std::vector<Scenario> build_scenarios() {
   };
 }
 
-void emit_header(std::ostream &os, const std::vector<ScenarioResult> &results) {
+void emit_header(std::ostream &os, const std::vector<ScenarioResult> &results,
+                 const LlcHitPerfResult &llc_hit_result,
+                 const LlcHitPerfResult &llc_write_hit_result,
+                 const LlcMissPerfResult &llc_miss_result) {
   os << "`ifndef AXI_DUAL_CPP_PERF_VECTORS_VH\n";
   os << "`define AXI_DUAL_CPP_PERF_VECTORS_VH\n";
   os << "// Generated by axi_interconnect_dual_port_perf_vectors_test.cpp from\n";
@@ -680,6 +1291,9 @@ void emit_header(std::ostream &os, const std::vector<ScenarioResult> &results) {
       emit_write_spec(os, write, result.cycles);
     }
   }
+  emit_llc_hit_spec(os, llc_hit_result);
+  emit_llc_write_hit_spec(os, llc_write_hit_result);
+  emit_llc_miss_spec(os, llc_miss_result);
   os << "\n`endif\n";
 }
 
@@ -692,10 +1306,14 @@ int main(int argc, char **argv) {
   for (const auto &scenario : build_scenarios()) {
     results.push_back(run_scenario(scenario));
   }
+  const LlcHitPerfResult llc_hit_result = run_llc_hit_scenario();
+  const LlcHitPerfResult llc_write_hit_result = run_llc_write_hit_scenario();
+  const LlcMissPerfResult llc_miss_result = run_llc_miss_scenario();
   std::ofstream out(out_path);
   if (!out) {
     throw std::runtime_error("failed to open output perf vector header");
   }
-  emit_header(out, results);
+  emit_header(out, results, llc_hit_result, llc_write_hit_result,
+              llc_miss_result);
   return 0;
 }

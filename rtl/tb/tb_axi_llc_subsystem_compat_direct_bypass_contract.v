@@ -23,8 +23,25 @@ module tb_axi_llc_subsystem_compat_direct_bypass_contract;
     localparam READ_RESP_BITS    = `AXI_LLC_READ_RESP_BITS;
 
     localparam [MODE_BITS-1:0] MODE_OFF = 2'b00;
+    localparam [1:0] RESP_OKAY = 2'b00;
     localparam [ADDR_BITS-1:0] ADDR0 = 32'h1000_0000;
     localparam [ADDR_BITS-1:0] ADDR1 = 32'h1000_0008;
+    localparam [ADDR_BITS-1:0] ADDR2 = 32'h1000_0010;
+    localparam [ADDR_BITS-1:0] ADDR3 = 32'h1000_0018;
+    localparam [ADDR_BITS-1:0] ADDR4 = 32'h1000_0020;
+    localparam [ADDR_BITS-1:0] ADDR5 = 32'h1000_0028;
+    localparam [LINE_BITS-1:0] WDATA0 = 64'h3333_3333_3333_3333;
+    localparam [LINE_BITS-1:0] WDATA1 = 64'h4444_4444_4444_4444;
+    localparam [LINE_BITS-1:0] WDATA2 = 64'h5555_5555_5555_5555;
+    localparam [LINE_BITS-1:0] WDATA3 = 64'h6666_6666_6666_6666;
+    localparam [LINE_BITS-1:0] WDATA4 = 64'h7777_7777_7777_7777;
+    localparam [LINE_BITS-1:0] WDATA5 = 64'h8888_8888_8888_8888;
+    localparam [LINE_BYTES-1:0] WSTRB0 = 8'h0f;
+    localparam [LINE_BYTES-1:0] WSTRB1 = 8'hf0;
+    localparam [LINE_BYTES-1:0] WSTRB2 = 8'haa;
+    localparam [LINE_BYTES-1:0] WSTRB3 = 8'h55;
+    localparam [LINE_BYTES-1:0] WSTRB4 = 8'hcc;
+    localparam [LINE_BYTES-1:0] WSTRB5 = 8'h33;
 
     reg                                   clk;
     reg                                   rst_n;
@@ -93,6 +110,7 @@ module tb_axi_llc_subsystem_compat_direct_bypass_contract;
 
     reg  [SLOT_ID_BITS-1:0]               lower_id0;
     reg  [SLOT_ID_BITS-1:0]               lower_id1;
+    reg  [SLOT_ID_BITS-1:0]               lower_id2;
     integer                               timeout;
 
     function [ID_BITS-1:0] get_accept_id;
@@ -106,6 +124,20 @@ module tb_axi_llc_subsystem_compat_direct_bypass_contract;
         input integer master;
         begin
             get_resp_id = read_resp_id[(master * ID_BITS) +: ID_BITS];
+        end
+    endfunction
+
+    function [ID_BITS-1:0] get_write_resp_id;
+        input integer master;
+        begin
+            get_write_resp_id = write_resp_id[(master * ID_BITS) +: ID_BITS];
+        end
+    endfunction
+
+    function [1:0] get_write_resp_code;
+        input integer master;
+        begin
+            get_write_resp_code = write_resp_code[(master * 2) +: 2];
         end
     endfunction
 
@@ -223,6 +255,34 @@ module tb_axi_llc_subsystem_compat_direct_bypass_contract;
         end
     endtask
 
+    task issue_write_expect_accept;
+        input integer master;
+        input [ADDR_BITS-1:0] addr_value;
+        input [ID_BITS-1:0] id_value;
+        input [LINE_BITS-1:0] wdata_value;
+        input [LINE_BYTES-1:0] wstrb_value;
+        begin
+            @(negedge clk);
+            write_req_valid[master] = 1'b1;
+            write_req_addr[(master * ADDR_BITS) +: ADDR_BITS] = addr_value;
+            write_req_total_size[(master * 8) +: 8] = LINE_BYTES - 1;
+            write_req_id[(master * ID_BITS) +: ID_BITS] = id_value;
+            write_req_bypass[master] = 1'b1;
+            write_req_wdata[(master * LINE_BITS) +: LINE_BITS] = wdata_value;
+            write_req_wstrb[(master * LINE_BYTES) +: LINE_BYTES] = wstrb_value;
+            timeout = 100;
+            while ((write_req_accepted[master] !== 1'b1) && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("timeout waiting write accepted pulse");
+            end
+            @(negedge clk);
+            write_req_valid[master] = 1'b0;
+        end
+    endtask
+
     task wait_bypass_request;
         input [ADDR_BITS-1:0] exp_addr;
         output [SLOT_ID_BITS-1:0] lower_id_value;
@@ -276,6 +336,66 @@ module tb_axi_llc_subsystem_compat_direct_bypass_contract;
         end
     endtask
 
+    task wait_bypass_write_request;
+        input [ADDR_BITS-1:0] exp_addr;
+        input [LINE_BITS-1:0] exp_wdata;
+        input [LINE_BYTES-1:0] exp_wstrb;
+        output [SLOT_ID_BITS-1:0] lower_id_value;
+        begin
+            timeout = 100;
+            while (!bypass_req_valid && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("timeout waiting bypass write request");
+            end
+            if (bypass_req_write !== 1'b1) begin
+                fail_now("bypass write request should drive write");
+            end
+            if (bypass_req_addr !== exp_addr) begin
+                fail_now("bypass write address mismatch");
+            end
+            if (bypass_req_wdata !== exp_wdata) begin
+                fail_now("bypass write data mismatch");
+            end
+            if (bypass_req_wstrb !== exp_wstrb) begin
+                fail_now("bypass write strobe mismatch");
+            end
+            lower_id_value = bypass_req_id;
+            @(negedge clk);
+            bypass_req_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            bypass_req_ready = 1'b0;
+        end
+    endtask
+
+    task drive_bypass_write_resp_until_ready;
+        input [SLOT_ID_BITS-1:0] lower_id_value;
+        begin
+            @(negedge clk);
+            bypass_resp_valid = 1'b1;
+            bypass_resp_id = lower_id_value;
+            bypass_resp_rdata = {READ_RESP_BITS{1'b0}};
+            bypass_resp_code = RESP_OKAY;
+            timeout = 100;
+            while (!bypass_resp_ready && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("timeout waiting bypass write response ready");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            bypass_resp_valid = 1'b0;
+            bypass_resp_id = {SLOT_ID_BITS{1'b0}};
+            bypass_resp_rdata = {READ_RESP_BITS{1'b0}};
+            bypass_resp_code = RESP_OKAY;
+        end
+    endtask
+
     task expect_read_resp;
         input integer master;
         input [ID_BITS-1:0] exp_id;
@@ -295,6 +415,32 @@ module tb_axi_llc_subsystem_compat_direct_bypass_contract;
             if (get_resp_line(master) !== exp_line) begin
                 fail_now("read response line mismatch");
             end
+        end
+    endtask
+
+    task expect_write_resp;
+        input integer master;
+        input [ID_BITS-1:0] exp_id;
+        begin
+            timeout = 100;
+            while (!write_resp_valid[master] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("timeout waiting write response");
+            end
+            if (get_write_resp_id(master) !== exp_id) begin
+                fail_now("write response id mismatch");
+            end
+            if (get_write_resp_code(master) !== RESP_OKAY) begin
+                fail_now("write response code mismatch");
+            end
+            @(negedge clk);
+            write_resp_ready[master] = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            write_resp_ready[master] = 1'b0;
         end
     endtask
 
@@ -453,6 +599,47 @@ module tb_axi_llc_subsystem_compat_direct_bypass_contract;
         end
         read_resp_ready[0] = 1'b1;
         @(posedge clk);
+
+        bypass_req_ready = 1'b0;
+        write_resp_ready[0] = 1'b0;
+        issue_write_expect_accept(0, ADDR0, 4'h3, WDATA0, WSTRB0);
+        issue_write_expect_accept(0, ADDR1, 4'h4, WDATA1, WSTRB1);
+        issue_write_expect_accept(0, ADDR2, 4'h5, WDATA2, WSTRB2);
+
+        wait_bypass_write_request(ADDR0, WDATA0, WSTRB0, lower_id0);
+        drive_bypass_write_resp_until_ready(lower_id0);
+        expect_write_resp(0, 4'h3);
+
+        wait_bypass_write_request(ADDR1, WDATA1, WSTRB1, lower_id1);
+        drive_bypass_write_resp_until_ready(lower_id1);
+        expect_write_resp(0, 4'h4);
+
+        wait_bypass_write_request(ADDR2, WDATA2, WSTRB2, lower_id2);
+        drive_bypass_write_resp_until_ready(lower_id2);
+        expect_write_resp(0, 4'h5);
+        write_resp_ready[0] = 1'b1;
+
+        // Second burst after the queue has drained exercises non-zero head/tail
+        // positions. This catches payload-store changes that accidentally keep
+        // payload data compacted while metadata uses circular slots.
+        bypass_req_ready = 1'b0;
+        write_resp_ready[0] = 1'b0;
+        issue_write_expect_accept(0, ADDR3, 4'h6, WDATA3, WSTRB3);
+        issue_write_expect_accept(0, ADDR4, 4'h7, WDATA4, WSTRB4);
+        issue_write_expect_accept(0, ADDR5, 4'h8, WDATA5, WSTRB5);
+
+        wait_bypass_write_request(ADDR3, WDATA3, WSTRB3, lower_id0);
+        drive_bypass_write_resp_until_ready(lower_id0);
+        expect_write_resp(0, 4'h6);
+
+        wait_bypass_write_request(ADDR4, WDATA4, WSTRB4, lower_id1);
+        drive_bypass_write_resp_until_ready(lower_id1);
+        expect_write_resp(0, 4'h7);
+
+        wait_bypass_write_request(ADDR5, WDATA5, WSTRB5, lower_id2);
+        drive_bypass_write_resp_until_ready(lower_id2);
+        expect_write_resp(0, 4'h8);
+        write_resp_ready[0] = 1'b1;
 
         $display("tb_axi_llc_subsystem_compat_direct_bypass_contract PASS");
         $finish(0);

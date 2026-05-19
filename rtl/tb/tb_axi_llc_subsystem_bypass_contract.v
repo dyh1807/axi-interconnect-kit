@@ -312,7 +312,7 @@ module tb_axi_llc_subsystem_bypass_contract;
         integer sidx;
         begin
             for (sidx = 0; sidx < SET_COUNT; sidx = sidx + 1) begin
-                dut.valid_ram.valid_mem[sidx] = {WAY_COUNT{1'b0}};
+                dut.valid_ram.gen_flat.valid_mem[sidx] = {WAY_COUNT{1'b0}};
                 dut.data_store.gen_generic.u_impl.row_mem[sidx] = {DATA_ROW_BITS{1'b0}};
                 dut.meta_store.gen_generic.u_impl.row_mem[sidx] = {META_ROW_BITS{1'b0}};
             end
@@ -337,7 +337,7 @@ module tb_axi_llc_subsystem_bypass_contract;
                 make_meta(addr_value, dirty_value);
             dut.data_store.gen_generic.u_impl.row_mem[set_value] = data_row_value;
             dut.meta_store.gen_generic.u_impl.row_mem[set_value] = meta_row_value;
-            dut.valid_ram.valid_mem[set_value][way_value] = 1'b1;
+            dut.valid_ram.gen_flat.valid_mem[set_value][way_value] = 1'b1;
             @(negedge clk);
         end
     endtask
@@ -356,7 +356,7 @@ module tb_axi_llc_subsystem_bypass_contract;
         begin
             set_value = addr_set(addr_value);
             tag_value = addr_tag(addr_value);
-            valid_bits_value = dut.valid_ram.valid_mem[set_value];
+            valid_bits_value = dut.valid_ram.gen_flat.valid_mem[set_value];
             meta_row_value = dut.meta_store.gen_generic.u_impl.row_mem[set_value];
             local_count = 0;
             for (local_way = 0; local_way < WAY_COUNT; local_way = local_way + 1) begin
@@ -584,7 +584,7 @@ module tb_axi_llc_subsystem_bypass_contract;
                          bypass_req_valid,
                          bypass_req_ready,
                          up_resp_valid,
-                         dut.valid_ram.valid_mem[addr_set(addr_value)]);
+                         dut.valid_ram.gen_flat.valid_mem[addr_set(addr_value)]);
                 fatal_now("timeout waiting lower bypass handoff");
             end
             if (up_resp_valid !== 1'b0) begin

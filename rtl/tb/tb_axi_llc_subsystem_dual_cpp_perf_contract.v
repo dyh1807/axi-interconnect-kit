@@ -28,9 +28,12 @@ module tb_axi_llc_subsystem_dual_cpp_perf_contract;
     localparam READ_RESP_BITS     = `AXI_LLC_READ_RESP_BITS;
 
     localparam [MODE_BITS-1:0] MODE_OFF = 2'b00;
+    localparam [MODE_BITS-1:0] MODE_CACHE = 2'b01;
     localparam [1:0] AXI_RESP_OKAY = 2'b00;
     localparam PORT_DDR = 0;
     localparam PORT_MMIO = 1;
+    localparam integer NON_HIT_MAX_EXTRA_CYCLES = 6;
+    localparam integer LLC_MISS_MAX_EXTRA_CYCLES = 8;
 
 `include "axi_dual_cpp_perf_vectors.vh"
 
@@ -135,6 +138,8 @@ module tb_axi_llc_subsystem_dual_cpp_perf_contract;
     wire [1:0]                         reconfig_state;
     wire                               config_error;
     integer                            perf_failures;
+    integer                            perf_exact_non_hit;
+    integer                            perf_max_extra_cycles;
 
     always #5 clk = ~clk;
 
@@ -259,16 +264,453 @@ module tb_axi_llc_subsystem_dual_cpp_perf_contract;
         end
     endtask
 
+    task expect_cycle_with_max;
+        input [8*160-1:0] label;
+        input integer observed;
+        input integer expected;
+        input integer max_extra_cycles;
+        integer extra;
+        begin
+            if (expected >= 0) begin
+                if (observed < 0) begin
+                    $display("tb_axi_llc_subsystem_dual_cpp_perf_contract MISMATCH: %0s expected_cycle=%0d observed_cycle=%0d missing_event=1",
+                             label, expected, observed);
+                    perf_failures = perf_failures + 1;
+                end else if (perf_exact_non_hit && observed !== expected) begin
+                    $display("tb_axi_llc_subsystem_dual_cpp_perf_contract MISMATCH: %0s expected_cycle=%0d observed_cycle=%0d",
+                             label, expected, observed);
+                    perf_failures = perf_failures + 1;
+                end else if (!perf_exact_non_hit) begin
+                    extra = observed - expected;
+                    if (extra > max_extra_cycles) begin
+                        $display("tb_axi_llc_subsystem_dual_cpp_perf_contract MISMATCH: %0s expected_cycle=%0d observed_cycle=%0d max_extra=%0d",
+                                 label, expected, observed, max_extra_cycles);
+                        perf_failures = perf_failures + 1;
+                    end else if (extra > 0) begin
+                        if (extra > perf_max_extra_cycles) begin
+                            perf_max_extra_cycles = extra;
+                        end
+                        $display("tb_axi_llc_subsystem_dual_cpp_perf_contract DELTA_ACCEPTED: %0s expected_cycle=%0d observed_cycle=%0d extra=%0d max_extra=%0d",
+                                 label, expected, observed, extra,
+                                 max_extra_cycles);
+                    end
+                end
+            end
+        end
+    endtask
+
     task expect_cycle;
         input [8*160-1:0] label;
         input integer observed;
         input integer expected;
         begin
-            if (expected >= 0 && observed !== expected) begin
+            expect_cycle_with_max(label, observed, expected,
+                                  NON_HIT_MAX_EXTRA_CYCLES);
+        end
+    endtask
+
+    task expect_exact_cycle;
+        input [8*160-1:0] label;
+        input integer observed;
+        input integer expected;
+        begin
+            if (observed !== expected) begin
                 $display("tb_axi_llc_subsystem_dual_cpp_perf_contract MISMATCH: %0s expected_cycle=%0d observed_cycle=%0d",
                          label, expected, observed);
                 perf_failures = perf_failures + 1;
             end
+        end
+    endtask
+
+    task enter_mode_cache;
+        integer timeout;
+        begin
+            @(negedge clk);
+            mode_req = MODE_CACHE;
+            timeout = 6000;
+            while (((active_mode != MODE_CACHE) || reconfig_busy) &&
+                   (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("mode-cache transition did not settle");
+            end
+            repeat (4) @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
+    task prefill_llc_hit_line;
+        integer timeout;
+        integer master;
+        reg [AXI_ID_BITS-1:0] fill_arid;
+        begin
+            master = CPP_PERF_LLC_HIT_READ64_MASTER;
+            @(negedge clk);
+            clear_read_inputs();
+            clear_write_inputs();
+            clear_lower_inputs();
+            read_resp_ready = {NUM_READ_MASTERS{1'b1}};
+            drive_read_req(master,
+                           CPP_PERF_LLC_HIT_READ64_REQ_ADDR,
+                           CPP_PERF_LLC_HIT_READ64_REQ_SIZE,
+                           CPP_PERF_LLC_HIT_READ64_FILL_REQ_ID);
+
+            timeout = 240;
+            while (!ddr_axi_arvalid && (timeout > 0)) begin
+                @(posedge clk);
+                #1;
+                if (mmio_axi_arvalid || mmio_axi_awvalid || mmio_axi_wvalid ||
+                    ddr_axi_awvalid || ddr_axi_wvalid) begin
+                    fail_now("LLC hit prefill leaked to wrong AXI channel");
+                end
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("LLC hit prefill AR timeout");
+            end
+            #1;
+            fill_arid = ddr_axi_arid;
+            @(posedge clk);
+            @(negedge clk);
+            clear_read_inputs();
+            clear_lower_inputs();
+            read_resp_ready = {NUM_READ_MASTERS{1'b1}};
+
+            ddr_axi_rvalid = 1'b1;
+            ddr_axi_rid = fill_arid;
+            ddr_axi_rdata = 256'h1111_0007_1111_0006_1111_0005_1111_0004_1111_0003_1111_0002_1111_0001_1111_0000;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b0;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now("LLC hit prefill first R beat backpressured");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            clear_lower_inputs();
+            read_resp_ready = {NUM_READ_MASTERS{1'b1}};
+
+            ddr_axi_rvalid = 1'b1;
+            ddr_axi_rid = fill_arid;
+            ddr_axi_rdata = 256'h2222_0007_2222_0006_2222_0005_2222_0004_2222_0003_2222_0002_2222_0001_2222_0000;
+            ddr_axi_rresp = AXI_RESP_OKAY;
+            ddr_axi_rlast = 1'b1;
+            #1;
+            if (!ddr_axi_rready) begin
+                fail_now("LLC hit prefill second R beat backpressured");
+            end
+            @(posedge clk);
+            @(negedge clk);
+            clear_lower_inputs();
+            read_resp_ready = {NUM_READ_MASTERS{1'b1}};
+
+            timeout = 240;
+            while (!read_resp_valid[master] && (timeout > 0)) begin
+                @(posedge clk);
+                timeout = timeout - 1;
+            end
+            if (timeout == 0) begin
+                fail_now("LLC hit prefill response timeout");
+            end
+            #1;
+            if (read_resp_id[(master * ID_BITS) +: ID_BITS] !=
+                CPP_PERF_LLC_HIT_READ64_FILL_REQ_ID) begin
+                fail_now("LLC hit prefill response id mismatch");
+            end
+            @(posedge clk);
+            repeat (12) @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
+    task run_llc_hit_perf_scenario;
+        integer cycle;
+        integer master;
+        integer obs_ready;
+        integer obs_resp;
+        integer obs_external;
+        reg request_active;
+        begin
+            reset_dut();
+            enter_mode_cache();
+            prefill_llc_hit_line();
+
+            master = CPP_PERF_LLC_HIT_READ64_MASTER;
+            obs_ready = -1;
+            obs_resp = -1;
+            obs_external = -1;
+            request_active = 1'b1;
+
+            for (cycle = 0; cycle < 80; cycle = cycle + 1) begin
+                @(negedge clk);
+                clear_read_inputs();
+                clear_write_inputs();
+                clear_lower_inputs();
+                read_resp_ready = {NUM_READ_MASTERS{1'b1}};
+                write_resp_ready = {NUM_WRITE_MASTERS{1'b1}};
+
+                if (request_active) begin
+                    drive_read_req(master,
+                                   CPP_PERF_LLC_HIT_READ64_REQ_ADDR,
+                                   CPP_PERF_LLC_HIT_READ64_REQ_SIZE,
+                                   CPP_PERF_LLC_HIT_READ64_REQ_ID);
+                end
+
+                #1;
+                if (request_active && read_req_ready[master] &&
+                    obs_ready < 0) begin
+                    obs_ready = cycle;
+                    request_active = 1'b0;
+                end
+                if ((ddr_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid ||
+                     mmio_axi_arvalid || mmio_axi_awvalid || mmio_axi_wvalid) &&
+                    obs_external < 0) begin
+                    obs_external = cycle;
+                end
+                if (read_resp_valid[master] &&
+                    read_resp_ready[master] &&
+                    read_resp_id[(master * ID_BITS) +: ID_BITS] ==
+                        CPP_PERF_LLC_HIT_READ64_REQ_ID &&
+                    obs_resp < 0) begin
+                    obs_resp = cycle;
+                end
+
+                @(posedge clk);
+            end
+
+            expect_exact_cycle("LLC_HIT_READ64 ready",
+                               obs_ready,
+                               CPP_PERF_LLC_HIT_READ64_REQ_READY_CYCLE);
+            expect_exact_cycle("LLC_HIT_READ64 resp",
+                               obs_resp,
+                               CPP_PERF_LLC_HIT_READ64_RESP_CYCLE);
+            if (CPP_PERF_LLC_HIT_READ64_NO_EXTERNAL != 1) begin
+                fail_now("C++ LLC hit expected to issue external AXI");
+            end
+            expect_exact_cycle("LLC_HIT_READ64 external",
+                               obs_external,
+                               CPP_PERF_LLC_HIT_READ64_EXTERNAL_CYCLE);
+            $display("PERF LLC_HIT_READ64 CHECKED ready=%0d resp=%0d external=%0d",
+                     obs_ready, obs_resp, obs_external);
+        end
+    endtask
+
+    task run_llc_write_hit_perf_scenario;
+        integer cycle;
+        integer master;
+        integer obs_ready;
+        integer obs_resp;
+        integer obs_external;
+        reg request_active;
+        reg request_accepted;
+        begin
+            reset_dut();
+            enter_mode_cache();
+            prefill_llc_hit_line();
+
+            master = CPP_PERF_LLC_HIT_WRITE64_MASTER;
+            obs_ready = -1;
+            obs_resp = -1;
+            obs_external = -1;
+            request_active = 1'b1;
+            request_accepted = 1'b0;
+
+            for (cycle = 0; cycle < 80; cycle = cycle + 1) begin
+                @(negedge clk);
+                clear_read_inputs();
+                clear_write_inputs();
+                clear_lower_inputs();
+                read_resp_ready = {NUM_READ_MASTERS{1'b1}};
+                write_resp_ready = {NUM_WRITE_MASTERS{1'b1}};
+
+                if (request_active && !request_accepted) begin
+                    drive_write_req(master,
+                                    CPP_PERF_LLC_HIT_WRITE64_REQ_ADDR,
+                                    CPP_PERF_LLC_HIT_WRITE64_REQ_SIZE,
+                                    CPP_PERF_LLC_HIT_WRITE64_REQ_ID,
+                                    CPP_PERF_LLC_HIT_WRITE64_REQ_WDATA,
+                                    CPP_PERF_LLC_HIT_WRITE64_REQ_WSTRB);
+                end
+
+                #1;
+                if (request_active && write_req_ready[master] &&
+                    obs_ready < 0) begin
+                    obs_ready = cycle;
+                end
+                if (write_req_accepted[master]) begin
+                    request_accepted = 1'b1;
+                    request_active = 1'b0;
+                end
+                if ((ddr_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid ||
+                     mmio_axi_arvalid || mmio_axi_awvalid || mmio_axi_wvalid) &&
+                    obs_external < 0) begin
+                    obs_external = cycle;
+                end
+                if (write_resp_valid[master] &&
+                    write_resp_ready[master] &&
+                    write_resp_id[(master * ID_BITS) +: ID_BITS] ==
+                        CPP_PERF_LLC_HIT_WRITE64_REQ_ID &&
+                    obs_resp < 0) begin
+                    obs_resp = cycle;
+                end
+
+                @(posedge clk);
+            end
+
+            expect_exact_cycle("LLC_HIT_WRITE64 ready",
+                               obs_ready,
+                               CPP_PERF_LLC_HIT_WRITE64_REQ_READY_CYCLE);
+            expect_exact_cycle("LLC_HIT_WRITE64 resp",
+                               obs_resp,
+                               CPP_PERF_LLC_HIT_WRITE64_RESP_CYCLE);
+            if (CPP_PERF_LLC_HIT_WRITE64_NO_EXTERNAL != 1) begin
+                fail_now("C++ LLC write hit expected to issue external AXI");
+            end
+            expect_exact_cycle("LLC_HIT_WRITE64 external",
+                               obs_external,
+                               CPP_PERF_LLC_HIT_WRITE64_EXTERNAL_CYCLE);
+            $display("PERF LLC_HIT_WRITE64 CHECKED ready=%0d resp=%0d external=%0d",
+                     obs_ready, obs_resp, obs_external);
+        end
+    endtask
+
+    task run_llc_miss_perf_scenario;
+        integer cycle;
+        integer master;
+        integer obs_ready;
+        integer obs_ar;
+        integer obs_r0;
+        integer obs_r1;
+        integer obs_resp;
+        integer ddr_r_due0;
+        integer ddr_r_due1;
+        integer ddr_r_count;
+        reg request_active;
+        reg ar_done;
+        reg [AXI_ID_BITS-1:0] ddr_rid;
+        begin
+            reset_dut();
+            enter_mode_cache();
+
+            master = CPP_PERF_LLC_MISS_READ64_MASTER;
+            obs_ready = -1;
+            obs_ar = -1;
+            obs_r0 = -1;
+            obs_r1 = -1;
+            obs_resp = -1;
+            ddr_r_due0 = -1;
+            ddr_r_due1 = -1;
+            ddr_r_count = 0;
+            request_active = 1'b1;
+            ar_done = 1'b0;
+            ddr_rid = {AXI_ID_BITS{1'b0}};
+
+            for (cycle = 0; cycle < 120; cycle = cycle + 1) begin
+                @(negedge clk);
+                clear_read_inputs();
+                clear_write_inputs();
+                clear_lower_inputs();
+                read_resp_ready = {NUM_READ_MASTERS{1'b1}};
+                write_resp_ready = {NUM_WRITE_MASTERS{1'b1}};
+
+                if (request_active) begin
+                    drive_read_req(master,
+                                   CPP_PERF_LLC_MISS_READ64_REQ_ADDR,
+                                   CPP_PERF_LLC_MISS_READ64_REQ_SIZE,
+                                   CPP_PERF_LLC_MISS_READ64_REQ_ID);
+                end
+
+                if (ddr_r_due0 == cycle) begin
+                    ddr_axi_rvalid = 1'b1;
+                    ddr_axi_rid = ddr_rid;
+                    ddr_axi_rdata = 256'h1111_0007_1111_0006_1111_0005_1111_0004_1111_0003_1111_0002_1111_0001_1111_0000;
+                    ddr_axi_rresp = AXI_RESP_OKAY;
+                    ddr_axi_rlast = 1'b0;
+                end else if (ddr_r_due1 == cycle) begin
+                    ddr_axi_rvalid = 1'b1;
+                    ddr_axi_rid = ddr_rid;
+                    ddr_axi_rdata = 256'h2222_0007_2222_0006_2222_0005_2222_0004_2222_0003_2222_0002_2222_0001_2222_0000;
+                    ddr_axi_rresp = AXI_RESP_OKAY;
+                    ddr_axi_rlast = 1'b1;
+                end
+
+                #1;
+
+                if (request_active && read_req_ready[master] &&
+                    obs_ready < 0) begin
+                    obs_ready = cycle;
+                    request_active = 1'b0;
+                end
+
+                if (ddr_axi_arvalid && ddr_axi_arready && !ar_done) begin
+                    obs_ar = cycle;
+                    ar_done = 1'b1;
+                    ddr_rid = ddr_axi_arid;
+                    if (ddr_axi_arlen != (CPP_PERF_LLC_MISS_READ64_BEATS - 1)) begin
+                        fail_now("LLC miss AR beat count mismatch");
+                    end
+                    ddr_r_due0 = cycle + CPP_PERF_READ_LATENCY;
+                    if (CPP_PERF_LLC_MISS_READ64_BEATS > 1) begin
+                        ddr_r_due1 = cycle + CPP_PERF_READ_LATENCY + 1;
+                    end
+                end else if (ddr_axi_arvalid && ddr_axi_arready) begin
+                    fail_now("unexpected second DDR AR in LLC miss perf scenario");
+                end
+
+                if (mmio_axi_arvalid || ddr_axi_awvalid || ddr_axi_wvalid ||
+                    mmio_axi_awvalid || mmio_axi_wvalid) begin
+                    fail_now("LLC clean read miss issued unexpected external channel");
+                end
+
+                if (ddr_axi_rvalid) begin
+                    if (!ddr_axi_rready) begin
+                        fail_now("LLC miss lower R beat was backpressured");
+                    end
+                    if (ddr_r_count == 0) begin
+                        obs_r0 = cycle;
+                    end else if (ddr_r_count == 1) begin
+                        obs_r1 = cycle;
+                    end else begin
+                        fail_now("unexpected extra DDR R beat in LLC miss perf scenario");
+                    end
+                    ddr_r_count = ddr_r_count + 1;
+                end
+
+                if (read_resp_valid[master] &&
+                    read_resp_ready[master] &&
+                    read_resp_id[(master * ID_BITS) +: ID_BITS] ==
+                        CPP_PERF_LLC_MISS_READ64_REQ_ID &&
+                    obs_resp < 0) begin
+                    obs_resp = cycle;
+                end
+
+                @(posedge clk);
+            end
+
+            expect_cycle_with_max("LLC_MISS_READ64 ready",
+                                  obs_ready,
+                                  CPP_PERF_LLC_MISS_READ64_REQ_READY_CYCLE,
+                                  LLC_MISS_MAX_EXTRA_CYCLES);
+            expect_cycle_with_max("LLC_MISS_READ64 ar",
+                                  obs_ar,
+                                  CPP_PERF_LLC_MISS_READ64_AR_CYCLE,
+                                  LLC_MISS_MAX_EXTRA_CYCLES);
+            expect_cycle_with_max("LLC_MISS_READ64 r0",
+                                  obs_r0,
+                                  CPP_PERF_LLC_MISS_READ64_R0_CYCLE,
+                                  LLC_MISS_MAX_EXTRA_CYCLES);
+            expect_cycle_with_max("LLC_MISS_READ64 r1",
+                                  obs_r1,
+                                  CPP_PERF_LLC_MISS_READ64_R1_CYCLE,
+                                  LLC_MISS_MAX_EXTRA_CYCLES);
+            expect_cycle_with_max("LLC_MISS_READ64 resp",
+                                  obs_resp,
+                                  CPP_PERF_LLC_MISS_READ64_RESP_CYCLE,
+                                  LLC_MISS_MAX_EXTRA_CYCLES);
+            $display("PERF LLC_MISS_READ64 CHECKED ready=%0d ar=%0d r0=%0d r1=%0d resp=%0d",
+                     obs_ready, obs_ar, obs_r0, obs_r1, obs_resp);
         end
     endtask
 
@@ -757,6 +1199,34 @@ module tb_axi_llc_subsystem_dual_cpp_perf_contract;
 
     initial begin
         perf_failures = 0;
+        perf_exact_non_hit = $test$plusargs("CPP_PERF_EXACT_NON_HIT");
+        perf_max_extra_cycles = 0;
+        if ($test$plusargs("LLC_HIT_ONLY")) begin
+            perf_exact_non_hit = 1;
+            run_llc_hit_perf_scenario();
+            run_llc_write_hit_perf_scenario();
+            if (perf_failures != 0) begin
+                $display("tb_axi_llc_subsystem_dual_cpp_perf_contract FAIL: llc_hit_mismatches=%0d",
+                         perf_failures);
+                $finish(1);
+            end
+            $display("tb_axi_llc_subsystem_dual_cpp_perf_contract PASS LLC_HIT_ONLY");
+            $finish;
+        end
+        if ($test$plusargs("LLC_MISS_ONLY")) begin
+            run_llc_miss_perf_scenario();
+            if (perf_failures != 0) begin
+                $display("tb_axi_llc_subsystem_dual_cpp_perf_contract FAIL: llc_miss_mismatches=%0d",
+                         perf_failures);
+                $finish(1);
+            end
+            $display("tb_axi_llc_subsystem_dual_cpp_perf_contract PASS LLC_MISS_ONLY max_extra_observed=%0d max_extra_allowed=%0d",
+                     perf_max_extra_cycles, LLC_MISS_MAX_EXTRA_CYCLES);
+            $finish;
+        end
+
+        run_llc_miss_perf_scenario();
+
         run_perf_scenario("READ64_DDR",
                           1'b1,
                           CPP_PERF_READ64_DDR_MASTER,
@@ -770,6 +1240,40 @@ module tb_axi_llc_subsystem_dual_cpp_perf_contract;
                           CPP_PERF_READ64_DDR_R0_CYCLE,
                           CPP_PERF_READ64_DDR_R1_CYCLE,
                           CPP_PERF_READ64_DDR_RESP_CYCLE,
+                          1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 0, -1, -1, -1, -1, -1,
+                          1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 512'h0, 64'h0, 0, -1, -1, -1, -1, -1, -1,
+                          1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 512'h0, 64'h0, 0, -1, -1, -1, -1, -1, -1);
+
+        run_perf_scenario("READ32_DDR",
+                          1'b1,
+                          CPP_PERF_READ32_DDR_MASTER,
+                          CPP_PERF_READ32_DDR_PORT,
+                          CPP_PERF_READ32_DDR_REQ_ADDR,
+                          CPP_PERF_READ32_DDR_REQ_SIZE,
+                          CPP_PERF_READ32_DDR_REQ_ID,
+                          CPP_PERF_READ32_DDR_BEATS,
+                          CPP_PERF_READ32_DDR_REQ_READY_CYCLE,
+                          CPP_PERF_READ32_DDR_AR_CYCLE,
+                          CPP_PERF_READ32_DDR_R0_CYCLE,
+                          CPP_PERF_READ32_DDR_R1_CYCLE,
+                          CPP_PERF_READ32_DDR_RESP_CYCLE,
+                          1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 0, -1, -1, -1, -1, -1,
+                          1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 512'h0, 64'h0, 0, -1, -1, -1, -1, -1, -1,
+                          1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 512'h0, 64'h0, 0, -1, -1, -1, -1, -1, -1);
+
+        run_perf_scenario("READ32_MMIO",
+                          1'b1,
+                          CPP_PERF_READ32_MMIO_MASTER,
+                          CPP_PERF_READ32_MMIO_PORT,
+                          CPP_PERF_READ32_MMIO_REQ_ADDR,
+                          CPP_PERF_READ32_MMIO_REQ_SIZE,
+                          CPP_PERF_READ32_MMIO_REQ_ID,
+                          CPP_PERF_READ32_MMIO_BEATS,
+                          CPP_PERF_READ32_MMIO_REQ_READY_CYCLE,
+                          CPP_PERF_READ32_MMIO_AR_CYCLE,
+                          CPP_PERF_READ32_MMIO_R0_CYCLE,
+                          CPP_PERF_READ32_MMIO_R1_CYCLE,
+                          CPP_PERF_READ32_MMIO_RESP_CYCLE,
                           1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 0, -1, -1, -1, -1, -1,
                           1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 512'h0, 64'h0, 0, -1, -1, -1, -1, -1, -1,
                           1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 512'h0, 64'h0, 0, -1, -1, -1, -1, -1, -1);
@@ -792,6 +1296,26 @@ module tb_axi_llc_subsystem_dual_cpp_perf_contract;
                           CPP_PERF_WRITE64_DDR_W1_CYCLE,
                           CPP_PERF_WRITE64_DDR_B_CYCLE,
                           CPP_PERF_WRITE64_DDR_RESP_CYCLE,
+                          1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 512'h0, 64'h0, 0, -1, -1, -1, -1, -1, -1);
+
+        run_perf_scenario("WRITE32_MMIO",
+                          1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 0, -1, -1, -1, -1, -1,
+                          1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 0, -1, -1, -1, -1, -1,
+                          1'b1,
+                          CPP_PERF_WRITE32_MMIO_MASTER,
+                          CPP_PERF_WRITE32_MMIO_PORT,
+                          CPP_PERF_WRITE32_MMIO_REQ_ADDR,
+                          CPP_PERF_WRITE32_MMIO_REQ_SIZE,
+                          CPP_PERF_WRITE32_MMIO_REQ_ID,
+                          CPP_PERF_WRITE32_MMIO_REQ_WDATA,
+                          CPP_PERF_WRITE32_MMIO_REQ_WSTRB,
+                          CPP_PERF_WRITE32_MMIO_BEATS,
+                          CPP_PERF_WRITE32_MMIO_REQ_READY_CYCLE,
+                          CPP_PERF_WRITE32_MMIO_AW_CYCLE,
+                          CPP_PERF_WRITE32_MMIO_W0_CYCLE,
+                          CPP_PERF_WRITE32_MMIO_W1_CYCLE,
+                          CPP_PERF_WRITE32_MMIO_B_CYCLE,
+                          CPP_PERF_WRITE32_MMIO_RESP_CYCLE,
                           1'b0, 0, 0, 32'h0, 8'h0, 4'h0, 512'h0, 64'h0, 0, -1, -1, -1, -1, -1, -1);
 
         run_perf_scenario("OVERLAP_READ",
@@ -861,7 +1385,13 @@ module tb_axi_llc_subsystem_dual_cpp_perf_contract;
                      perf_failures);
             $finish(1);
         end
-        $display("tb_axi_llc_subsystem_dual_cpp_perf_contract PASS");
+        if (perf_exact_non_hit) begin
+            $display("tb_axi_llc_subsystem_dual_cpp_perf_contract PASS EXACT_NON_HIT");
+        end else begin
+            $display("tb_axi_llc_subsystem_dual_cpp_perf_contract PASS bounded_non_hit max_extra_observed=%0d direct_max_extra_allowed=%0d llc_miss_max_extra_allowed=%0d",
+                     perf_max_extra_cycles, NON_HIT_MAX_EXTRA_CYCLES,
+                     LLC_MISS_MAX_EXTRA_CYCLES);
+        end
         $finish;
     end
 

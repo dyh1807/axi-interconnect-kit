@@ -1,0 +1,4 @@
+src/axi_llc_dual_port_slot_hazard.v
+src/axi_llc_dual_port_hazard_match.v
+src/axi_llc_dual_port_hazard_scoreboard.v
+dc/probes/axi_llc_hazard_scoreboard_probe32.v

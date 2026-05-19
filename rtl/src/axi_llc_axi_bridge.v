@@ -96,6 +96,10 @@ module axi_llc_axi_bridge #(
     localparam [1:0] AXI_BURST_INCR = 2'b01;
     localparam [1:0] RESP_OKAY      = 2'b00;
     localparam integer AXI_ID_COUNT        = (1 << AXI_ID_BITS);
+    localparam integer READ_PACK_MODE2_EXTRACT_BYTES =
+        (LINE_BYTES < READ_RESP_BYTES) ? LINE_BYTES : READ_RESP_BYTES;
+    localparam integer WRITE_PACK_SINGLE_BEAT_ONLY =
+        (AXI_DATA_BYTES == 4) && (READ_RESP_BYTES == AXI_DATA_BYTES);
     reg                           rd_valid_r [0:READ_PENDING_COUNT-1];
     reg                           rd_from_cache_r [0:READ_PENDING_COUNT-1];
     reg [ADDR_BITS-1:0]           rd_addr_r [0:READ_PENDING_COUNT-1];
@@ -676,7 +680,8 @@ module axi_llc_axi_bridge #(
     axi_llc_axi_read_pack #(
         .ADDR_BITS(ADDR_BITS),
         .READ_RESP_BYTES(READ_RESP_BYTES),
-        .AXI_DATA_BYTES(AXI_DATA_BYTES)
+        .AXI_DATA_BYTES(AXI_DATA_BYTES),
+        .MODE2_EXTRACT_BYTES(READ_PACK_MODE2_EXTRACT_BYTES)
     ) read_pack (
         .current_data(rd_rdata_r[rd_match_slot_w]),
         .beat_data(axi_rdata),
@@ -754,7 +759,8 @@ module axi_llc_axi_bridge #(
     axi_llc_axi_write_pack #(
         .ADDR_BITS(ADDR_BITS),
         .LINE_BYTES(LINE_BYTES),
-        .AXI_DATA_BYTES(AXI_DATA_BYTES)
+        .AXI_DATA_BYTES(AXI_DATA_BYTES),
+        .SINGLE_BEAT_ONLY(WRITE_PACK_SINGLE_BEAT_ONLY)
     ) write_pack (
         .line_data(wr_wdata_r[wr_w_slot_w]),
         .line_strb(wr_wstrb_r[wr_w_slot_w]),
@@ -979,17 +985,8 @@ module axi_llc_axi_bridge #(
 
             if (rd_complete_push_w) begin
                 rd_valid_r[rd_complete_slot_w] <= 1'b0;
-                rd_from_cache_r[rd_complete_slot_w] <= 1'b0;
-                rd_addr_r[rd_complete_slot_w] <= {ADDR_BITS{1'b0}};
-                rd_req_id_r[rd_complete_slot_w] <= {ID_BITS{1'b0}};
-                rd_size_r[rd_complete_slot_w] <= 8'd0;
-                rd_mode2_ddr_aligned_r[rd_complete_slot_w] <= 1'b0;
-                rd_axi_id_r[rd_complete_slot_w] <= {AXI_ID_BITS{1'b0}};
-                rd_total_beats_r[rd_complete_slot_w] <= 8'd0;
-                rd_beats_done_r[rd_complete_slot_w] <= 8'd0;
                 rd_ar_sent_r[rd_complete_slot_w] <= 1'b0;
                 rd_complete_r[rd_complete_slot_w] <= 1'b0;
-                rd_resp_code_r[rd_complete_slot_w] <= RESP_OKAY;
             end
 
             if (wr_aw_handshake_w) begin
@@ -1008,14 +1005,6 @@ module axi_llc_axi_bridge #(
 
             if (wr_resp_accept_w) begin
                 wr_valid_r[wr_match_slot_w] <= 1'b0;
-                wr_from_cache_r[wr_match_slot_w] <= 1'b0;
-                wr_addr_r[wr_match_slot_w] <= {ADDR_BITS{1'b0}};
-                wr_req_id_r[wr_match_slot_w] <= {ID_BITS{1'b0}};
-                wr_size_r[wr_match_slot_w] <= 8'd0;
-                wr_mode2_ddr_aligned_r[wr_match_slot_w] <= 1'b0;
-                wr_axi_id_r[wr_match_slot_w] <= {AXI_ID_BITS{1'b0}};
-                wr_total_beats_r[wr_match_slot_w] <= 8'd0;
-                wr_beats_sent_r[wr_match_slot_w] <= 8'd0;
                 wr_aw_sent_r[wr_match_slot_w] <= 1'b0;
                 wr_w_done_r[wr_match_slot_w] <= 1'b0;
             end

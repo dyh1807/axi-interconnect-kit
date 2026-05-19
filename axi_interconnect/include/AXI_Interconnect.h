@@ -182,6 +182,11 @@ struct WriteRespEntry {
   uint8_t resp = 0;
 };
 
+struct DelayedWriteRespEntry {
+  WriteRespEntry entry{};
+  uint8_t age = 0;
+};
+
 // ============================================================================
 // AXI_Interconnect Class
 // ============================================================================
@@ -320,6 +325,7 @@ private:
   uint8_t w_resp_id[NUM_WRITE_MASTERS];
   uint8_t w_resp_resp[NUM_WRITE_MASTERS];
   std::deque<WriteRespEntry> w_resp_queue[NUM_WRITE_MASTERS];
+  std::deque<DelayedWriteRespEntry> llc_write_resp_delay[NUM_WRITE_MASTERS];
 
   // AW latch for AXI compliance
   AWLatch_t aw_latched;
@@ -377,6 +383,9 @@ private:
   std::deque<LlcUpstreamWriteReqLatch> llc_upstream_write_q[NUM_WRITE_MASTERS];
   LlcCoreReqStage llc_core_req_stage_ = {};
   uint8_t llc_core_dispatch_rr_ = 0;
+  bool llc_read_resp_valid_[NUM_READ_MASTERS] = {};
+  WideReadData_t llc_read_resp_data_[NUM_READ_MASTERS] = {};
+  uint8_t llc_read_resp_id_[NUM_READ_MASTERS] = {};
   bool llc_mem_write_resp_valid_ = false;
   uint8_t llc_mem_write_resp_ = 0;
   uint32_t llc_mem_ignored_b_count_ = 0;

@@ -12,6 +12,9 @@ src/llc_data_store.v
 src/llc_meta_store.v
 src/llc_invalidate_sweep.v
 src/llc_mapped_window_ctrl.v
+src/llc_mshr_pending_scan.v
+src/llc_mshr_select_scan.v
+src/llc_mshr_write_hit_scan.v
 src/llc_cache_ctrl.v
 src/axi_llc_subsystem_core.v
 src/axi_llc_subsystem_compat.v

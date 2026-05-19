@@ -384,7 +384,8 @@ static inline AxiBridgePendingScanResult axi_bridge_pending_scan_control(
     uint32_t complete_mask, uint64_t packed_ids, uint8_t match_id) {
   AxiBridgePendingScanResult out;
   uint64_t used_ids = 0u;
-  const uint8_t id_count = (uint8_t)(1u << id_width);
+  const uint16_t id_count = (uint16_t)(1u << id_width);
+  const bool slot_id_mode = id_count >= entry_count;
   const uint8_t masked_match_id =
       axi_dual_port_mask_axi_id(match_id, id_width);
   out.free_found = false;
@@ -399,12 +400,12 @@ static inline AxiBridgePendingScanResult axi_bridge_pending_scan_control(
   for (uint8_t slot = 0u; slot < entry_count; ++slot) {
     const bool valid = ((valid_mask >> slot) & 1u) != 0u;
     const uint8_t slot_id =
-        axi_bridge_scan_packed_id(packed_ids, slot, id_width);
+        slot_id_mode ? slot : axi_bridge_scan_packed_id(packed_ids, slot, id_width);
     if (!out.free_found && !valid) {
       out.free_found = true;
       out.free_slot = slot;
     }
-    if (valid) {
+    if (valid && !slot_id_mode) {
       used_ids |= (1ull << slot_id);
     }
     if (!out.match_found && valid && (slot_id == masked_match_id)) {
@@ -418,10 +419,15 @@ static inline AxiBridgePendingScanResult axi_bridge_pending_scan_control(
     }
   }
 
-  for (uint8_t id = 0u; id < id_count; ++id) {
-    if (!out.axi_id_found && (((used_ids >> id) & 1ull) == 0u)) {
-      out.axi_id_found = true;
-      out.axi_id = id;
+  if (slot_id_mode) {
+    out.axi_id_found = out.free_found;
+    out.axi_id = axi_dual_port_mask_axi_id(out.free_slot, id_width);
+  } else {
+    for (uint16_t id = 0u; id < id_count; ++id) {
+      if (!out.axi_id_found && (((used_ids >> id) & 1ull) == 0u)) {
+        out.axi_id_found = true;
+        out.axi_id = (uint8_t)id;
+      }
     }
   }
 

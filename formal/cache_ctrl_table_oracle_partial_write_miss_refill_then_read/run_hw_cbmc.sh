@@ -42,6 +42,9 @@ write_formal_params() {
 
 exec timeout "${timeout_sec}" "${hw_cbmc}" \
   "${script_dir}/harness.c" \
+  "${repo_root}/rtl/src/llc_mshr_pending_scan.v" \
+  "${repo_root}/rtl/src/llc_mshr_select_scan.v" \
+  "${repo_root}/rtl/src/llc_mshr_write_hit_scan.v" \
   "${build_dir}/llc_cache_ctrl.pre.v" \
   "${script_dir}/cache_ctrl_table_oracle_partial_write_miss_refill_then_read_formal_top.v" \
   --module cache_ctrl_table_oracle_partial_write_miss_refill_then_read_formal_top \

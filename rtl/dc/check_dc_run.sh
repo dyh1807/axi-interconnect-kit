@@ -115,14 +115,24 @@ free -h || true
 
 log="$run/full_compile_1g.console.log"
 echo "=== log ==="
-if [[ -f "$log" ]]; then
+log=""
+for candidate in \
+  "$run/launcher.log" \
+  "$run/launcher.direct.log" \
+  "$run/full_compile_1g.console.log"; do
+  if [[ -f "$candidate" ]]; then
+    log="$candidate"
+    break
+  fi
+done
+if [[ -n "$log" ]]; then
   stat -c "%y %s %n" "$log"
   echo "--- latest stages/warnings/errors ---"
-  grep -E "DC_STAGE|LINK_SANITY|compile_start|compile_done|reports_start|reports_done|write_start|write_done|Out of memory|Error:|Warning:" "$log" | tail -n 80 || true
+  grep -E "DC_STAGE|LINK_SANITY|compile_start|compile_done|quick_map_low_start|quick_map_low_done|reports_start|reports_done|quick_reports_start|quick_reports_done|write_start|write_done|Beginning Pass|Mapping Optimization|Delay Optimization|AREA +SLACK|Critical Path Slack|Total Negative Slack|No\\. of Violating Paths|Cell Area|Out of memory|Error:|Fatal:|Warning:|Received Signal" "$log" | tail -n 120 || true
   echo "--- tail ---"
   tail -n 30 "$log" || true
 else
-  echo "missing full_compile_1g.console.log"
+  echo "missing launcher.log / launcher.direct.log / full_compile_1g.console.log"
 fi
 
 echo "=== exit ==="
@@ -136,6 +146,26 @@ echo "=== latest reports/outputs ==="
 find "$run" -maxdepth 3 -type f \
   \( -path "*/reports/*" -o -path "*/outputs/*" -o -name "exit_code.txt" \) \
   -printf "%TY-%Tm-%Td %TH:%TM %s %p\n" 2>/dev/null | sort | tail -n 80 || true
+
+echo "=== qor summary ==="
+if compgen -G "$run/reports/*_qor*.rpt" >/dev/null; then
+  for rpt in "$run"/reports/*_qor*.rpt; do
+    echo "--- $rpt ---"
+    grep -E "Critical Path Slack|Total Negative Slack|No\\. of Violating Paths|Cell Area" "$rpt" || true
+  done
+else
+  echo "no qor reports"
+fi
+
+echo "=== worst timing summary ==="
+if compgen -G "$run/reports/*_timing*.rpt" >/dev/null; then
+  for rpt in "$run"/reports/*_timing*.rpt; do
+    echo "--- $rpt ---"
+    grep -E "Startpoint:|Endpoint:|Path Group:|slack \\(" "$rpt" | head -20 || true
+  done
+else
+  echo "no timing reports"
+fi
 '
 
 if [[ -n "$host" ]]; then

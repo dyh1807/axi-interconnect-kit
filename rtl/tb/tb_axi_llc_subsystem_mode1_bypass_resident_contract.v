@@ -267,14 +267,14 @@ module tb_axi_llc_subsystem_mode1_bypass_resident_contract;
         integer way_idx;
         begin
             for (set_idx = 0; set_idx < SET_COUNT; set_idx = set_idx + 1) begin
-                dut.compat.core.valid_ram.valid_mem[set_idx] = {WAY_COUNT{1'b0}};
+                dut.compat.core.valid_ram.gen_flat.valid_mem[set_idx] = {WAY_COUNT{1'b0}};
                 dut.compat.core.data_store.gen_generic.u_impl.row_mem[set_idx] =
                     {WAY_COUNT*LINE_BITS{1'b0}};
                 dut.compat.core.meta_store.gen_generic.u_impl.row_mem[set_idx] =
                     {WAY_COUNT*META_BITS{1'b0}};
                 dut.compat.core.repl_ram.repl_mem[set_idx] = {WAY_BITS{1'b0}};
                 for (way_idx = 0; way_idx < WAY_COUNT; way_idx = way_idx + 1) begin
-                    dut.compat.core.valid_ram.valid_mem[set_idx][way_idx] = 1'b0;
+                    dut.compat.core.valid_ram.gen_flat.valid_mem[set_idx][way_idx] = 1'b0;
                 end
             end
         end
@@ -288,7 +288,7 @@ module tb_axi_llc_subsystem_mode1_bypass_resident_contract;
         integer set_value;
         begin
             set_value = addr_set(addr_value);
-            dut.compat.core.valid_ram.valid_mem[set_value][way_value] = 1'b1;
+            dut.compat.core.valid_ram.gen_flat.valid_mem[set_value][way_value] = 1'b1;
             dut.compat.core.data_store.gen_generic.u_impl.row_mem[set_value]
                 [(way_value * LINE_BITS) +: LINE_BITS] = line_value;
             dut.compat.core.meta_store.gen_generic.u_impl.row_mem[set_value]

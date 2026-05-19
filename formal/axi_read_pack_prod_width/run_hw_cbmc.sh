@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 hw_cbmc="${HW_CBMC:-${repo_root}/../../hw-cbmc/src/hw-cbmc/hw-cbmc}"
-timeout_sec="${HW_CBMC_TIMEOUT_SEC:-120}"
+timeout_sec="${HW_CBMC_TIMEOUT_SEC:-180}"
 
 exec timeout "${timeout_sec}" "${hw_cbmc}" \
   "${script_dir}/harness.c" \

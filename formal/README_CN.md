@@ -20,7 +20,7 @@ formal/run_passed_hw_cbmc.sh
 ```
 
 该入口当前默认设置 `HW_CBMC_TIMEOUT_SEC=600`，只包含已能返回
-`VERIFICATION SUCCESSFUL` 的项目。2026-05-07 当前 stable manifest 为 83 项；
+`VERIFICATION SUCCESSFUL` 的项目。2026-05-08 当前 stable manifest 为 87 项；
 其中前 71 项已有 split-run 证据：
 `local_debug/run_passed_hw_cbmc_manifest71_20260505_144134.log` 完成前 20 项，
 并在第 21 项本体已 `VERIFICATION SUCCESSFUL` 后因旧 240s wrapper timeout 退出；
@@ -46,9 +46,14 @@ table-oracle shadow row proof 原型，targeted logs 包括
 2026-05-07 继续新增 `formal/cache_ctrl_table_oracle_invalidate_then_read_miss`，targeted
 log 为
 `local_debug/hw_cbmc_cache_ctrl_table_oracle_invalidate_then_read_miss_20260507.log`。
-当前 `formal/*/run_hw_cbmc.sh` 共有 85 个入口，未纳入 stable manifest 的 2 个入口
-已明确归类为 experimental/non-stable，见下方“非稳定实验入口”。它们不作为当前生产
-RTL 失败结论，也不应在未收敛前加入 `formal/run_passed_hw_cbmc.sh`。
+2026-05-08 新增并通过 `formal/axi_pending_scan_fallback`，用于覆盖
+`axi_llc_axi_pending_scan.v` 在 `ENTRY_COUNT > AXI_ID_COUNT` 下的 tracked-ID fallback
+generate 分支。同日新增并通过 `formal/axi_mode2_shape_single4`、
+`formal/axi_write_pack_single4`、`formal/axi_read_pack_single4`，覆盖 4B/4B
+single-beat fast path。当前 `formal/*/run_hw_cbmc.sh` 共有 89 个入口，未纳入 stable
+manifest 的 2 个入口已明确归类为 experimental/non-stable，见下方“非稳定实验入口”。
+它们不作为当前生产 RTL 失败结论，也不应在未收敛前加入
+`formal/run_passed_hw_cbmc.sh`。
 
 ## 已通过
 
@@ -128,6 +133,22 @@ formal/axi_mode2_shape/run_hw_cbmc.sh
 - 跨 beat/line 请求按 cacheline bytes 对齐，issue size 为 `LINE_BYTES-1`。
 - 小参数实例覆盖 8-bit addr / 8B line / 4B AXI beat。
 
+### `formal/axi_mode2_shape_single4`
+
+状态：已通过，并已计入 `formal/run_passed_hw_cbmc.sh`。
+
+运行：
+
+```sh
+formal/axi_mode2_shape_single4/run_hw_cbmc.sh
+```
+
+覆盖范围：
+
+- 4B line / 4B AXI beat fast path 下，issue addr 恒按 4B 对齐。
+- issue size 恒为 `3`，与同参数 C helper 的 generic 语义一致。
+- `single_axi_beat` 判定仍保持 C/RTL 一致。
+
 ### `formal/axi_pending_scan`
 
 状态：已通过。
@@ -150,6 +171,22 @@ formal/axi_pending_scan/run_hw_cbmc.sh
 - 当前已占用 AXI ID mask 下首个空闲 AXI ID 的选择。
 - 外部 `RID/BID` 到 pending slot 的首个匹配选择。
 - read complete queue 中首个 complete slot 的选择。
+
+### `formal/axi_pending_scan_fallback`
+
+状态：已通过，并已计入 `formal/run_passed_hw_cbmc.sh`。
+
+运行：
+
+```sh
+formal/axi_pending_scan_fallback/run_hw_cbmc.sh
+```
+
+覆盖范围：
+
+- `ENTRY_COUNT=5`、`AXI_ID_BITS=2`，即 pending entry 数超过 AXI ID 数。
+- first-free AXI ID 必须来自 stored-ID usage mask，而不能使用 slot-ID shortcut。
+- response match 必须按 stored AXI ID 优先匹配首个 valid slot。
 
 ### `formal/axi_issue_select`
 
@@ -243,6 +280,22 @@ formal/axi_write_pack/run_hw_cbmc.sh
 - `WSTRB` 与 `WDATA` 使用同一 byte 映射，不允许二次地址移位。
 - 小参数实例覆盖 8B line / 4B AXI beat，用于保持状态空间可快速求解。
 
+### `formal/axi_write_pack_single4`
+
+状态：已通过，并已计入 `formal/run_passed_hw_cbmc.sh`。
+
+运行：
+
+```sh
+formal/axi_write_pack_single4/run_hw_cbmc.sh
+```
+
+覆盖范围：
+
+- 4B line / 4B AXI beat fast path 下，普通 write 直接透传 `WDATA/WSTRB`。
+- mode2 DDR-aligned write 按 `req_addr - issued_addr` 左移有效 byte。
+- `WSTRB` 与 `WDATA` 使用同一 byte 映射。
+
 ### `formal/axi_write_pack_prod_width`
 
 状态：已通过，并已计入 `formal/run_passed_hw_cbmc.sh`。
@@ -288,6 +341,22 @@ formal/axi_read_pack/run_hw_cbmc.sh
 - 非 mode2 aligned read 的最终返回数据等于合并后的 buffer。
 - mode2 DDR-aligned read 按 `req_addr - issued_addr` 从合并 buffer 中提取返回窗口。
 - 小参数实例覆盖 8B response / 4B AXI beat，用于保持状态空间可快速求解。
+
+### `formal/axi_read_pack_single4`
+
+状态：已通过，并已计入 `formal/run_passed_hw_cbmc.sh`。
+
+运行：
+
+```sh
+formal/axi_read_pack_single4/run_hw_cbmc.sh
+```
+
+覆盖范围：
+
+- 4B response / 4B AXI beat fast path 下，beat 0 合并 32-bit `RDATA`。
+- 非 mode2 aligned read 的最终返回数据等于合并后的 buffer。
+- mode2 DDR-aligned read 按 `req_addr - issued_addr` 做 4B 窗口提取。
 
 ### `formal/axi_read_pack_prod_width`
 

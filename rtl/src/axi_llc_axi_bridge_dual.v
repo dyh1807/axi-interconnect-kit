@@ -16,9 +16,10 @@
 //   - Same-line read/write AXI issue ambiguity is blocked at the external
 //     AR/AW boundary: an issued AR holds the line until R last, and an issued
 //     AW holds the line until B.
-//   - Shared global 32-entry outstanding accounting is enforced by the
-//     upstream compat/top layer; the underlying bridges still retain their
-//     per-port local limits in standalone bridge use.
+//   - Shared global 32-entry outstanding accounting is the production contract.
+//     The underlying per-port bridges retain local queues, while this wrapper's
+//     external AR/AW hazard scoreboard shares one read budget and one write
+//     budget across DDR and MMIO issue.
 module axi_llc_axi_bridge_dual #(
     parameter ADDR_BITS           = `AXI_LLC_ADDR_BITS,
     parameter ID_BITS             = `AXI_LLC_SLOT_ID_BITS,
@@ -38,8 +39,8 @@ module axi_llc_axi_bridge_dual #(
     parameter DDR_BASE                 = 32'h4000_0000,
     parameter BRIDGE_READ_PENDING_COUNT  = `AXI_LLC_BRIDGE_READ_PENDING_COUNT,
     parameter BRIDGE_WRITE_PENDING_COUNT = `AXI_LLC_BRIDGE_WRITE_PENDING_COUNT,
-    parameter READ_HAZARD_COUNT          = 2 * BRIDGE_READ_PENDING_COUNT,
-    parameter WRITE_HAZARD_COUNT         = 2 * BRIDGE_WRITE_PENDING_COUNT
+    parameter READ_HAZARD_COUNT          = BRIDGE_READ_PENDING_COUNT,
+    parameter WRITE_HAZARD_COUNT         = BRIDGE_WRITE_PENDING_COUNT
 ) (
     input                            clk,
     input                            rst_n,
@@ -134,6 +135,14 @@ module axi_llc_axi_bridge_dual #(
     input                            mmio_axi_rlast
 );
 
+    localparam integer DDR_READ_RESP_BYTES =
+        (LINE_BYTES < READ_RESP_BYTES) ? LINE_BYTES : READ_RESP_BYTES;
+    localparam integer DDR_READ_RESP_BITS  = DDR_READ_RESP_BYTES * 8;
+    localparam integer MMIO_READ_RESP_BYTES = MMIO_AXI_DATA_BYTES;
+    localparam integer MMIO_READ_RESP_BITS  = MMIO_AXI_DATA_BITS;
+    localparam integer MUX_READ_RESP_BITS =
+        (DDR_READ_RESP_BITS > MMIO_READ_RESP_BITS) ? DDR_READ_RESP_BITS : MMIO_READ_RESP_BITS;
+
     wire cache_mmio_supported_w;
     wire bypass_mmio_supported_w;
     wire cache_to_ddr_w;
@@ -149,14 +158,16 @@ module axi_llc_axi_bridge_dual #(
     wire ddr_cache_req_ready_w;
     wire ddr_cache_resp_valid_w;
     wire ddr_cache_resp_ready_w;
-    wire [READ_RESP_BITS-1:0] ddr_cache_resp_rdata_w;
+    wire [DDR_READ_RESP_BITS-1:0] ddr_cache_resp_rdata_raw_w;
+    wire [MUX_READ_RESP_BITS-1:0] ddr_cache_resp_rdata_w;
     wire [ID_BITS-1:0]        ddr_cache_resp_id_w;
     wire [1:0]                ddr_cache_resp_code_w;
     wire ddr_bypass_req_valid_w;
     wire ddr_bypass_req_ready_w;
     wire ddr_bypass_resp_valid_w;
     wire ddr_bypass_resp_ready_w;
-    wire [READ_RESP_BITS-1:0] ddr_bypass_resp_rdata_w;
+    wire [DDR_READ_RESP_BITS-1:0] ddr_bypass_resp_rdata_raw_w;
+    wire [MUX_READ_RESP_BITS-1:0] ddr_bypass_resp_rdata_w;
     wire [ID_BITS-1:0]        ddr_bypass_resp_id_w;
     wire [1:0]                ddr_bypass_resp_code_w;
 
@@ -164,19 +175,27 @@ module axi_llc_axi_bridge_dual #(
     wire mmio_cache_req_ready_w;
     wire mmio_cache_resp_valid_w;
     wire mmio_cache_resp_ready_w;
-    wire [READ_RESP_BITS-1:0] mmio_cache_resp_rdata_w;
+    wire [MMIO_READ_RESP_BITS-1:0] mmio_cache_resp_rdata_raw_w;
+    wire [MUX_READ_RESP_BITS-1:0] mmio_cache_resp_rdata_w;
     wire [ID_BITS-1:0]        mmio_cache_resp_id_w;
     wire [1:0]                mmio_cache_resp_code_w;
     wire mmio_bypass_req_valid_w;
     wire mmio_bypass_req_ready_w;
     wire mmio_bypass_resp_valid_w;
     wire mmio_bypass_resp_ready_w;
-    wire [READ_RESP_BITS-1:0] mmio_bypass_resp_rdata_w;
+    wire [MMIO_READ_RESP_BITS-1:0] mmio_bypass_resp_rdata_raw_w;
+    wire [MUX_READ_RESP_BITS-1:0] mmio_bypass_resp_rdata_w;
     wire [ID_BITS-1:0]        mmio_bypass_resp_id_w;
     wire [1:0]                mmio_bypass_resp_code_w;
+    wire [MMIO_AXI_DATA_BITS-1:0] cache_req_mmio_wdata_w;
+    wire [MMIO_AXI_STRB_BITS-1:0] cache_req_mmio_wstrb_w;
+    wire [MMIO_AXI_DATA_BITS-1:0] bypass_req_mmio_wdata_w;
+    wire [MMIO_AXI_STRB_BITS-1:0] bypass_req_mmio_wstrb_w;
 
     wire cache_resp_select_mmio_w;
     wire bypass_resp_select_mmio_w;
+    wire [MUX_READ_RESP_BITS-1:0] cache_resp_rdata_mux_w;
+    wire [MUX_READ_RESP_BITS-1:0] bypass_resp_rdata_mux_w;
 
     localparam integer LINE_TAG_BITS = ADDR_BITS - LINE_OFFSET_BITS;
     localparam integer HAZARD_AXI_ID_BITS =
@@ -236,6 +255,44 @@ module axi_llc_axi_bridge_dual #(
         end
     endfunction
 
+    generate
+        if (MUX_READ_RESP_BITS > DDR_READ_RESP_BITS) begin : gen_ddr_resp_zero_extend
+            assign ddr_cache_resp_rdata_w =
+                {{(MUX_READ_RESP_BITS-DDR_READ_RESP_BITS){1'b0}},
+                 ddr_cache_resp_rdata_raw_w};
+            assign ddr_bypass_resp_rdata_w =
+                {{(MUX_READ_RESP_BITS-DDR_READ_RESP_BITS){1'b0}},
+                 ddr_bypass_resp_rdata_raw_w};
+        end else begin : gen_ddr_resp_same_width
+            assign ddr_cache_resp_rdata_w = ddr_cache_resp_rdata_raw_w;
+            assign ddr_bypass_resp_rdata_w = ddr_bypass_resp_rdata_raw_w;
+        end
+
+        if (MUX_READ_RESP_BITS > MMIO_READ_RESP_BITS) begin : gen_mmio_resp_zero_extend
+            assign mmio_cache_resp_rdata_w =
+                {{(MUX_READ_RESP_BITS-MMIO_READ_RESP_BITS){1'b0}},
+                 mmio_cache_resp_rdata_raw_w};
+            assign mmio_bypass_resp_rdata_w =
+                {{(MUX_READ_RESP_BITS-MMIO_READ_RESP_BITS){1'b0}},
+                 mmio_bypass_resp_rdata_raw_w};
+        end else begin : gen_mmio_resp_same_width
+            assign mmio_cache_resp_rdata_w = mmio_cache_resp_rdata_raw_w;
+            assign mmio_bypass_resp_rdata_w = mmio_bypass_resp_rdata_raw_w;
+        end
+
+        if (READ_RESP_BITS > MUX_READ_RESP_BITS) begin : gen_resp_output_zero_extend
+            assign cache_resp_rdata =
+                {{(READ_RESP_BITS-MUX_READ_RESP_BITS){1'b0}},
+                 cache_resp_rdata_mux_w};
+            assign bypass_resp_rdata =
+                {{(READ_RESP_BITS-MUX_READ_RESP_BITS){1'b0}},
+                 bypass_resp_rdata_mux_w};
+        end else begin : gen_resp_output_same_width
+            assign cache_resp_rdata = cache_resp_rdata_mux_w;
+            assign bypass_resp_rdata = bypass_resp_rdata_mux_w;
+        end
+    endgenerate
+
     axi_llc_dual_port_route_shape #(
         .ADDR_BITS(ADDR_BITS),
         .DDR_BASE(DDR_BASE[ADDR_BITS-1:0])
@@ -285,7 +342,7 @@ module axi_llc_axi_bridge_dual #(
     );
 
     axi_llc_dual_port_resp_mux #(
-        .RESP_BITS(READ_RESP_BITS),
+        .RESP_BITS(MUX_READ_RESP_BITS),
         .ID_BITS(ID_BITS)
     ) cache_resp_mux (
         .ddr_resp_valid(ddr_cache_resp_valid_w),
@@ -300,14 +357,14 @@ module axi_llc_axi_bridge_dual #(
         .mmio_resp_code(mmio_cache_resp_code_w),
         .resp_valid(cache_resp_valid),
         .resp_ready(cache_resp_ready),
-        .resp_rdata(cache_resp_rdata),
+        .resp_rdata(cache_resp_rdata_mux_w),
         .resp_id(cache_resp_id),
         .resp_code(cache_resp_code),
         .select_mmio(cache_resp_select_mmio_w)
     );
 
     axi_llc_dual_port_resp_mux #(
-        .RESP_BITS(READ_RESP_BITS),
+        .RESP_BITS(MUX_READ_RESP_BITS),
         .ID_BITS(ID_BITS)
     ) bypass_resp_mux (
         .ddr_resp_valid(ddr_bypass_resp_valid_w),
@@ -322,7 +379,7 @@ module axi_llc_axi_bridge_dual #(
         .mmio_resp_code(mmio_bypass_resp_code_w),
         .resp_valid(bypass_resp_valid),
         .resp_ready(bypass_resp_ready),
-        .resp_rdata(bypass_resp_rdata),
+        .resp_rdata(bypass_resp_rdata_mux_w),
         .resp_id(bypass_resp_id),
         .resp_code(bypass_resp_code),
         .select_mmio(bypass_resp_select_mmio_w)
@@ -332,6 +389,10 @@ module axi_llc_axi_bridge_dual #(
     assign ddr_ar_line_w = line_tag_of_addr(ddr_axi_araddr);
     assign mmio_aw_line_w = line_tag_of_addr(mmio_axi_awaddr);
     assign mmio_ar_line_w = line_tag_of_addr(mmio_axi_araddr);
+    assign cache_req_mmio_wdata_w = cache_req_wdata[MMIO_AXI_DATA_BITS-1:0];
+    assign cache_req_mmio_wstrb_w = cache_req_wstrb[MMIO_AXI_STRB_BITS-1:0];
+    assign bypass_req_mmio_wdata_w = bypass_req_wdata[MMIO_AXI_DATA_BITS-1:0];
+    assign bypass_req_mmio_wstrb_w = bypass_req_wstrb[MMIO_AXI_STRB_BITS-1:0];
 
     axi_llc_axi_id_shape #(
         .IN_ID_BITS(DDR_AXI_ID_BITS),
@@ -499,8 +560,8 @@ module axi_llc_axi_bridge_dual #(
         .AXI_DATA_BYTES(DDR_AXI_DATA_BYTES),
         .AXI_DATA_BITS(DDR_AXI_DATA_BITS),
         .AXI_STRB_BITS(DDR_AXI_STRB_BITS),
-        .READ_RESP_BYTES(READ_RESP_BYTES),
-        .READ_RESP_BITS(READ_RESP_BITS),
+        .READ_RESP_BYTES(DDR_READ_RESP_BYTES),
+        .READ_RESP_BITS(DDR_READ_RESP_BITS),
         .READ_PENDING_COUNT(BRIDGE_READ_PENDING_COUNT),
         .WRITE_PENDING_COUNT(BRIDGE_WRITE_PENDING_COUNT)
     ) ddr_bridge (
@@ -516,7 +577,7 @@ module axi_llc_axi_bridge_dual #(
         .cache_req_wstrb(cache_req_wstrb),
         .cache_resp_valid(ddr_cache_resp_valid_w),
         .cache_resp_ready(ddr_cache_resp_ready_w),
-        .cache_resp_rdata(ddr_cache_resp_rdata_w),
+        .cache_resp_rdata(ddr_cache_resp_rdata_raw_w),
         .cache_resp_id(ddr_cache_resp_id_w),
         .cache_resp_code(ddr_cache_resp_code_w),
         .bypass_req_valid(ddr_bypass_req_valid_w),
@@ -530,7 +591,7 @@ module axi_llc_axi_bridge_dual #(
         .bypass_req_wstrb(bypass_req_wstrb),
         .bypass_resp_valid(ddr_bypass_resp_valid_w),
         .bypass_resp_ready(ddr_bypass_resp_ready_w),
-        .bypass_resp_rdata(ddr_bypass_resp_rdata_w),
+        .bypass_resp_rdata(ddr_bypass_resp_rdata_raw_w),
         .bypass_resp_id(ddr_bypass_resp_id_w),
         .bypass_resp_code(ddr_bypass_resp_code_w),
         .axi_awvalid(ddr_bridge_awvalid_w),
@@ -567,14 +628,14 @@ module axi_llc_axi_bridge_dual #(
     axi_llc_axi_bridge #(
         .ADDR_BITS(ADDR_BITS),
         .ID_BITS(ID_BITS),
-        .LINE_BYTES(LINE_BYTES),
-        .LINE_BITS(LINE_BITS),
+        .LINE_BYTES(MMIO_AXI_DATA_BYTES),
+        .LINE_BITS(MMIO_AXI_DATA_BITS),
         .AXI_ID_BITS(MMIO_AXI_ID_BITS),
         .AXI_DATA_BYTES(MMIO_AXI_DATA_BYTES),
         .AXI_DATA_BITS(MMIO_AXI_DATA_BITS),
         .AXI_STRB_BITS(MMIO_AXI_STRB_BITS),
-        .READ_RESP_BYTES(READ_RESP_BYTES),
-        .READ_RESP_BITS(READ_RESP_BITS),
+        .READ_RESP_BYTES(MMIO_READ_RESP_BYTES),
+        .READ_RESP_BITS(MMIO_READ_RESP_BITS),
         .READ_PENDING_COUNT(BRIDGE_READ_PENDING_COUNT),
         .WRITE_PENDING_COUNT(BRIDGE_WRITE_PENDING_COUNT)
     ) mmio_bridge (
@@ -586,11 +647,11 @@ module axi_llc_axi_bridge_dual #(
         .cache_req_addr(cache_req_addr),
         .cache_req_id(cache_req_id),
         .cache_req_size(cache_req_size),
-        .cache_req_wdata(cache_req_wdata),
-        .cache_req_wstrb(cache_req_wstrb),
+        .cache_req_wdata(cache_req_mmio_wdata_w),
+        .cache_req_wstrb(cache_req_mmio_wstrb_w),
         .cache_resp_valid(mmio_cache_resp_valid_w),
         .cache_resp_ready(mmio_cache_resp_ready_w),
-        .cache_resp_rdata(mmio_cache_resp_rdata_w),
+        .cache_resp_rdata(mmio_cache_resp_rdata_raw_w),
         .cache_resp_id(mmio_cache_resp_id_w),
         .cache_resp_code(mmio_cache_resp_code_w),
         .bypass_req_valid(mmio_bypass_req_valid_w),
@@ -600,11 +661,11 @@ module axi_llc_axi_bridge_dual #(
         .bypass_req_id(bypass_req_id),
         .bypass_req_size(bypass_req_size),
         .bypass_req_mode2_ddr_aligned(1'b0),
-        .bypass_req_wdata(bypass_req_wdata),
-        .bypass_req_wstrb(bypass_req_wstrb),
+        .bypass_req_wdata(bypass_req_mmio_wdata_w),
+        .bypass_req_wstrb(bypass_req_mmio_wstrb_w),
         .bypass_resp_valid(mmio_bypass_resp_valid_w),
         .bypass_resp_ready(mmio_bypass_resp_ready_w),
-        .bypass_resp_rdata(mmio_bypass_resp_rdata_w),
+        .bypass_resp_rdata(mmio_bypass_resp_rdata_raw_w),
         .bypass_resp_id(mmio_bypass_resp_id_w),
         .bypass_resp_code(mmio_bypass_resp_code_w),
         .axi_awvalid(mmio_bridge_awvalid_w),

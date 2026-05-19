@@ -17,7 +17,12 @@ vcs -full64 -sverilog +v2k +incdir+include \
   -o "${out_dir}/simv" \
   > "${out_dir}/compile.log" 2>&1
 
-"${out_dir}/simv" > "${out_dir}/run.log" 2>&1 || true
+sim_args=()
+if [[ "${EXACT_NON_HIT:-0}" == "1" ]]; then
+  sim_args+=(+CPP_PERF_EXACT_NON_HIT)
+fi
+
+"${out_dir}/simv" "${sim_args[@]}" > "${out_dir}/run.log" 2>&1 || true
 
 if grep -q "FAIL" "${out_dir}/run.log"; then
   echo "FAIL tb_axi_llc_subsystem_dual_cpp_perf_contract"

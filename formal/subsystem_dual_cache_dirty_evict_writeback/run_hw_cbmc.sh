@@ -126,6 +126,9 @@ exec timeout "${timeout_sec}" "${hw_cbmc}" \
   "${build_dir}/llc_meta_store.pre.v" \
   "${build_dir}/llc_invalidate_sweep.pre.v" \
   "${build_dir}/llc_mapped_window_ctrl.pre.v" \
+  "${repo_root}/rtl/src/llc_mshr_pending_scan.v" \
+  "${repo_root}/rtl/src/llc_mshr_select_scan.v" \
+  "${repo_root}/rtl/src/llc_mshr_write_hit_scan.v" \
   "${build_dir}/llc_cache_ctrl.pre.v" \
   "${build_dir}/axi_llc_subsystem_core.pre.v" \
   "${build_dir}/axi_llc_subsystem_compat.pre.v" \

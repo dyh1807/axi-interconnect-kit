@@ -27,3 +27,11 @@ rtl/local_debug/
 command.log
 default.svf
 rtl/dc/runs/
+alib-*/
+rtl/dc/.latest_*
+rtl/dc/.reference_*
+rtl/dc/dc_status_latest.txt*
+rtl/dc/dc_status_monitor*.log
+rtl/dc/dc_status_monitor.pid
+rtl/dc/dc_status_schedule.log
+rtl/dc/dc_status_schedule.pid

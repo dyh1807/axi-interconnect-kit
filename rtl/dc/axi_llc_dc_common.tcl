@@ -165,6 +165,40 @@ proc axi_llc_check_link_clean {} {
     puts "=== LINK_SANITY_PASS ==="
 }
 
+proc axi_llc_protect_sram_hierarchy {} {
+    set protected_designs [list \
+        llc_data_store_smic12 \
+        llc_meta_store_smic12 \
+        llc_smic12_data_4096x256_sass_bw \
+        llc_smic12_meta_4096x16_bw \
+        sassls0c4l1p4096x256m4b4w1c1p0d0t0s2sdz1rw00 \
+        sassls0c4l1p4096x16m16b1w1c1p0d0t0s2sdz1rw00]
+
+    foreach design_name $protected_designs {
+        set designs [get_designs -quiet $design_name]
+        if {[sizeof_collection $designs] > 0} {
+            set_dont_touch $designs true
+            set_ungroup $designs false
+        }
+    }
+
+    set protected_cells [get_cells -hierarchical -quiet -filter \
+        "ref_name == llc_data_store_smic12 || \
+         ref_name == llc_meta_store_smic12 || \
+         ref_name == llc_smic12_data_4096x256_sass_bw || \
+         ref_name == llc_smic12_meta_4096x16_bw || \
+         ref_name == sassls0c4l1p4096x256m4b4w1c1p0d0t0s2sdz1rw00 || \
+         ref_name == sassls0c4l1p4096x16m16b1w1c1p0d0t0s2sdz1rw00"]
+    if {[sizeof_collection $protected_cells] > 0} {
+        set_dont_touch $protected_cells true
+        set_ungroup $protected_cells false
+        set_boundary_optimization $protected_cells false
+    }
+
+    puts "=== SRAM_HIERARCHY_PROTECTED [sizeof_collection $protected_cells] ==="
+    flush stdout
+}
+
 proc axi_llc_apply_1g_constraints {} {
     set clock_name clk_1g
     set clock_period 1.0
@@ -213,7 +247,9 @@ proc axi_llc_write_mapped_outputs {stem} {
     global out_root
     write_file -format ddc -hierarchy -output [file join $out_root ddc ${stem}.ddc]
     write_file -format verilog -hierarchy -output [file join $out_root netlist ${stem}.v]
-    write -format db -hierarchy -output [file join $out_root db ${stem}.db]
+    set db_note [open [file join $out_root db ${stem}.README.txt] w]
+    puts $db_note "Synopsys DC O-2018.06 no longer supports write -format db for mapped designs; use the DDC checkpoint and Verilog netlist in sibling output directories."
+    close $db_note
     write_sdc [file join $out_root sdc ${stem}.sdc]
     write_sdf -version 1.0 [file join $out_root sdf ${stem}.sdf]
     write_parasitics -output [file join $out_root spf ${stem}.spf]

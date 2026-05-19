@@ -383,8 +383,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   最新 targeted VCS 目录：`rtl/local_debug/vcs_llc_cache_cpp_trace_dvpw_20260504_081121`。
   该项是 trace-based 功能 EC，meta/valid/repl 只做 C++ 抽象表项到 RTL row encoding
   的接口适配。
-- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 83 项；
-  `formal/*/run_hw_cbmc.sh` 当前共有 85 个入口，其中 2 个实验/未收敛入口暂未纳入
+- [x] 稳定 formal smoke：`formal/run_passed_hw_cbmc.sh` 当前 manifest 为 87 项；
+  `formal/*/run_hw_cbmc.sh` 当前共有 89 个入口，其中 2 个实验/未收敛入口暂未纳入
   稳定 manifest。原 68/68 已有 split-run 通过证据。前 20 项见
   `local_debug/run_passed_hw_cbmc_after_ddr_write_mmio_read_20260504_202454.log`；
   该 log 在 `dual_bridge_prod_width_ddr_read_mmio_write_independent` 处因默认 240s
@@ -453,6 +453,12 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   `llc_cache_ctrl.v` 在 `invalidate_line` hit 后产生与 C++ trace 对齐的 valid clear
   payload，并已纳入 manifest；
   `formal/run_passed_hw_cbmc.sh` 默认单项 timeout 已提升为 600s。
+  2026-05-08 又新增并通过 `formal/axi_pending_scan_fallback/run_hw_cbmc.sh`，覆盖
+  `axi_llc_axi_pending_scan.v` 在 `ENTRY_COUNT > AXI_ID_COUNT` 时的 tracked-ID
+  fallback generate 分支，并已纳入 stable manifest。
+- [x] 2026-05-08 又新增并通过 `formal/axi_mode2_shape_single4/run_hw_cbmc.sh`、
+  `formal/axi_write_pack_single4/run_hw_cbmc.sh`、`formal/axi_read_pack_single4/run_hw_cbmc.sh`，
+  覆盖 4B/4B single-beat fast path，并已纳入 stable manifest。
 - [x] 全量 RTL contract：`rtl/run_all_contracts.sh` 当前通过 53/53，最新目录
   `local_debug/vcs_all_contracts_mshr_payload_no_clear_20260506_200052_eda10`。
   本轮新增 `tb_axi_llc_subsystem_dual_cpp_trace_contract` 中固定 32 seed 的 MODE_CACHE
@@ -985,8 +991,8 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
 ## 待继续收敛的生产边界
 
 - [x] 未纳入稳定 manifest 的 formal 入口已按优先级分流：
-  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 83 个稳定入口，`formal/*/run_hw_cbmc.sh`
-  当前共有 85 个入口，剩余未纳入入口为
+  当前 `formal/run_passed_hw_cbmc.sh` 已纳入 87 个稳定入口，`formal/*/run_hw_cbmc.sh`
+  当前共有 89 个入口，剩余未纳入入口为
   `formal/subsystem_dual_mode0_ddr_bypass_cacheline_read_response` 和
   `formal/subsystem_core_dirty_evict_writeback` 两项；二者均已明确归类为
   experimental/non-stable，不计入稳定回归缺口。dual bridge production-width
@@ -2002,6 +2008,117 @@ subsystem/formal 组合、RTL 可综合性/1GHz pre-DC gate，以及 Linux/image
   统一计数，不在中间段落重复作为 open checkbox。
 - [ ] 长期探索：C++ reference 与 RTL 端到端形式 EC；当前已有 production-helper read issue
   shape 切片，但完整 C++ class / RTL top 同 harness 仍未完成。
-- [ ] 工程签核：RTL 可综合性与 1GHz pre-DC/full DC timing gate。
+- [ ] 工程签核：RTL 可综合性与 1GHz pre-DC/full DC timing gate。当前优先收敛
+  `bridge_dual`、`cache_ctrl`/`core`、`compat` 等拆分小模块 setup；小模块 setup
+  都确认可收敛后，必须补一轮同版 current RTL 的 `axi_llc_subsystem_dual` full_top
+  1GHz DC。现在不需要提前启动新的 full_top，但该项是后续 signoff 必做 gate，且
+  不能用旧 RTL full_top baseline 替代。用户已再次明确：小模块 setup 收敛后，
+  新增 full_top 是必须执行的最终集成时序 gate。2026-05-08 03:05 CST 状态：
+  `cache_ctrl_only_quick_map_mshr_direct_resp_guard...0156_eda-05` 仍未越过
+  elaborate，已被 1h timeout 终止且没有 timing/QoR report；2026-05-08 03:19 CST
+  `bridge_dual_quick_map_no_shift...2318_eda-05` 已到 4h timeout，完成 link 但没有
+  最终 timing/QoR；2026-05-08 03:26 CST 已撤掉 cache_ctrl MSHR group staging 并启动
+  `cache_ctrl_only_quick_map_mshr_direct_no_group...0326_eda-05`，等待其是否越过
+  elaborate/link；2026-05-08 03:34 CST 已把 MMIO 子 bridge 裁剪为 32-bit line payload，
+  保持 4B/1-beat 合法 MMIO 语义，全量 RTL contracts `53/53` 通过，后续需要基于
+  该版本重跑 `bridge_dual` quick-map。2026-05-08 03:45 CST 已新增
+  `rtl/dc/probes/bridge_dual_only.f` 并启动
+  `bridge_dual_quick_map_mmio_slim...0346_eda-05`。2026-05-08 03:56 CST 又将
+  `llc_cache_ctrl` 的 MSHR 1-bit flags 改为 packed vector，LLC hit-only perf
+  contract 仍为 `ready=0/resp=7/no external`，bounded non-hit contract 仍为
+  `max_extra_observed=5`，全量 RTL contracts `53/53` 通过；新的
+  `cache_ctrl_only_quick_map_mshr_flags_packed...0358_eda-05` 已启动。2026-05-08
+  04:12 CST 状态：cache_ctrl 已完成 analyze、仍在 elaborate；bridge 已完成
+  elaborate/link，正在 mapping pass。2026-05-08 04:23 CST 继续将剩余 MSHR 多 bit
+  payload 表改为 flat packed vector，保持 production RTL 同一份 slot 语义；LLC
+  hit-only perf contract 仍为 `ready=0/resp=7/no external`，bounded non-hit contract
+  仍为 `max_extra_observed=5`，全量 RTL contracts `53/53` 通过；新的
+  `cache_ctrl_only_quick_map_mshr_flat_packed...0423_eda-05` 已启动。2026-05-08
+  04:38 CST 状态：cache_ctrl flat packed 已完成 analyze、仍在 elaborate；bridge
+  MMIO slim 仍在 mapping pass。2026-05-08 04:44 CST 因 flat packed run 仍长期停在
+  `elaborate_start`，已终止该 stale run，并将 MSHR pending/victim hazard scan、
+  issue/commit priority scan、write-hit victim update mask 拆为生产 RTL helper；
+  LLC hit-only perf、bounded non-hit perf、全量 RTL contracts `53/53` 均通过。新的
+  `cache_ctrl_only_quick_map_mshr_helper_scan...0503_eda-05` 已启动，2026-05-08
+  05:06 CST 状态：已完成 analyze，刚进入 elaborate。2026-05-08 05:14 CST 又把写
+  命中路径的 `merge_line()` 预先计算并在 MSHR victim snapshot 循环中复用，避免
+  重复展开同一个 512-bit merge 组合函数；LLC hit-only perf、bounded non-hit perf、
+  全量 RTL contracts `53/53` 均通过。新的
+  `cache_ctrl_only_quick_map_mshr_helper_merge_reuse...0528_eda-05` 已启动。2026-05-08
+  05:56 CST 状态：该 run 已完成 analyze，但 `elaborate_start` 后约 25 分钟仍未
+  `elaborate_done`，已慢于历史上可 link 的 cache_ctrl run 约 22-24 分钟窗口；若后续
+  不能自行越过 elaborate，下一步应迁移 MSHR 状态本体到独立 production 子模块。
+  2026-05-08 06:00 CST 根据历史 run 对照，先回退 way helper 中的 variable indexed
+  part-select/bit-select，恢复显式 `WAY_COUNT` 循环形式；LLC hit-only perf、bounded
+  non-hit perf、全量 RTL contracts `53/53` 均通过。新的
+  `cache_ctrl_only_quick_map_mshr_helper_loop_way...0614_eda-05` 已启动；2026-05-08
+  06:19 CST 状态：已完成 analyze，刚进入 elaborate，需继续等到历史 22-24 分钟窗口后
+  再判断。2026-05-08 06:53 CST 该 run 完成 elaborate/link；2026-05-08 07:17 CST 在
+  quick-map `Processing llc_cache_ctrl` 阶段被 1h timeout 杀掉，没有 timing/QoR/area。
+  结论：frontend elaborate 已恢复，但 controller 本体 mapping 仍过重。2026-05-08
+  07:20 CST 已启动非 signoff 的
+  `cache_ctrl_only_quick_map_low_mshr_helper_loop_way...0720_eda-05`，用于尽快取得粗略
+  timing/QoR 方向；若 low-effort 仍不能产出 timing，需要继续拆小 timing probe 或拆
+  controller datapath/state。2026-05-08 07:39 CST，旧
+  `bridge_dual_quick_map_mmio_slim...0346_eda-05` 已进入 medium mapping，但约 3h37m
+  后中间 WNS 仍约 `6.4ns`，4h timeout 后没有最终 timing/QoR；随后对
+  `axi_llc_axi_bridge` 做 slot-free cleanup，仅在释放 read/write slot 时清必要控制位，
+  不再清无效 payload 小字段。LLC hit-only perf、bounded perf、全量 RTL contracts
+  `53/53` 均通过；新的
+  `bridge_dual_quick_map_low_slot_free_cleanup...0755_eda-05` 已启动，用于确认该
+  cleanup 对 bridge 侧 setup/area 的影响。注意 O-2018.06-SP1 会把
+  `compile -map_effort low` 当成 medium 处理，因此该入口只是 quick-map 诊断命名。
+  为避免继续只看大模块，已新增 DDR64/MMIO4 两个 DC-only single-bridge probe 和 flist，
+  并启动 `bridge_ddr64_probe_quick_map_low...0759_eda-05` /
+  `bridge_mmio4_probe_quick_map_low...0759_eda-05`，用于判断 setup 压力来自底层单桥
+  还是 dual wrapper/hazard 集成。2026-05-08 08:29 CST 继续将 pending scan 在
+  `AXI_ID_COUNT >= ENTRY_COUNT` 的生产配置下改为 slot-ID mode，allocation 直接返回
+  free slot，response match 直接比较 AXI ID 与 slot，保留小 ID 空间 tracked-ID
+  fallback；`formal/axi_pending_scan/run_hw_cbmc.sh` 通过，LLC hit-only perf contract
+  仍为 `ready=0/resp=7/no external`，bounded perf contract 仍为
+  `max_extra_observed=5` 且 LLC miss `+2`，全量 RTL contracts `53/53` 通过。该修改后
+  slot-free bridge DC probes 已变 stale 并停止；2026-05-08 08:44 CST 已重新启动
+  `bridge_dual`、DDR64 single-bridge probe、MMIO4 single-bridge probe 的
+  `*_slot_id_scan_*` 三条 current-RTL DC 诊断 run，08:45 CST 复查时三者已读取
+  SRAM `.db` 并进入 analyze 初段，未见早期退出。`cache_ctrl` low-effort 诊断 run
+  已越过 analyze/elaborate/link 并进入 mapping，仍在运行。08:59 CST 复查时，
+  MMIO4 probe 已进入 mapping optimization，DDR64 probe 和 `bridge_dual` 已完成
+  elaborate/link 并进入 mapping；`cache_ctrl` 仍在 mapping，尚无任何最终 timing/QoR
+  report，因此 setup 收敛状态仍未闭合。09:01 CST，MMIO4 probe 中间 optimization
+  表显示面积约 `24.4k -> 25.1k`、`WORST NEG SLACK` 为 `0.80`、setup cost 约
+  `3451 -> 2984`；按历史 log 习惯先视为约 `0.80ns` 级 setup 违例早期信号，
+  但该 run 仍在优化，不能当作最终 timing 结论。
+- [x] 2026-05-08 09:35 CST，针对 MMIO4 4B/4B single-beat helper 做生产 RTL fast path；
+  新增并通过 `formal/axi_mode2_shape_single4`、`formal/axi_write_pack_single4`、
+  `formal/axi_read_pack_single4`，生产宽度 pack formal 也复跑通过；随后又把
+  `axi_llc_axi_write_pack.v` 的 4B fast path 从 procedural constant-if 改为
+  generate-isolated branch，相关 write-pack formal 再次通过；VCS hit-only、
+  bounded perf、全量 contracts 均通过，最新全量目录
+  `rtl/local_debug/vcs_all_contracts_single4_generate_20260508_100218_eda-05`。因此 08:44 CST
+  `*_slot_id_scan_*` 三条 bridge DC 已标记为 stale。09:51 CST 用 Codex 长期 exec
+  session 启动 procedural constant-if 版本的三条 bridge probes，但它们在 10:00 CST
+  因 generate-isolated RTL 更新被手动停止并写入 `manual_status.log`，不再作为当前 RTL
+  setup 证据：
+  `bridge_dual_quick_map_low_single4_helper_direct_9t20_20260508_0951_eda-05`、
+  `bridge_ddr64_probe_quick_map_low_single4_helper_direct_9t20_20260508_0951_eda-05`、
+  `bridge_mmio4_probe_quick_map_low_single4_helper_direct_9t20_20260508_0951_eda-05`。
+  同时确认 `cache_ctrl_only_quick_map_low_mshr_helper_loop_way...0720_eda-05` 被
+  timeout SIGTERM 结束，仅有 post-link 报告，没有 timing/QoR，不能作为 setup 结论。
+  2026-05-08 10:12 CST 已基于最新 generate-isolated RTL 重新启动三条 9T20 +
+  SMIC12 SRAM process-corner `.db` 的 current-RTL bridge probes：
+  `bridge_dual_quick_map_low_single4_generate_direct_9t20_20260508_1012_101255_eda-05`、
+  `bridge_ddr64_probe_quick_map_low_single4_generate_direct_9t20_20260508_1012_101255_eda-05`、
+  `bridge_mmio4_probe_quick_map_low_single4_generate_direct_9t20_20260508_1012_101254_eda-05`。
+  早期复查显示三者均已进入 DC，MMIO4 已越过 link 并进入 quick-map；4B
+  `axi_llc_axi_write_pack` 实例只展开 generate fast path 的 case block，未再出现旧
+  generic byte-loop 的 single4 warning。仍需等待最终 timing/QoR 才能判断小模块
+  setup 是否收敛；若 bridge/core/compat 等小模块 setup 都给出可信收敛证据，必须再补
+  同版 current RTL 的 `axi_llc_subsystem_dual` full_top 1GHz DC。
+- [ ] 2026-05-08 current-RTL core/compat setup probes：已启动 `llc_cache_ctrl`
+  low quick-map
+  `rtl/dc/runs/cache_ctrl_only_quick_map_low_single4_generate_direct_9t20_20260508_1022_102245_eda-05`；
+  已新增 `rtl/dc/probes/core_only.f` 与 `rtl/dc/probes/compat_only.f`，等待当前 DC
+  slot 释放后启动 core/compat current-RTL probe。当前仍无 core/compat 最终
+  timing/QoR，不能启动可靠 full_top DC。
 - [ ] 长期回归：Linux/image 级性能与 difftest 回归；production 路径变化后必须跑，
   纯测试/文档变化不重新打开 EC directed coverage。

@@ -16,6 +16,7 @@ set_svf [file join $out_root ${top_name}.svf]
 
 axi_llc_analyze_elab_link $top_name $rtl_files
 axi_llc_check_link_clean
+axi_llc_protect_sram_hierarchy
 axi_llc_write_link_checkpoint ${top_name}_post_link
 axi_llc_apply_1g_constraints
 axi_llc_apply_group_template_cell_rules

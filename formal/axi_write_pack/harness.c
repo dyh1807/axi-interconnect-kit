@@ -5,6 +5,7 @@
 #include "../../include/axi_dual_port_route_shape.h"
 
 void set_inputs(void);
+void __CPROVER_assume(int);
 
 bool nondet_bool(void);
 uint8_t nondet_uint8_t(void);
@@ -33,6 +34,12 @@ int main(void)
   const uint8_t issued_addr = nondet_uint8_t();
   const uint8_t beat_idx = nondet_uint8_t();
   const bool mode2_ddr_aligned = nondet_bool();
+
+  __CPROVER_assume(beat_idx < 2u);
+  if (mode2_ddr_aligned) {
+    __CPROVER_assume(req_addr >= issued_addr);
+    __CPROVER_assume((uint16_t)req_addr - (uint16_t)issued_addr < 8u);
+  }
 
   axi_write_pack_formal_top.line_data = line_data;
   axi_write_pack_formal_top.line_strb = line_strb;

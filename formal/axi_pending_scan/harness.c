@@ -59,9 +59,7 @@ int main(void)
   if (axi_pending_scan_formal_top.match_found) {
     assert(((entry_valid >> axi_pending_scan_formal_top.match_slot) & 1u) ==
            1u);
-    assert(axi_bridge_scan_packed_id(entry_axi_id,
-                                     axi_pending_scan_formal_top.match_slot,
-                                     2u) == match_axi_id);
+    assert(axi_pending_scan_formal_top.match_slot == match_axi_id);
   }
   if (axi_pending_scan_formal_top.complete_found) {
     assert(((entry_valid >> axi_pending_scan_formal_top.complete_slot) & 1u) ==

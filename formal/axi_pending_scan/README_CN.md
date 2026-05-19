@@ -15,9 +15,14 @@ table 组合扫描一致性。
 - first-free AXI ID。
 - response AXI ID match slot。
 - first completed read slot。
+- 生产配置 slot-ID mode：`ENTRY_COUNT=4`、`AXI_ID_BITS=2`，ID 数覆盖所有 pending
+  slot，slot index 即 AXI ID。
+- fallback tracked-ID mode：`ENTRY_COUNT=5`、`AXI_ID_BITS=2`，pending entry 数超过
+  AXI ID 数，必须使用 stored ID 做 first-free-ID 和 response match。
 
 运行方式：
 
 ```sh
 formal/axi_pending_scan/run_hw_cbmc.sh
+formal/axi_pending_scan/run_hw_cbmc_fallback.sh
 ```

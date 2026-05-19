@@ -104,6 +104,12 @@ module axi_llc_subsystem_core #(
 
     localparam [MODE_BITS-1:0] MODE_CACHE  = 2'b01;
     localparam [MODE_BITS-1:0] MODE_MAPPED = 2'b10;
+    localparam integer SPECIAL_DIRECT_64B_16WAY =
+        (LINE_BYTES == 64) && (LINE_BITS == 512) &&
+        (WAY_COUNT == 16) && (WAY_BITS == 4);
+    localparam integer SPECIAL_DIRECT_READ_RESP_64B =
+        (LINE_BYTES == 64) && (LINE_BITS == 512) &&
+        (LINE_OFFSET_BITS == 6) && (READ_RESP_BITS >= LINE_BITS);
 
     // Direct-window in-flight state for mode2 read/modify/write sequencing.
     reg                       direct_wait_rd_r;
@@ -254,7 +260,11 @@ module axi_llc_subsystem_core #(
     wire [SET_BITS-1:0]       direct_valid_wr_set_w;
     wire [WAY_COUNT-1:0]      direct_valid_wr_mask_w;
     wire [WAY_COUNT-1:0]      direct_valid_wr_bits_w;
-    wire                      direct_store_active_w;
+    wire [WAY_COUNT-1:0]      mapped_way_onehot_w;
+    wire [DATA_ROW_BITS-1:0]  mapped_write_row_w;
+    wire [READ_RESP_BITS-1:0] direct_read_resp_w;
+    wire                      direct_read_store_active_w;
+    wire                      direct_write_store_active_w;
     wire                      global_quiescent_w;
     wire [ADDR_BITS:0]        up_req_end_w;
     wire [ADDR_BITS:0]        mmio_limit_w;
@@ -309,6 +319,124 @@ module axi_llc_subsystem_core #(
         end
     endfunction
 
+    generate
+        if (SPECIAL_DIRECT_64B_16WAY) begin : gen_direct_64b_16way
+            reg [WAY_COUNT-1:0] mapped_way_onehot_r;
+            reg [DATA_ROW_BITS-1:0] mapped_write_row_r;
+
+            always @(*) begin
+                mapped_way_onehot_r = {WAY_COUNT{1'b0}};
+                mapped_write_row_r = {DATA_ROW_BITS{1'b0}};
+                case (mapped_way_w)
+                    4'd0: begin
+                        mapped_way_onehot_r = 16'h0001;
+                        mapped_write_row_r[511:0] = mapped_write_line_w;
+                    end
+                    4'd1: begin
+                        mapped_way_onehot_r = 16'h0002;
+                        mapped_write_row_r[1023:512] = mapped_write_line_w;
+                    end
+                    4'd2: begin
+                        mapped_way_onehot_r = 16'h0004;
+                        mapped_write_row_r[1535:1024] = mapped_write_line_w;
+                    end
+                    4'd3: begin
+                        mapped_way_onehot_r = 16'h0008;
+                        mapped_write_row_r[2047:1536] = mapped_write_line_w;
+                    end
+                    4'd4: begin
+                        mapped_way_onehot_r = 16'h0010;
+                        mapped_write_row_r[2559:2048] = mapped_write_line_w;
+                    end
+                    4'd5: begin
+                        mapped_way_onehot_r = 16'h0020;
+                        mapped_write_row_r[3071:2560] = mapped_write_line_w;
+                    end
+                    4'd6: begin
+                        mapped_way_onehot_r = 16'h0040;
+                        mapped_write_row_r[3583:3072] = mapped_write_line_w;
+                    end
+                    4'd7: begin
+                        mapped_way_onehot_r = 16'h0080;
+                        mapped_write_row_r[4095:3584] = mapped_write_line_w;
+                    end
+                    4'd8: begin
+                        mapped_way_onehot_r = 16'h0100;
+                        mapped_write_row_r[4607:4096] = mapped_write_line_w;
+                    end
+                    4'd9: begin
+                        mapped_way_onehot_r = 16'h0200;
+                        mapped_write_row_r[5119:4608] = mapped_write_line_w;
+                    end
+                    4'd10: begin
+                        mapped_way_onehot_r = 16'h0400;
+                        mapped_write_row_r[5631:5120] = mapped_write_line_w;
+                    end
+                    4'd11: begin
+                        mapped_way_onehot_r = 16'h0800;
+                        mapped_write_row_r[6143:5632] = mapped_write_line_w;
+                    end
+                    4'd12: begin
+                        mapped_way_onehot_r = 16'h1000;
+                        mapped_write_row_r[6655:6144] = mapped_write_line_w;
+                    end
+                    4'd13: begin
+                        mapped_way_onehot_r = 16'h2000;
+                        mapped_write_row_r[7167:6656] = mapped_write_line_w;
+                    end
+                    4'd14: begin
+                        mapped_way_onehot_r = 16'h4000;
+                        mapped_write_row_r[7679:7168] = mapped_write_line_w;
+                    end
+                    4'd15: begin
+                        mapped_way_onehot_r = 16'h8000;
+                        mapped_write_row_r[8191:7680] = mapped_write_line_w;
+                    end
+                endcase
+            end
+
+            assign mapped_way_onehot_w = mapped_way_onehot_r;
+            assign mapped_write_row_w = mapped_write_row_r;
+        end else begin : gen_direct_generic_way
+            assign mapped_way_onehot_w = way_onehot(mapped_way_w);
+            assign mapped_write_row_w = place_line_in_row(mapped_way_w,
+                                                          mapped_write_line_w);
+        end
+    endgenerate
+
+    generate
+        if (SPECIAL_DIRECT_READ_RESP_64B) begin : gen_direct_read_resp_64b
+            reg [READ_RESP_BITS-1:0] direct_read_resp_64b_r;
+
+            always @(*) begin
+                direct_read_resp_64b_r = {READ_RESP_BITS{1'b0}};
+                case (direct_addr_r[5:2])
+                    4'd0:  direct_read_resp_64b_r[511:0] = mapped_read_line_w[511:0];
+                    4'd1:  direct_read_resp_64b_r[479:0] = mapped_read_line_w[511:32];
+                    4'd2:  direct_read_resp_64b_r[447:0] = mapped_read_line_w[511:64];
+                    4'd3:  direct_read_resp_64b_r[415:0] = mapped_read_line_w[511:96];
+                    4'd4:  direct_read_resp_64b_r[383:0] = mapped_read_line_w[511:128];
+                    4'd5:  direct_read_resp_64b_r[351:0] = mapped_read_line_w[511:160];
+                    4'd6:  direct_read_resp_64b_r[319:0] = mapped_read_line_w[511:192];
+                    4'd7:  direct_read_resp_64b_r[287:0] = mapped_read_line_w[511:224];
+                    4'd8:  direct_read_resp_64b_r[255:0] = mapped_read_line_w[511:256];
+                    4'd9:  direct_read_resp_64b_r[223:0] = mapped_read_line_w[511:288];
+                    4'd10: direct_read_resp_64b_r[191:0] = mapped_read_line_w[511:320];
+                    4'd11: direct_read_resp_64b_r[159:0] = mapped_read_line_w[511:352];
+                    4'd12: direct_read_resp_64b_r[127:0] = mapped_read_line_w[511:384];
+                    4'd13: direct_read_resp_64b_r[95:0] = mapped_read_line_w[511:416];
+                    4'd14: direct_read_resp_64b_r[63:0] = mapped_read_line_w[511:448];
+                    4'd15: direct_read_resp_64b_r[31:0] = mapped_read_line_w[511:480];
+                endcase
+            end
+
+            assign direct_read_resp_w = direct_read_resp_64b_r;
+        end else begin : gen_direct_read_resp_generic
+            assign direct_read_resp_w = extract_read_response(direct_addr_r,
+                                                              mapped_read_line_w);
+        end
+    endgenerate
+
     // Address range checks for MMIO and the mapped window.
     assign up_req_end_w = {1'b0, up_req_addr} +
                           {{(ADDR_BITS-7){1'b0}}, up_req_total_size} +
@@ -362,44 +490,45 @@ module axi_llc_subsystem_core #(
                                  data_rd_valid_w &&
                                  valid_rd_valid_w &&
                                  direct_write_r;
-    assign direct_data_wr_way_mask_w = way_onehot(mapped_way_w);
-    assign direct_data_wr_row_w = place_line_in_row(mapped_way_w, mapped_write_line_w);
+    assign direct_data_wr_way_mask_w = mapped_way_onehot_w;
+    assign direct_data_wr_row_w = mapped_write_row_w;
 
     assign direct_valid_wr_en_w = direct_wait_rd_r &&
                                   data_rd_valid_w &&
                                   valid_rd_valid_w &&
                                   direct_write_r;
     assign direct_valid_wr_set_w = direct_set_r;
-    assign direct_valid_wr_mask_w = way_onehot(mapped_way_w);
-    assign direct_valid_wr_bits_w = mapped_next_valid_bit_w ? way_onehot(mapped_way_w)
+    assign direct_valid_wr_mask_w = mapped_way_onehot_w;
+    assign direct_valid_wr_bits_w = mapped_next_valid_bit_w ? mapped_way_onehot_w
                                                             : {WAY_COUNT{1'b0}};
-    assign direct_store_active_w = direct_wait_rd_r || direct_accept_w;
+    assign direct_read_store_active_w = direct_wait_rd_r || direct_accept_w;
+    assign direct_write_store_active_w = direct_wait_rd_r;
     // Shared valid/data/meta stores are arbitrated here. Sweep has highest
     // priority, then mode2 direct RMW, then mode1 cache control.
     assign valid_wr_en_w = valid_wr_en_sweep_w ? 1'b1 :
-                           direct_store_active_w ? direct_valid_wr_en_w :
+                           direct_write_store_active_w ? direct_valid_wr_en_w :
                            cache_valid_wr_en_w;
     assign valid_wr_set_w = valid_wr_en_sweep_w ? valid_wr_set_sweep_w :
-                            direct_store_active_w ? direct_valid_wr_set_w :
+                            direct_write_store_active_w ? direct_valid_wr_set_w :
                             cache_valid_wr_set_w;
     assign valid_wr_mask_w = valid_wr_en_sweep_w ? valid_wr_mask_sweep_w :
-                             direct_store_active_w ? direct_valid_wr_mask_w :
+                             direct_write_store_active_w ? direct_valid_wr_mask_w :
                              cache_valid_wr_mask_w;
     assign valid_wr_bits_w = valid_wr_en_sweep_w ? valid_wr_bits_sweep_w :
-                             direct_store_active_w ? direct_valid_wr_bits_w :
+                             direct_write_store_active_w ? direct_valid_wr_bits_w :
                              cache_valid_wr_bits_w;
     assign valid_rd_en_w = direct_accept_w ? 1'b1 : cache_valid_rd_en_w;
 
     assign data_rd_en_w = direct_accept_w ? 1'b1 : cache_data_rd_en_w;
     assign data_rd_set_w = direct_accept_w ? mapped_set_w :
                            cache_data_rd_set_w;
-    assign data_wr_en_w = direct_store_active_w ? direct_data_wr_en_w :
+    assign data_wr_en_w = direct_write_store_active_w ? direct_data_wr_en_w :
                           cache_data_wr_en_w;
-    assign data_wr_set_w = direct_store_active_w ? direct_set_r :
+    assign data_wr_set_w = direct_write_store_active_w ? direct_set_r :
                            cache_data_wr_set_w;
-    assign data_wr_way_mask_w = direct_store_active_w ? direct_data_wr_way_mask_w :
+    assign data_wr_way_mask_w = direct_write_store_active_w ? direct_data_wr_way_mask_w :
                                 cache_data_wr_way_mask_w;
-    assign data_wr_row_w = direct_store_active_w ? direct_data_wr_row_w :
+    assign data_wr_row_w = direct_write_store_active_w ? direct_data_wr_row_w :
                            cache_data_wr_row_w;
 
     assign meta_rd_en_w = cache_meta_rd_en_w;
@@ -504,7 +633,7 @@ module axi_llc_subsystem_core #(
         .clk     (clk),
         .rst_n   (rst_n),
         .rd_en   (valid_rd_en_w),
-        .rd_set  (direct_store_active_w ? direct_valid_rd_set_w : cache_valid_rd_set_w),
+        .rd_set  (direct_read_store_active_w ? direct_valid_rd_set_w : cache_valid_rd_set_w),
         .rd_valid(valid_rd_valid_w),
         .rd_bits (valid_rd_bits_w),
         .wr_en   (valid_wr_en_w),
@@ -752,8 +881,7 @@ module axi_llc_subsystem_core #(
                 if (direct_write_r) begin
                     resp_data_r <= {READ_RESP_BITS{1'b0}};
                 end else begin
-                    resp_data_r <= extract_read_response(direct_addr_r,
-                                                         mapped_read_line_w);
+                    resp_data_r <= direct_read_resp_w;
                 end
             end
         end
