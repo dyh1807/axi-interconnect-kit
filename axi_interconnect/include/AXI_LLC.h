@@ -27,7 +27,7 @@ struct AXI_LLCMetaEntry_t {
 constexpr uint8_t AXI_LLC_META_VALID = 1u << 0;
 constexpr uint8_t AXI_LLC_META_DIRTY = 1u << 1;
 constexpr uint8_t AXI_LLC_META_PREFETCH = 1u << 2;
-constexpr uint32_t AXI_LLC_META_ENTRY_BYTES = 8;
+constexpr uint32_t AXI_LLC_META_ENTRY_BYTES = 4;
 constexpr uint32_t AXI_LLC_REPL_BYTES = 4;
 constexpr uint32_t AXI_LLC_MAX_PREFETCH_QUEUE = 8;
 constexpr uint8_t AXI_LLC_INVALID_VICTIM_MSHR_SLOT = 0xFFu;
@@ -72,6 +72,8 @@ struct AXI_LLC_ReadReqIn_t {
   wire<8> total_size = 0;
   wire<4> id = 0;
   wire<1> bypass = false;
+  wire<1> direct_mapped = false;
+  wire<1> mode2_ddr_aligned = false;
 };
 
 struct AXI_LLC_ReadReqOut_t {
@@ -96,6 +98,8 @@ struct AXI_LLC_WriteReqIn_t {
   wire<8> total_size = 0;
   wire<4> id = 0;
   wire<1> bypass = false;
+  wire<1> direct_mapped = false;
+  wire<1> mode2_ddr_aligned = false;
 };
 
 struct AXI_LLC_WriteReqOut_t {
@@ -147,6 +151,7 @@ struct AXI_LLC_MemOut_t {
   wire<1> read_req_valid = false;
   wire<32> read_req_addr = 0;
   wire<8> read_req_size = 0;
+  wire<1> read_req_mode2_ddr_aligned = false;
   wire<4> read_req_id = 0;
   wire<1> read_resp_ready = false;
   wire<1> write_req_valid = false;
@@ -154,6 +159,7 @@ struct AXI_LLC_MemOut_t {
   WideWriteData_t write_req_data{};
   WideWriteStrb_t write_req_strobe{};
   wire<8> write_req_size = 0;
+  wire<1> write_req_mode2_ddr_aligned = false;
   wire<4> write_req_id = 0;
   wire<1> write_resp_ready = false;
 };
@@ -171,9 +177,11 @@ struct AXI_LLC_ExtOut_t {
 struct AXI_LLC_LookupIn_t {
   wire<1> data_valid = false;
   wire<1> meta_valid = false;
+  wire<1> valid_valid = false;
   wire<1> repl_valid = false;
   AXI_LLC_Bytes_t data{};
   AXI_LLC_Bytes_t meta{};
+  AXI_LLC_Bytes_t valid{};
   AXI_LLC_Bytes_t repl{};
 };
 
@@ -189,6 +197,7 @@ struct AXI_LLC_TableReq_t {
 struct AXI_LLC_TableOut_t {
   AXI_LLC_TableReq_t data{};
   AXI_LLC_TableReq_t meta{};
+  AXI_LLC_TableReq_t valid{};
   AXI_LLC_TableReq_t repl{};
   wire<1> invalidate_all = false;
 };
@@ -206,6 +215,7 @@ struct AXI_LLCMissEntry_t {
   bool bypass = false;
   bool is_prefetch = false;
   bool is_write = false;
+  bool mode2_ddr_aligned = false;
   bool prefetch_train = false;
   bool mem_req_issued = false;
   bool refill_valid = false;
@@ -235,6 +245,8 @@ struct AXI_LLCPrefetchReq_t {
 struct AXI_LLCWritePendingReq_t {
   bool valid = false;
   bool bypass = false;
+  bool direct_mapped = false;
+  bool mode2_ddr_aligned = false;
   uint8_t master = 0;
   uint8_t id = 0;
   uint8_t total_size = 0;
@@ -246,6 +258,8 @@ struct AXI_LLCWritePendingReq_t {
 struct AXI_LLCWriteCtx_t {
   bool valid = false;
   bool bypass = false;
+  bool direct_mapped = false;
+  bool mode2_ddr_aligned = false;
   bool lookup_pending = false;
   bool mem_issued = false;
   bool mem_done = false;
@@ -292,6 +306,8 @@ struct AXI_LLC_Regs_t {
   bool lookup_is_invalidate_r = false;
   bool lookup_is_write_r = false;
   bool lookup_is_bypass_r = false;
+  bool lookup_is_direct_mapped_r = false;
+  bool lookup_is_mode2_ddr_aligned_r = false;
   bool prefetch_stream_valid_r = false;
   uint32_t prefetch_last_miss_line_r = 0;
   uint8_t prefetch_quiet_cycles_r = 0;
@@ -370,6 +386,7 @@ public:
   static uint32_t line_addr(const AXI_LLCConfig &config, uint32_t addr);
   static uint32_t set_index(const AXI_LLCConfig &config, uint32_t addr);
   static uint32_t tag_of(const AXI_LLCConfig &config, uint32_t addr);
+  static uint32_t valid_row_bytes(const AXI_LLCConfig &config);
   static AXI_LLCMetaEntry_t decode_meta(const AXI_LLC_Bytes_t &payload,
                                         uint32_t way);
   static void encode_meta(const AXI_LLCMetaEntry_t &entry,
@@ -421,7 +438,10 @@ private:
   bool can_accept_invalidate_line_now(uint32_t line_addr) const;
   bool has_dirty_or_write_hazard(const AXI_LLC_Regs_t &regs) const;
   bool can_accept_invalidate_all_now(const AXI_LLC_Regs_t &regs) const;
-  bool line_has_valid_meta(const AXI_LLC_Bytes_t &meta_payload, uint32_t tag,
+  bool direct_mapped_coords(uint32_t addr, uint32_t *set,
+                            uint8_t *way) const;
+  bool line_has_valid_meta(const AXI_LLC_Bytes_t &valid_payload,
+                           const AXI_LLC_Bytes_t &meta_payload, uint32_t tag,
                            int *hit_way, int *first_invalid_way,
                            AXI_LLCMetaEntry_t *hit_meta) const;
   bool enqueue_read_response(uint8_t master, uint8_t id,

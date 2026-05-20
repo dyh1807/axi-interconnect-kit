@@ -2,12 +2,31 @@
 
 Standalone AXI4 memory subsystem extracted from the simulator.
 
+## Current Mainline
+
+The current mainline is an integrated dual external AXI-port design:
+
+- The CPU side still uses the simplified `read_ports[4]` / `write_ports[2]`
+  upstream interface.
+- The downstream side is split into a DDR/SDRAM AXI port and an MMIO AXI port.
+- The DDR/SDRAM port uses 256-bit beats and supports 64B cache-line transfers
+  as two beats.
+- The MMIO port uses 32-bit beats and only accepts 4B single-beat transfers.
+- Read and write outstanding budgets are shared across the two external ports
+  but remain independent from each other. The dual-port profile target is 32
+  reads and 32 writes.
+
+The legacy single-AXI-port plus `AXI_Router_AXI4` path remains for historical
+tests, demos, and bring-up. The current C++ interface is documented in
+[docs/interfaces.md](docs/interfaces.md).
+
 ## Scope
 
 - One AXI4 interconnect with simplified upstream ports:
   - `read_ports[4]`: `icache`, `dcache_r`, `uncore_lsu_r`, `extra_r`
   - `write_ports[2]`: `dcache_w`, `uncore_lsu_w`
-- AXI4 router, SimDDR downstream memory model, MMIO bus, UART16550 device
+- dual external AXI ports, legacy/demo AXI4 router, SimDDR downstream memory
+  model, MMIO bus, UART16550 device
 - Optional shared unified LLC on the AXI4 path
 
 AXI3 support has been removed from this repository. The kit is now AXI4-only.
@@ -27,27 +46,31 @@ Read/Write masters
 | AXI_LLC (optional)   |
 +----------------------+
         |
-        v
-+----------------------+
-| AXI_Router_AXI4      |
-+----------------------+
-     |            |
-     | DDR range  | MMIO range
-     v            v
-+----------+   +---------------------+
-| SimDDR   |   | MMIO_Bus + UART16550|
-+----------+   +---------------------+
+        +----------------------+
+        |                      |
+        v                      v
++---------------+       +---------------------+
+| DDR/SDRAM AXI |       | MMIO AXI            |
+| 256-bit beat  |       | 32-bit beat         |
++---------------+       +---------------------+
+        |                      |
+        v                      v
++----------+            +---------------------+
+| SimDDR   |            | MMIO_Bus + UART16550|
++----------+            +---------------------+
 ```
 
-`AXI_Router_AXI4` is an explicit layer. The interconnect does arbitration and
-upstream response routing; the router does AXI-side address decode.
+The integrated dual-port mainline performs DDR/MMIO routing inside the
+interconnect/bridge. `AXI_Router_AXI4` is still available for the legacy
+single-port/demo path.
 
 Terminology used in this repository:
 
 - `upstream`: request sources connected to `read_ports[]` / `write_ports[]`
   and the response paths that return to those masters
 - `downstream`: the DDR-side or MMIO-side interfaces below the interconnect,
-  including `AXI_Router_AXI4`, `SimDDR`, and MMIO devices
+  including `axi_ddr_io`, `axi_mmio_io`, legacy `AXI_Router_AXI4`, `SimDDR`,
+  and MMIO devices
 
 ## LLC Summary
 
@@ -58,8 +81,8 @@ Default configuration:
 - `8MB`
 - `64B` line
 - `16-way`
-- `4` MSHRs
-- lookup latency `8`
+- default `8` MSHRs
+- lookup latency `3`
 - `PIPT`, `unified`, `NINE`
 - prefetch disabled by default
 
@@ -73,8 +96,9 @@ Current behavior:
   - `1`: keep the miss on a no-allocate path while still returning refill data
     upstream
 - AXI4 interconnect read upstream side supports multiple outstanding contexts:
-  - global limit `8`
-  - per-read-master limit `4`
+  - dual-port profile global limit `32`
+  - dual-port profile per-read-master limit `32`
+  - standalone CMake defaults may be smaller unless explicitly configured
 - LLC cacheable demand-miss execution is still more restrictive:
   - one read master can have at most one cacheable demand miss actively owned by
     the LLC at a time
@@ -97,7 +121,23 @@ Current behavior:
   - already captured clean LLC-path work may drain while `invalidate_all` is
     pending
   - it drops stale clean refill installs by epoch once accepted
+  - the external table runtime now hosts a dedicated byte-per-way `valid` table;
+    `invalidate_all` resets that table only, so stale
+    data/meta/repl contents may remain physically present but unreachable
   - it does not silently discard dirty resident data
+- The interconnect also carries prototype runtime controls for the submodule:
+  - `mode=1`: LLC_ON
+  - `mode=2`: treat `[offset, offset + 4MB)` as a direct-mapped local LLC
+    storage window; accesses inside the window stay local and do not allocate
+    MSHRs or refill from DDR, while accesses outside the window are forced to
+    `bypass`
+  - `mode=0`: LLC_OFF
+  - encoded `mode=3` is canonicalized to `mode=0`; it is not a separate
+    runtime mode
+  - mode/offset changes follow a `drain -> invalidate_all -> activate`
+    contract: no new upstream requests are accepted during reconfiguration, the
+    old in-flight LLC/AXI work drains first, and the new configuration becomes
+    active only after `invalidate_all_accepted`
 
 ### AXI4 Write Concurrency
 
@@ -156,11 +196,12 @@ rather than reopen basic ordering/coherence rules.
 Validated toolchains:
 
 - `qm` environment default toolchain
-- `/usr/bin/g++`
-- `/workspace/S/daiyihao/miniconda3/envs/qm/bin/x86_64-conda-linux-gnu-c++`
+- system `g++`
+- Conda-hosted `x86_64-conda-linux-gnu-c++` in the `qm` environment
 
 ## Interface Documentation
 
+- [docs/submodule_architecture_CN.md](docs/submodule_architecture_CN.md)
 - [docs/interfaces.md](docs/interfaces.md)
 - [docs/interfaces_CN.md](docs/interfaces_CN.md)
 - [docs/llc_design_CN.md](docs/llc_design_CN.md)
@@ -176,6 +217,8 @@ Validated toolchains:
 │   ├── AXI_Interconnect.cpp
 │   ├── AXI_LLC.cpp
 │   ├── AXI_Router_AXI4.cpp
+│   ├── axi_interconnect_dual_port_test.cpp
+│   ├── axi_interconnect_issue_probe_test.cpp
 │   ├── axi_interconnect_test.cpp
 │   ├── axi_interconnect_llc_axi4_test.cpp
 │   └── axi_llc_test.cpp

@@ -21,18 +21,27 @@ struct ArEvent {
   uint8_t len = 0;
 };
 
+struct AwEvent {
+  uint32_t addr = 0;
+  uint8_t id = 0;
+  uint8_t len = 0;
+};
+
 struct FakeLlcTables {
   AXI_LLCConfig config{};
   AXI_LLC_LookupIn_t lookup_in{};
   std::vector<AXI_LLC_Bytes_t> data_sets{};
   std::vector<AXI_LLC_Bytes_t> meta_sets{};
+  std::vector<AXI_LLC_Bytes_t> valid_sets{};
   std::vector<AXI_LLC_Bytes_t> repl_sets{};
 
   bool pending_data = false;
   bool pending_meta = false;
+  bool pending_valid = false;
   bool pending_repl = false;
   uint32_t pending_data_index = 0;
   uint32_t pending_meta_index = 0;
+  uint32_t pending_valid_index = 0;
   uint32_t pending_repl_index = 0;
 
   void init(const AXI_LLCConfig &cfg) {
@@ -40,15 +49,18 @@ struct FakeLlcTables {
     const uint32_t sets = config.set_count();
     data_sets.assign(sets, {});
     meta_sets.assign(sets, {});
+    valid_sets.assign(sets, {});
     repl_sets.assign(sets, {});
     for (uint32_t set = 0; set < sets; ++set) {
       data_sets[set].resize(static_cast<size_t>(config.ways) * config.line_bytes);
       meta_sets[set].resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
+      valid_sets[set].resize(AXI_LLC::valid_row_bytes(config));
       repl_sets[set].resize(AXI_LLC_REPL_BYTES);
     }
     lookup_in = {};
-    pending_data = pending_meta = pending_repl = false;
-    pending_data_index = pending_meta_index = pending_repl_index = 0;
+    pending_data = pending_meta = pending_valid = pending_repl = false;
+    pending_data_index = pending_meta_index = pending_valid_index =
+        pending_repl_index = 0;
   }
 
   void comb_outputs() {
@@ -60,6 +72,10 @@ struct FakeLlcTables {
     if (pending_meta && pending_meta_index < meta_sets.size()) {
       lookup_in.meta_valid = true;
       lookup_in.meta = meta_sets[pending_meta_index];
+    }
+    if (pending_valid && pending_valid_index < valid_sets.size()) {
+      lookup_in.valid_valid = true;
+      lookup_in.valid = valid_sets[pending_valid_index];
     }
     if (pending_repl && pending_repl_index < repl_sets.size()) {
       lookup_in.repl_valid = true;
@@ -95,18 +111,19 @@ struct FakeLlcTables {
     }
   }
 
+  static void write_valid_payload(AXI_LLC_Bytes_t &dst,
+                                  const AXI_LLC_Bytes_t &payload,
+                                  const std::vector<uint8_t> &byte_enable) {
+    write_plain_payload(dst, payload, byte_enable);
+  }
+
   void seq(const AXI_LLC_TableOut_t &table_out) {
-    pending_data = pending_meta = pending_repl = false;
+    pending_data = pending_meta = pending_valid = pending_repl = false;
 
     if (table_out.invalidate_all) {
-      for (auto &data : data_sets) {
-        data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
-      }
-      for (auto &meta : meta_sets) {
-        meta.resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
-      }
-      for (auto &repl : repl_sets) {
-        repl.resize(AXI_LLC_REPL_BYTES);
+      for (auto &valid : valid_sets) {
+        valid.resize(AXI_LLC::valid_row_bytes(config));
+        std::fill(valid.data(), valid.data() + valid.size(), 0);
       }
     }
 
@@ -128,6 +145,15 @@ struct FakeLlcTables {
       pending_meta_index = table_out.meta.index;
     }
 
+    if (table_out.valid.write && table_out.valid.index < valid_sets.size()) {
+      write_valid_payload(valid_sets[table_out.valid.index],
+                          table_out.valid.payload,
+                          table_out.valid.byte_enable);
+    } else if (table_out.valid.enable && table_out.valid.index < valid_sets.size()) {
+      pending_valid = true;
+      pending_valid_index = table_out.valid.index;
+    }
+
     if (table_out.repl.write && table_out.repl.index < repl_sets.size()) {
       write_plain_payload(repl_sets[table_out.repl.index], table_out.repl.payload,
                           table_out.repl.byte_enable);
@@ -143,6 +169,7 @@ struct Axi4LlcTestEnv {
   sim_ddr::SimDDR ddr;
   FakeLlcTables tables;
   std::vector<ArEvent> ar_events{};
+  std::vector<AwEvent> aw_events{};
 };
 
 inline AXI_LLCConfig make_small_llc_config() {
@@ -209,6 +236,11 @@ inline void commit_cycle_inputs(Axi4LlcTestEnv &env) {
                              static_cast<uint8_t>(env.interconnect.axi_io.ar.arid),
                              static_cast<uint8_t>(env.interconnect.axi_io.ar.arlen)});
   }
+  if (env.interconnect.axi_io.aw.awvalid && env.interconnect.axi_io.aw.awready) {
+    env.aw_events.push_back({env.interconnect.axi_io.aw.awaddr,
+                             static_cast<uint8_t>(env.interconnect.axi_io.aw.awid),
+                             static_cast<uint8_t>(env.interconnect.axi_io.aw.awlen)});
+  }
 
   env.ddr.io.ar.arvalid = env.interconnect.axi_io.ar.arvalid;
   env.ddr.io.ar.araddr = env.interconnect.axi_io.ar.araddr;
@@ -248,6 +280,7 @@ inline void init_env(Axi4LlcTestEnv &env) {
   env.ddr.init();
   env.tables.init(cfg);
   env.ar_events.clear();
+  env.aw_events.clear();
 }
 
 inline void init_env(Axi4LlcTestEnv &env, const AXI_LLCConfig &cfg) {
@@ -256,6 +289,7 @@ inline void init_env(Axi4LlcTestEnv &env, const AXI_LLCConfig &cfg) {
   env.ddr.init();
   env.tables.init(cfg);
   env.ar_events.clear();
+  env.aw_events.clear();
 }
 
 inline uint32_t read_mem_word(uint32_t addr) { return p_memory[addr >> 2]; }
@@ -264,6 +298,19 @@ inline void write_memory_line(uint32_t line_addr, uint32_t base_word) {
   for (uint32_t i = 0; i < 16; ++i) {
     p_memory[(line_addr >> 2) + i] = base_word + i;
   }
+}
+
+inline bool wait_mem_word(Axi4LlcTestEnv &env, uint32_t addr,
+                          uint32_t expected,
+                          int timeout = sim_ddr::SIM_DDR_LATENCY * 80) {
+  while (timeout-- > 0) {
+    if (read_mem_word(addr) == expected) {
+      return true;
+    }
+    cycle_outputs(env);
+    cycle_inputs(env);
+  }
+  return read_mem_word(addr) == expected;
 }
 
 inline WideWriteStrb_t make_full_write_strobe(uint32_t bytes = 64) {
@@ -289,7 +336,6 @@ inline bool issue_read(Axi4LlcTestEnv &env, uint8_t master, uint32_t addr,
   int timeout = 200;
   while (timeout-- > 0) {
     cycle_outputs(env);
-    const bool ready_snapshot = env.interconnect.read_ports[master].req.ready;
 
     auto &rp = env.interconnect.read_ports[master];
     rp.req.valid = true;
@@ -299,7 +345,7 @@ inline bool issue_read(Axi4LlcTestEnv &env, uint8_t master, uint32_t addr,
     rp.req.bypass = bypass;
 
     cycle_inputs(env);
-    if (ready_snapshot) {
+    if (env.interconnect.read_req_accepted[master]) {
       return true;
     }
   }
@@ -313,7 +359,6 @@ inline bool issue_write(Axi4LlcTestEnv &env, uint8_t master, uint32_t addr,
   int timeout = 200;
   while (timeout-- > 0) {
     cycle_outputs(env);
-    const bool ready_snapshot = env.interconnect.write_ports[master].req.ready;
 
     auto &wp = env.interconnect.write_ports[master];
     wp.req.valid = true;
@@ -325,7 +370,7 @@ inline bool issue_write(Axi4LlcTestEnv &env, uint8_t master, uint32_t addr,
     wp.req.bypass = bypass;
 
     cycle_inputs(env);
-    if (ready_snapshot) {
+    if (env.interconnect.write_req_accepted[master]) {
       return true;
     }
   }
@@ -345,6 +390,9 @@ inline bool wait_read_resp(Axi4LlcTestEnv &env, uint8_t master, uint8_t id,
         return false;
       }
       resp.ready = true;
+      cycle_inputs(env);
+      cycle_outputs(env);
+      env.interconnect.read_ports[master].resp.ready = true;
       cycle_inputs(env);
       return true;
     }
@@ -366,12 +414,16 @@ inline bool wait_write_resp(Axi4LlcTestEnv &env, uint8_t master, uint8_t id) {
       }
       resp.ready = true;
       cycle_inputs(env);
+      cycle_outputs(env);
+      env.interconnect.write_ports[master].resp.ready = true;
+      cycle_inputs(env);
       return true;
     }
     cycle_inputs(env);
   }
   std::printf("FAIL: write resp timeout master=%u id=%u\n", master, id);
   env.interconnect.debug_print();
+  env.ddr.print_state();
   return false;
 }
 

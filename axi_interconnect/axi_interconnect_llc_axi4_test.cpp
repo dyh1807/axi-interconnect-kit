@@ -14,6 +14,17 @@ namespace {
 using namespace axi_interconnect;
 using namespace axi_test;
 
+AXI_LLCConfig make_mode2_llc_config() {
+  AXI_LLCConfig cfg;
+  cfg.enable = true;
+  cfg.size_bytes = 8ull << 20;
+  cfg.line_bytes = 64;
+  cfg.ways = 16;
+  cfg.mshr_num = 8;
+  cfg.prefetch_enable = false;
+  return cfg;
+}
+
 bool test_cross_master_write_then_read_latest() {
   std::printf("=== AXI4 LLC Integration Test 1: cross-master latest value ===\n");
 
@@ -336,6 +347,67 @@ bool test_same_set_eviction_roundtrip_latest() {
   return true;
 }
 
+bool test_same_set_valid_updates_preserve_neighbor_way() {
+  std::printf("=== AXI4 LLC Integration Test 4a: same-set valid updates preserve neighbor way ===\n");
+
+  Axi4LlcTestEnv env;
+  AXI_LLCConfig cfg = make_small_llc_config();
+  cfg.size_bytes = 256;
+  cfg.line_bytes = 64;
+  cfg.ways = 2;
+  cfg.mshr_num = 2;
+  init_env(env, cfg);
+
+  const uint32_t line_a = 0x000;
+  const uint32_t line_b = 0x080;
+  const uint32_t read_a = line_a + 8;
+  write_memory_line(line_a, 0x1000);
+  write_memory_line(line_b, 0x2000);
+
+  auto make_line = [](uint32_t base_word) {
+    WideWriteData_t wdata;
+    wdata.clear();
+    for (uint32_t i = 0; i < 16; ++i) {
+      wdata[i] = base_word + i;
+    }
+    return wdata;
+  };
+
+  WideWriteStrb_t full_strobe;
+  full_strobe.clear();
+  for (uint32_t i = 0; i < 64; ++i) {
+    full_strobe.set(i, true);
+  }
+
+  if (!issue_write(env, MASTER_DCACHE_W, line_a, make_line(0xA000), full_strobe, 63,
+                   0x31, false) ||
+      !wait_write_resp(env, MASTER_DCACHE_W, 0x31)) {
+    std::printf("FAIL: write line A failed\n");
+    return false;
+  }
+  if (!issue_write(env, MASTER_DCACHE_W, line_b, make_line(0xB000), full_strobe, 63,
+                   0x32, false) ||
+      !wait_write_resp(env, MASTER_DCACHE_W, 0x32)) {
+    std::printf("FAIL: write line B failed\n");
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, read_a, 15, 0x33, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x33, 0xA002, 0xA003)) {
+    std::printf("FAIL: read line A after same-set write failed\n");
+    return false;
+  }
+  if (!env.ar_events.empty()) {
+    std::printf("FAIL: line A should remain resident after line B valid update, got %zu DDR ARs\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
 bool test_partial_cacheable_write_miss_refill_merge_and_dirty_eviction() {
   std::printf("=== AXI4 LLC Integration Test 4b: partial write miss refills then writes back dirty victim ===\n");
 
@@ -406,6 +478,11 @@ bool test_partial_cacheable_write_miss_refill_merge_and_dirty_eviction() {
     return false;
   }
 
+  if (!wait_mem_word(env, line_a + 8, write_value)) {
+    std::printf("FAIL: dirty victim writeback did not reach backing memory got=0x%x\n",
+                read_mem_word(line_a + 8));
+    return false;
+  }
   if (read_mem_word(line_a + 0) != 0x1000 || read_mem_word(line_a + 4) != 0x1001 ||
       read_mem_word(line_a + 8) != write_value || read_mem_word(line_a + 12) != 0x1003) {
     std::printf("FAIL: dirty victim writeback corrupted backing memory w0=0x%x w1=0x%x w2=0x%x w3=0x%x\n",
@@ -508,6 +585,252 @@ bool test_bypass_write_hit_updates_resident_line() {
   return true;
 }
 
+bool test_mode2_direct_mapped_local_window_stays_off_ddr() {
+  std::printf("=== AXI4 LLC Integration Test 6c: mode2 mapped window stays local ===\n");
+
+  Axi4LlcTestEnv env;
+  env.interconnect.mode = 2;
+  env.interconnect.llc_mapped_offset = 0x1000;
+  init_env(env, make_mode2_llc_config());
+
+  const uint32_t mapped_line = 0x1000 + 0x200;
+  const uint32_t mapped_addr = mapped_line + 8;
+  write_memory_line(mapped_line, 0x9000);
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_ICACHE, mapped_addr, 15, 0x34, false) ||
+      !wait_read_resp(env, MASTER_ICACHE, 0x34, 0x0, 0x0)) {
+    std::printf("FAIL: mode2 cold read did not return zeroed local contents\n");
+    return false;
+  }
+  cycle_outputs(env);
+  cycle_inputs(env);
+  if (!env.ar_events.empty()) {
+    std::printf("FAIL: mode2 cold read should not issue DDR AR, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+  if (read_mem_word(mapped_addr) != 0x9002) {
+    std::printf("FAIL: mode2 cold read should not touch backing memory got=0x%08x\n",
+                read_mem_word(mapped_addr));
+    return false;
+  }
+
+  WideWriteData_t wdata;
+  wdata.clear();
+  for (uint32_t i = 0; i < 16; ++i) {
+    wdata[i] = 0xD000 + i;
+  }
+  WideWriteStrb_t wstrb;
+  wstrb.clear();
+  for (uint32_t i = 0; i < 64; ++i) {
+    wstrb.set(i, true);
+  }
+
+  env.ar_events.clear();
+  env.aw_events.clear();
+  if (!issue_write(env, MASTER_DCACHE_W, mapped_line, wdata, wstrb, 63, 0x35,
+                   false) ||
+      !wait_write_resp(env, MASTER_DCACHE_W, 0x35)) {
+    std::printf("FAIL: mode2 local write failed\n");
+    return false;
+  }
+  cycle_outputs(env);
+  cycle_inputs(env);
+  if (!env.ar_events.empty() || !env.aw_events.empty()) {
+    std::printf("FAIL: mode2 local write should not issue DDR traffic ar=%zu aw=%zu\n",
+                env.ar_events.size(), env.aw_events.size());
+    return false;
+  }
+  if (read_mem_word(mapped_line) != 0x9000 || read_mem_word(mapped_addr) != 0x9002) {
+    std::printf("FAIL: mode2 local write should not modify backing memory w0=0x%08x w2=0x%08x\n",
+                read_mem_word(mapped_line), read_mem_word(mapped_addr));
+    return false;
+  }
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_DCACHE_R, mapped_addr, 15, 0x36, false) ||
+      !wait_read_resp(env, MASTER_DCACHE_R, 0x36, 0xD002, 0xD003)) {
+    std::printf("FAIL: mode2 reread did not observe local write data\n");
+    return false;
+  }
+  if (!env.ar_events.empty()) {
+    std::printf("FAIL: mode2 reread should still stay off DDR, got %zu ARs\n",
+                env.ar_events.size());
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_mode2_window_outside_still_uses_ddr() {
+  std::printf("=== AXI4 LLC Integration Test 6d: mode2 outside-window narrow read uses aligned DDR beat ===\n");
+
+  Axi4LlcTestEnv env;
+  env.interconnect.mode = 2;
+  env.interconnect.llc_mapped_offset = 0x1000;
+  init_env(env, make_mode2_llc_config());
+
+  const uint32_t outside_line = 0x400;
+  const uint32_t outside_addr = outside_line + 8;
+  write_memory_line(outside_line, 0xA200);
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_UNCORE_LSU_R, outside_addr, 3, 0x37, false) ||
+      !wait_read_resp(env, MASTER_UNCORE_LSU_R, 0x37, 0xA202, 0xA203)) {
+    std::printf("FAIL: mode2 outside-window read failed\n");
+    return false;
+  }
+  if (env.ar_events.size() != 1) {
+    std::printf("FAIL: mode2 outside-window read should issue one DDR AR, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+  if (env.ar_events[0].addr != (outside_addr & ~0x1Fu) ||
+      env.ar_events[0].len != 0) {
+    std::printf("FAIL: mode2 outside-window read should issue one aligned 32B beat addr=0x%08x len=%u\n",
+                env.ar_events[0].addr, static_cast<unsigned>(env.ar_events[0].len));
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_mode2_window_outside_narrow_write_uses_aligned_ddr_beat() {
+  std::printf("=== AXI4 LLC Integration Test 6e: mode2 outside-window narrow write uses aligned DDR beat ===\n");
+
+  Axi4LlcTestEnv env;
+  env.interconnect.mode = 2;
+  env.interconnect.llc_mapped_offset = 0x1000;
+  init_env(env, make_mode2_llc_config());
+
+  const uint32_t outside_line = 0x400;
+  const uint32_t outside_addr = outside_line + 12;
+  write_memory_line(outside_line, 0xB400);
+
+  WideWriteData_t wdata;
+  wdata.clear();
+  wdata[0] = 0xCAFEBABE;
+  WideWriteStrb_t wstrb;
+  wstrb.clear();
+  for (uint32_t byte = 0; byte < 4; ++byte) {
+    wstrb.set(byte, true);
+  }
+
+  env.aw_events.clear();
+  if (!issue_write(env, MASTER_UNCORE_LSU_W, outside_addr, wdata, wstrb, 3, 0x38,
+                   false) ||
+      !wait_write_resp(env, MASTER_UNCORE_LSU_W, 0x38)) {
+    std::printf("FAIL: mode2 outside-window narrow write failed\n");
+    return false;
+  }
+  if (env.aw_events.size() != 1) {
+    std::printf("FAIL: mode2 outside-window narrow write should issue one DDR AW, got %zu\n",
+                env.aw_events.size());
+    return false;
+  }
+  if (env.aw_events[0].addr != (outside_addr & ~0x1Fu) ||
+      env.aw_events[0].len != 0) {
+    std::printf("FAIL: mode2 outside-window narrow write should issue one aligned 32B beat addr=0x%08x len=%u\n",
+                env.aw_events[0].addr, static_cast<unsigned>(env.aw_events[0].len));
+    return false;
+  }
+  if (read_mem_word(outside_line + 8) != 0xB402 ||
+      read_mem_word(outside_addr) != 0xCAFEBABE) {
+    std::printf("FAIL: mode2 outside-window narrow write data mismatch prev=0x%08x now=0x%08x\n",
+                read_mem_word(outside_line + 8), read_mem_word(outside_addr));
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_mode2_window_outside_cross_beat_read_falls_back_to_line() {
+  std::printf("=== AXI4 LLC Integration Test 6f: mode2 outside-window cross-beat read falls back to 64B line ===\n");
+
+  Axi4LlcTestEnv env;
+  env.interconnect.mode = 2;
+  env.interconnect.llc_mapped_offset = 0x1000;
+  init_env(env, make_mode2_llc_config());
+
+  const uint32_t outside_line = 0x480;
+  const uint32_t outside_addr = outside_line + 28;
+  write_memory_line(outside_line, 0xC200);
+
+  env.ar_events.clear();
+  if (!issue_read(env, MASTER_UNCORE_LSU_R, outside_addr, 7, 0x39, false) ||
+      !wait_read_resp(env, MASTER_UNCORE_LSU_R, 0x39, 0xC207, 0xC208)) {
+    std::printf("FAIL: mode2 outside-window cross-beat read failed\n");
+    return false;
+  }
+  if (env.ar_events.size() != 1) {
+    std::printf("FAIL: mode2 outside-window cross-beat read should issue one DDR AR, got %zu\n",
+                env.ar_events.size());
+    return false;
+  }
+  if (env.ar_events[0].addr != outside_line || env.ar_events[0].len != 1) {
+    std::printf("FAIL: mode2 outside-window cross-beat read should fall back to aligned 64B line addr=0x%08x len=%u\n",
+                env.ar_events[0].addr, static_cast<unsigned>(env.ar_events[0].len));
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
+bool test_mode2_window_outside_cross_beat_write_falls_back_to_line() {
+  std::printf("=== AXI4 LLC Integration Test 6g: mode2 outside-window cross-beat write falls back to 64B line ===\n");
+
+  Axi4LlcTestEnv env;
+  env.interconnect.mode = 2;
+  env.interconnect.llc_mapped_offset = 0x1000;
+  init_env(env, make_mode2_llc_config());
+
+  const uint32_t outside_line = 0x480;
+  const uint32_t outside_addr = outside_line + 28;
+  write_memory_line(outside_line, 0xD400);
+
+  WideWriteData_t wdata;
+  wdata.clear();
+  wdata[0] = 0x11111111;
+  wdata[1] = 0x22222222;
+  WideWriteStrb_t wstrb;
+  wstrb.clear();
+  for (uint32_t byte = 0; byte < 8; ++byte) {
+    wstrb.set(byte, true);
+  }
+
+  env.aw_events.clear();
+  if (!issue_write(env, MASTER_UNCORE_LSU_W, outside_addr, wdata, wstrb, 7, 0x3A,
+                   false) ||
+      !wait_write_resp(env, MASTER_UNCORE_LSU_W, 0x3A)) {
+    std::printf("FAIL: mode2 outside-window cross-beat write failed\n");
+    return false;
+  }
+  if (env.aw_events.size() != 1) {
+    std::printf("FAIL: mode2 outside-window cross-beat write should issue one DDR AW, got %zu\n",
+                env.aw_events.size());
+    return false;
+  }
+  if (env.aw_events[0].addr != outside_line || env.aw_events[0].len != 1) {
+    std::printf("FAIL: mode2 outside-window cross-beat write should fall back to aligned 64B line addr=0x%08x len=%u\n",
+                env.aw_events[0].addr, static_cast<unsigned>(env.aw_events[0].len));
+    return false;
+  }
+  if (read_mem_word(outside_addr) != 0x11111111 ||
+      read_mem_word(outside_line + 32) != 0x22222222) {
+    std::printf("FAIL: mode2 outside-window cross-beat write data mismatch w7=0x%08x w8=0x%08x\n",
+                read_mem_word(outside_addr), read_mem_word(outside_line + 32));
+    return false;
+  }
+
+  std::printf("PASS\n");
+  return true;
+}
+
 bool test_bypass_write_hit_preserves_dirty_on_eviction() {
   std::printf("=== AXI4 LLC Integration Test 6b: bypass write hit preserves dirty on eviction ===\n");
 
@@ -565,6 +888,11 @@ bool test_bypass_write_hit_preserves_dirty_on_eviction() {
     return false;
   }
 
+  if (!wait_mem_word(env, line_a, 0xA100)) {
+    std::printf("FAIL: evicted dirty line A writeback did not reach memory mem0=0x%08x\n",
+                read_mem_word(line_a));
+    return false;
+  }
   if (read_mem_word(line_a) != 0xA100 || read_mem_word(addr_a) != write_value) {
     std::printf("FAIL: evicted dirty line A did not write back latest data mem0=0x%08x mem4=0x%08x\n",
                 read_mem_word(line_a), read_mem_word(addr_a));
@@ -1947,6 +2275,12 @@ int main() {
     failed++;
   }
 
+  if (test_same_set_valid_updates_preserve_neighbor_way()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
   if (test_partial_cacheable_write_miss_refill_merge_and_dirty_eviction()) {
     passed++;
   } else {
@@ -1960,6 +2294,36 @@ int main() {
   }
 
   if (test_bypass_write_hit_updates_resident_line()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_mode2_direct_mapped_local_window_stays_off_ddr()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_mode2_window_outside_still_uses_ddr()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_mode2_window_outside_narrow_write_uses_aligned_ddr_beat()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_mode2_window_outside_cross_beat_read_falls_back_to_line()) {
+    passed++;
+  } else {
+    failed++;
+  }
+
+  if (test_mode2_window_outside_cross_beat_write_falls_back_to_line()) {
     passed++;
   } else {
     failed++;

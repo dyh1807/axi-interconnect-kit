@@ -255,8 +255,20 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
   }
 
   bool issued[axi_interconnect::NUM_READ_MASTERS] = {};
+  auto mark_issued_from_ar_events = [&]() {
+    for (const auto &e : env.ar_events) {
+      for (const auto &r : reqs) {
+        if (!issued[r.master] && e.addr == r.addr &&
+            e.len == calc_burst_len(r.total_size)) {
+          issued[r.master] = true;
+          break;
+        }
+      }
+    }
+  };
   int issue_timeout = 200;
   while (issue_timeout-- > 0) {
+    mark_issued_from_ar_events();
     bool all = true;
     for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
       all &= issued[i];
@@ -265,11 +277,6 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
       break;
 
     cycle_outputs(env);
-    bool ready_snapshot[axi_interconnect::NUM_READ_MASTERS];
-    for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
-      ready_snapshot[i] = env.interconnect.read_ports[i].req.ready;
-    }
-
     for (const auto &r : reqs) {
       if (issued[r.master])
         continue;
@@ -284,11 +291,7 @@ bool test_read_multi_master_var_sizes(TestEnv &env) {
     }
 
     cycle_inputs(env);
-    for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
-      if (!issued[i] && ready_snapshot[i]) {
-        issued[i] = true;
-      }
-    }
+    mark_issued_from_ar_events();
   }
 
   for (int i = 0; i < axi_interconnect::NUM_READ_MASTERS; i++) {
@@ -450,15 +453,13 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
     return false;
   }
 
-  // Backpressure upstream for 5 cycles; resp.valid must remain asserted.
+  // Backpressure upstream for 5 cycles; resp.valid must remain asserted. The
+  // interconnect may keep downstream BREADY high when its response buffer has
+  // space, but it must not drop or rewrite the visible upstream payload.
   for (int i = 0; i < 5; i++) {
     cycle_outputs(env);
     if (!env.interconnect.write_port.resp.valid) {
       printf("FAIL: resp.valid dropped under backpressure\n");
-      return false;
-    }
-    if (env.interconnect.axi_io.b.bready) {
-      printf("FAIL: expected DDR bready=0 while resp pending\n");
       return false;
     }
     if (env.interconnect.write_port.req.ready) {
@@ -505,9 +506,7 @@ bool test_write_burst_split_and_backpressure(TestEnv &env) {
     printf("FAIL: expected 1 AW handshake, got %zu\n", env.aw_events.size());
     return false;
   }
-  uint8_t exp_awid =
-      static_cast<uint8_t>((axi_interconnect::MASTER_DCACHE_W << 2) |
-                           (req_id & 0x3));
+  const uint8_t exp_awid = 0;
   if (env.aw_events[0].addr != base_addr || env.aw_events[0].len != 15 ||
       env.aw_events[0].id != exp_awid) {
     printf("FAIL: AW mismatch addr=0x%x len=%u id=0x%x\n", env.aw_events[0].addr,
@@ -1089,6 +1088,23 @@ bool test_llc_write_resp_holds_until_ready() {
   interconnect.llc.io.regs.write_resp_code_r[axi_interconnect::MASTER_DCACHE_W] =
       sim_ddr::AXI_RESP_OKAY;
 
+  bool saw_resp = false;
+  for (int cyc = 0; cyc < 4; ++cyc) {
+    clear_upstream_inputs(interconnect);
+    interconnect.comb_outputs();
+    auto &resp = interconnect.write_ports[axi_interconnect::MASTER_DCACHE_W].resp;
+    if (resp.valid) {
+      saw_resp = true;
+      break;
+    }
+    interconnect.comb_inputs();
+    interconnect.seq();
+  }
+  if (!saw_resp) {
+    printf("FAIL: LLC write resp did not become visible through bridge\n");
+    return false;
+  }
+
   for (int cyc = 0; cyc < 4; ++cyc) {
     clear_upstream_inputs(interconnect);
     interconnect.comb_outputs();
@@ -1098,6 +1114,7 @@ bool test_llc_write_resp_holds_until_ready() {
              cyc, static_cast<int>(resp.valid), resp.id, resp.resp);
       return false;
     }
+    interconnect.comb_inputs();
     interconnect.seq();
   }
 

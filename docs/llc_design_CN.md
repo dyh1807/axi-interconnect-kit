@@ -69,17 +69,27 @@ upstream read/write masters
 
 ### 3.2 表结构
 
-当前 LLC 采用外置 SRAM 风格查表接口，逻辑上分为三类表：
+当前 LLC 采用外置 SRAM 风格查表接口，逻辑上分为四类表：
 
 - `data` 表：每个 way 的整条 cache line 数据
-- `meta` 表：`tag + flags`
+- `meta` 表：压缩后的 `tag + shadow flags`
+- `valid` 表：每个 way 的有效位
 - `repl` 表：每个 set 的替换状态
 
-`meta.flags` 当前定义：
+`meta.flags` 当前保留：
 
 - `VALID`
 - `DIRTY`
 - `PREFETCH`
+
+其中：
+
+- 命中/失效语义上的“真实有效性”只以独立 `valid` 表为准
+- `meta.flags.VALID` 当前只作为兼容位保留，不再参与 hit / victim valid 判定
+- lookup 完成必须收到显式的 `lookup_in.valid_valid` 和完整 valid row；模型不能从
+  `meta.flags.VALID` 推导有效性
+- 外部 `valid` 宿主当前采用每个 way 一字节的 regfile，按 byte write enable 更新单个 way
+- 当前 `meta` 已从原型早期的较宽表示压缩到 `4B/line`
 
 ### 3.3 寻址方式
 
@@ -331,6 +341,21 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
   - dirty victim writeback
   - write-side hazard
 
+当前实现不是逐行扫描失效，而是：
+
+- LLC 内部在 accept 当拍产生 `table_out.invalidate_all`
+- 外部表实现收到该脉冲后，当前只对独立 `valid` 表执行整体 `reset()`
+- 同时 LLC 递增一个 `invalidate_epoch`
+
+因此：
+
+- `data/repl` 内容允许保留为 stale 值
+- `meta` 中的 tag / dirty / prefetch / valid-shadow 也允许保留为 stale 值
+- 后续 hit 判定只会看独立 `valid` 表，因此这些 stale 内容都不可达
+
+因此当前原型的失效粒度仍然是“整块 LLC 全清”，只是实现上采用了
+“valid-only reset”，而不是清空 `data/meta/repl`。
+
 ### 9.3 stale refill 保护
 
 `invalidate_all` 被接受后会推进一个 epoch。
@@ -341,6 +366,53 @@ LLC 内部则进一步限制 cacheable demand miss 的同 master 并行度，以
 
 - `set_llc_invalidate_all(bool)`
 - `llc_invalidate_all_accepted()`
+
+mode 切换现在首先依赖 `drain -> invalidate_all -> activate` 合同来保证边界干净；
+这里的 epoch 仍然作为 stale clean refill 的附加保护网保留。
+
+### 9.4 submodule mode / offset 运行时控制
+
+当前 `AXI_Interconnect` 增加了一组 submodule 运行时控制输入：
+
+- `mode[1:0]`
+- `llc_mapped_offset[31:0]`
+
+其语义如下：
+
+- `mode=1`
+  - 正常 LLC_ON
+  - 请求仍按原有 cacheable / bypass 语义进入共享 LLC datapath
+- `mode=2`
+  - 地址映射模式
+  - `[llc_mapped_offset, llc_mapped_offset + 4MB)` 内请求被翻译到
+    direct-mapped 的本地 LLC 存储窗口
+  - 窗口内访问不做 tag compare / replacement，不分配 MSHR，也不会从 DDR refill
+  - 窗口外请求被强制转换为 `bypass`，再按 dual-port route helper 分类
+  - 窗口外地址分类：
+    - `addr >= 0x4000_0000` 走 DDR/SDRAM 口
+    - 其它地址走 MMIO 口
+    - DDR/SDRAM 口使用 `256-bit` beat；小于等于 `32B` 的读写对齐到单
+      beat，`64B` cacheline 读写拆成同一事务的 2 个 beat
+    - MMIO 口只支持 `4B / 1 beat` 读写
+- `mode=0`
+  - LLC_OFF
+  - 不再向 LLC 新分配 line
+- 编码值 `mode=3` 会先规范化为 `mode=0`，不是独立运行模式
+
+当前 mode 切换采用 `drain -> invalidate_all -> activate` 合同：
+
+- 当 `mode` 改变，或 `mode=2` 下 `llc_mapped_offset` 改变时，interconnect 先
+  停止接收新的上游请求
+- 旧模式下已捕获的 LLC/AXI 工作先排空到 quiescent point
+- 只有到达 quiescent point 后，interconnect 才会请求一次 `invalidate_all`
+- 只有 flush 被接受后，新的运行时配置才真正生效
+
+这个做法的目的不是追求最省硬件，而是先保证：
+
+- 旧模式下 resident 的 line 不会带入新模式
+- 旧模式下的 inflight LLC/AXI 工作不会穿越模式边界
+- 旧 epoch 返回的 refill 即使晚到，也不会在 flush 之后把 stale line 重新装回 LLC
+- mode `0/3`、`1`、`2` 都能复用同一条已验证过的共享 datapath
 
 ## 10. corner cases 与当前已覆盖点
 

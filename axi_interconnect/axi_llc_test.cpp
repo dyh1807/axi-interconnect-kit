@@ -114,6 +114,44 @@ AXI_LLC_Bytes_t make_repl(uint32_t way) {
   return repl;
 }
 
+AXI_LLC_Bytes_t make_valid_set_from_meta(const AXI_LLCConfig &config,
+                                         const AXI_LLC_Bytes_t &meta) {
+  AXI_LLC_Bytes_t valid;
+  valid.resize(AXI_LLC::valid_row_bytes(config));
+  for (uint32_t way = 0; way < config.ways; ++way) {
+    const auto entry = AXI_LLC::decode_meta(meta, way);
+    if ((entry.flags & AXI_LLC_META_VALID) == 0) {
+      continue;
+    }
+    const size_t byte_idx = static_cast<size_t>(way);
+    if (byte_idx < valid.size()) {
+      valid.data()[byte_idx] = 1;
+    }
+  }
+  return valid;
+}
+
+AXI_LLC_Bytes_t make_valid_bits(const AXI_LLCConfig &config, uint32_t bits) {
+  AXI_LLC_Bytes_t valid;
+  valid.resize(AXI_LLC::valid_row_bytes(config));
+  for (uint32_t way = 0; way < config.ways; ++way) {
+    if (((bits >> way) & 0x1u) == 0) {
+      continue;
+    }
+    const size_t byte_idx = static_cast<size_t>(way);
+    if (byte_idx < valid.size()) {
+      valid.data()[byte_idx] = 1;
+    }
+  }
+  return valid;
+}
+
+void derive_lookup_valid_from_meta(AXI_LLC &llc,
+                                   const AXI_LLCConfig &config) {
+  llc.io.lookup_in.valid_valid = true;
+  llc.io.lookup_in.valid = make_valid_set_from_meta(config, llc.io.lookup_in.meta);
+}
+
 WideReadData_t make_line_data(uint32_t base_word) {
   WideReadData_t data;
   data.clear();
@@ -154,6 +192,7 @@ void drive_lookup_miss(AXI_LLC &llc, const AXI_LLCConfig &config, uint32_t repl_
   llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
   llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
                                AXI_LLC_META_ENTRY_BYTES);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(repl_way);
   cycle(llc);
 }
@@ -196,6 +235,7 @@ bool test_hit_path() {
   llc.io.lookup_in.repl_valid = true;
   llc.io.lookup_in.data = make_data_set(config, 1, 0x1000);
   llc.io.lookup_in.meta = make_meta_set(config, 1, tag);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
@@ -239,6 +279,7 @@ bool test_miss_refill() {
   llc.io.lookup_in.repl_valid = true;
   llc.io.lookup_in.data = make_data_set(config, 0, 0x2000);
   llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(1);
   cycle(llc);
 
@@ -385,6 +426,7 @@ bool test_write_passthrough() {
   llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
   llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
                                AXI_LLC_META_ENTRY_BYTES);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   llc.comb();
   if (llc.io.table_out.data.write || llc.io.table_out.meta.write ||
@@ -469,6 +511,7 @@ bool test_bypass_write_hit_updates_table() {
   llc.io.lookup_in.meta = make_meta_set_with_flags(
       config, 1, tag,
       static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   llc.comb();
   if (!llc.io.table_out.data.write || llc.io.table_out.data.way != 1 ||
@@ -571,6 +614,7 @@ bool test_cacheable_write_updates_table() {
   llc.io.lookup_in.repl_valid = true;
   llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
   llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(1);
   llc.comb();
   if (!llc.io.table_out.data.enable || !llc.io.table_out.data.write ||
@@ -648,6 +692,7 @@ bool test_cacheable_partial_write_miss_preserves_untouched_bytes() {
   llc.io.lookup_in.repl_valid = true;
   llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
   llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) * AXI_LLC_META_ENTRY_BYTES);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
@@ -781,6 +826,7 @@ bool test_cacheable_write_dirty_victim_writeback() {
   AXI_LLC::encode_meta(dirty_meta, enc_dirty);
   std::memcpy(llc.io.lookup_in.meta.data() + AXI_LLC_META_ENTRY_BYTES,
               enc_dirty.data(), AXI_LLC_META_ENTRY_BYTES);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(1);
   cycle(llc);
 
@@ -898,6 +944,7 @@ bool test_cacheable_partial_write_miss_dirty_victim_writes_back_correct_addr_dat
   AXI_LLC::encode_meta(dirty_meta, enc_dirty);
   std::memcpy(llc.io.lookup_in.meta.data() + AXI_LLC_META_ENTRY_BYTES,
               enc_dirty.data(), AXI_LLC_META_ENTRY_BYTES);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(1);
   cycle(llc);
 
@@ -928,6 +975,19 @@ bool test_cacheable_partial_write_miss_dirty_victim_writes_back_correct_addr_dat
 
   clear_inputs(llc);
   llc.comb();
+  if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
+      llc.io.table_out.data.way != 1) {
+    printf("FAIL: partial write install missing after dirty victim snapshot\n");
+    return false;
+  }
+  const auto merged = llc.io.table_out.data.payload;
+  if (read_line_word(merged, 0) != 0x5500 || read_line_word(merged, 1) != 0x5501 ||
+      read_line_word(merged, 2) != write_value || read_line_word(merged, 3) != 0x5503) {
+    printf("FAIL: post-victim merged line wrong w0=0x%x w1=0x%x w2=0x%x w3=0x%x\n",
+           read_line_word(merged, 0), read_line_word(merged, 1),
+           read_line_word(merged, 2), read_line_word(merged, 3));
+    return false;
+  }
   llc.seq();
 
   clear_inputs(llc);
@@ -944,7 +1004,7 @@ bool test_cacheable_partial_write_miss_dirty_victim_writes_back_correct_addr_dat
     return false;
   }
   if (llc.io.table_out.data.write || llc.io.table_out.meta.write) {
-    printf("FAIL: partial write installed new line before victim writeback ack\n");
+    printf("FAIL: partial write duplicated install while issuing victim writeback\n");
     return false;
   }
   llc.seq();
@@ -952,24 +1012,6 @@ bool test_cacheable_partial_write_miss_dirty_victim_writes_back_correct_addr_dat
   clear_inputs(llc);
   llc.io.ext_in.mem.write_resp_valid = true;
   llc.io.ext_in.mem.write_resp = 0;
-  llc.comb();
-  llc.seq();
-
-  clear_inputs(llc);
-  llc.comb();
-  if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
-      llc.io.table_out.data.way != 1) {
-    printf("FAIL: partial write install missing after dirty victim writeback\n");
-    return false;
-  }
-  const auto merged = llc.io.table_out.data.payload;
-  if (read_line_word(merged, 0) != 0x5500 || read_line_word(merged, 1) != 0x5501 ||
-      read_line_word(merged, 2) != write_value || read_line_word(merged, 3) != 0x5503) {
-    printf("FAIL: post-victim merged line wrong w0=0x%x w1=0x%x w2=0x%x w3=0x%x\n",
-           read_line_word(merged, 0), read_line_word(merged, 1),
-           read_line_word(merged, 2), read_line_word(merged, 3));
-    return false;
-  }
   cycle(llc);
 
   clear_inputs(llc);
@@ -1223,6 +1265,7 @@ bool test_stream_prefetch_table_fill() {
     llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
     llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
                                  AXI_LLC_META_ENTRY_BYTES);
+    derive_lookup_valid_from_meta(llc, config);
     llc.io.lookup_in.repl = make_repl(0);
     cycle(llc);
 
@@ -1320,6 +1363,7 @@ bool test_stream_prefetch_table_fill() {
   llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
   llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
                                AXI_LLC_META_ENTRY_BYTES);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
@@ -1405,16 +1449,19 @@ bool test_prefetch_degree_two_queue() {
     llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
     llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
                                  AXI_LLC_META_ENTRY_BYTES);
+    derive_lookup_valid_from_meta(llc, config);
     llc.io.lookup_in.repl = make_repl(0);
     cycle(llc);
 
     clear_inputs(llc);
     llc.io.ext_in.mem.read_req_ready = true;
-    cycle(llc);
+    llc.comb();
+    const uint8_t mem_id = llc.io.ext_out.mem.read_req_id;
+    llc.seq();
 
     clear_inputs(llc);
     llc.io.ext_in.mem.read_resp_valid = true;
-    llc.io.ext_in.mem.read_resp_id = 0;
+    llc.io.ext_in.mem.read_resp_id = mem_id;
     llc.io.ext_in.mem.read_resp_data = make_line_data(fill_base);
     cycle(llc);
 
@@ -1425,6 +1472,10 @@ bool test_prefetch_degree_two_queue() {
     clear_inputs(llc);
     llc.comb();
     llc.seq();
+
+    clear_inputs(llc);
+    llc.io.ext_in.upstream.read_resp[MASTER_ICACHE].ready = true;
+    cycle(llc);
 
     clear_inputs(llc);
     llc.io.ext_in.upstream.read_resp[MASTER_ICACHE].ready = true;
@@ -1458,6 +1509,7 @@ bool test_prefetch_degree_two_queue() {
   llc.io.lookup_in.data.resize(static_cast<size_t>(config.ways) * config.line_bytes);
   llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
                                AXI_LLC_META_ENTRY_BYTES);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
@@ -1565,6 +1617,7 @@ bool test_lookup_request_is_one_shot() {
   llc.io.lookup_in.repl_valid = true;
   llc.io.lookup_in.data = make_data_set(config, 0, 0x2200);
   llc.io.lookup_in.meta = make_meta_set(config, 0, tag);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(1);
   cycle(llc);
 
@@ -1634,18 +1687,26 @@ bool test_line_invalidate_maintenance() {
   llc.io.lookup_in.repl_valid = true;
   llc.io.lookup_in.data = make_data_set(config, 1, 0x4000);
   llc.io.lookup_in.meta = make_meta_set(config, 1, tag);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   llc.comb();
-  if (!llc.io.table_out.meta.enable || !llc.io.table_out.meta.write ||
-      llc.io.table_out.meta.way != 1) {
-    printf("FAIL: invalidate meta write missing enable=%d write=%d way=%u\n",
+  if (llc.io.table_out.meta.enable || llc.io.table_out.data.enable ||
+      llc.io.table_out.repl.enable) {
+    printf("FAIL: invalidate should only update valid table meta=%d data=%d repl=%d\n",
            static_cast<int>(llc.io.table_out.meta.enable),
-           static_cast<int>(llc.io.table_out.meta.write), llc.io.table_out.meta.way);
+           static_cast<int>(llc.io.table_out.data.enable),
+           static_cast<int>(llc.io.table_out.repl.enable));
     return false;
   }
-  const auto meta = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
-  if (meta.flags != 0) {
-    printf("FAIL: invalidate meta flags not cleared flags=0x%x\n", meta.flags);
+  if (!llc.io.table_out.valid.enable || !llc.io.table_out.valid.write ||
+      llc.io.table_out.valid.way != 1 || llc.io.table_out.valid.payload.size() == 0 ||
+      (llc.io.table_out.valid.payload.data()[0] & 0x2u) != 0) {
+    printf("FAIL: invalidate valid clear missing enable=%d write=%d way=%u bits=0x%x\n",
+           static_cast<int>(llc.io.table_out.valid.enable),
+           static_cast<int>(llc.io.table_out.valid.write), llc.io.table_out.valid.way,
+           llc.io.table_out.valid.payload.size() == 0
+               ? 0
+               : llc.io.table_out.valid.payload.data()[0]);
     return false;
   }
   if (llc.io.ext_out.upstream.read_resp[MASTER_ICACHE].valid) {
@@ -1712,18 +1773,25 @@ bool test_line_invalidate_same_set_other_way_survives() {
   AXI_LLC::encode_meta(survivor_meta, enc_survivor);
   std::memcpy(llc.io.lookup_in.meta.data() + AXI_LLC_META_ENTRY_BYTES,
               enc_survivor.data(), AXI_LLC_META_ENTRY_BYTES);
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   llc.comb();
-  if (!llc.io.table_out.meta.enable || !llc.io.table_out.meta.write ||
-      llc.io.table_out.meta.way != 0) {
-    printf("FAIL: targeted invalidate wrote wrong way=%u\n",
-           llc.io.table_out.meta.way);
+  if (llc.io.table_out.meta.enable || llc.io.table_out.data.enable ||
+      llc.io.table_out.repl.enable) {
+    printf("FAIL: targeted invalidate should only update valid table meta=%d data=%d repl=%d\n",
+           static_cast<int>(llc.io.table_out.meta.enable),
+           static_cast<int>(llc.io.table_out.data.enable),
+           static_cast<int>(llc.io.table_out.repl.enable));
     return false;
   }
-  const auto invalidated = AXI_LLC::decode_meta(llc.io.table_out.meta.payload, 0);
-  if (invalidated.flags != 0) {
-    printf("FAIL: targeted invalidate did not clear victim flags=0x%x\n",
-           invalidated.flags);
+  if (!llc.io.table_out.valid.enable || !llc.io.table_out.valid.write ||
+      llc.io.table_out.valid.way != 0 || llc.io.table_out.valid.payload.size() == 0 ||
+      (llc.io.table_out.valid.payload.data()[0] & 0x1u) != 0) {
+    printf("FAIL: targeted invalidate did not clear victim valid way=%u bits=0x%x\n",
+           llc.io.table_out.valid.way,
+           llc.io.table_out.valid.payload.size() == 0
+               ? 0
+               : llc.io.table_out.valid.payload.data()[0]);
     return false;
   }
   llc.seq();
@@ -1758,15 +1826,12 @@ bool test_line_invalidate_same_set_other_way_survives() {
   write_line_words(llc.io.lookup_in.data, config, 1, 0x5500);
   llc.io.lookup_in.meta.resize(static_cast<size_t>(config.ways) *
                                AXI_LLC_META_ENTRY_BYTES);
-  AXI_LLCMetaEntry_t victim_meta_cleared{};
-  victim_meta_cleared.tag = victim_tag;
-  victim_meta_cleared.flags = 0;
-  AXI_LLC_Bytes_t enc_victim_cleared;
-  AXI_LLC::encode_meta(victim_meta_cleared, enc_victim_cleared);
-  std::memcpy(llc.io.lookup_in.meta.data(), enc_victim_cleared.data(),
+  std::memcpy(llc.io.lookup_in.meta.data(), enc_victim.data(),
               AXI_LLC_META_ENTRY_BYTES);
   std::memcpy(llc.io.lookup_in.meta.data() + AXI_LLC_META_ENTRY_BYTES,
               enc_survivor.data(), AXI_LLC_META_ENTRY_BYTES);
+  llc.io.lookup_in.valid_valid = true;
+  llc.io.lookup_in.valid = make_valid_bits(config, 0x2u);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
@@ -2031,6 +2096,7 @@ bool test_invalidate_all_busy_single_cycle_pulse_is_not_silent_accept() {
   llc.io.lookup_in.repl_valid = true;
   llc.io.lookup_in.data = make_data_set(config, 0, 0x1000);
   llc.io.lookup_in.meta = make_meta_set(config, 0, AXI_LLC::tag_of(config, addr));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(1);
   cycle(llc);
 
@@ -2316,6 +2382,7 @@ bool test_cacheable_write_hit_then_read_latest() {
   llc.io.lookup_in.data = make_data_set(config, 1, 0x2200);
   llc.io.lookup_in.meta = make_meta_set_with_flags(config, 1, tag,
                                                    static_cast<uint8_t>(AXI_LLC_META_VALID));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   llc.comb();
   if (!llc.io.table_out.data.enable || !llc.io.table_out.data.write ||
@@ -2375,6 +2442,7 @@ bool test_cacheable_write_hit_then_read_latest() {
   llc.io.lookup_in.data = make_data_set(config, 1, 0x6600);
   llc.io.lookup_in.meta = make_meta_set_with_flags(
       config, 1, tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
@@ -2459,6 +2527,7 @@ bool test_write_hit_updates_pending_read_victim_snapshot() {
   llc.io.lookup_in.meta = make_meta_set_with_flags(
       config, 0, victim_tag,
       static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(1);
   llc.comb();
 
@@ -2623,6 +2692,7 @@ bool test_same_set_write_miss_then_read_miss_preserve_both_lines() {
   llc.io.lookup_in.meta = make_resident_meta(
       victim0_tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY),
       victim1_tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
@@ -2674,6 +2744,7 @@ bool test_same_set_write_miss_then_read_miss_preserve_both_lines() {
   llc.io.lookup_in.meta = make_resident_meta(
       victim0_tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY),
       victim1_tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
@@ -2719,6 +2790,12 @@ bool test_same_set_write_miss_then_read_miss_preserve_both_lines() {
 
   clear_inputs(llc);
   cycle(llc);
+  if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
+      llc.io.table_out.data.way != 1 || llc.io.table_out.data.index != set ||
+      read_line_word(llc.io.table_out.data.payload, 0) != 0xB000) {
+    printf("FAIL: read miss refill did not preserve second way after victim snapshot\n");
+    return false;
+  }
   if (!llc.io.regs.victim_wb_valid_r || llc.io.regs.victim_wb_for_write_r ||
       llc.io.regs.victim_wb_mshr_slot_r != static_cast<uint8_t>(read_slot) ||
       llc.io.regs.victim_wb_addr_r != AXI_LLC::line_addr(config, victim1_addr)) {
@@ -2737,15 +2814,6 @@ bool test_same_set_write_miss_then_read_miss_preserve_both_lines() {
   clear_inputs(llc);
   llc.io.ext_in.mem.write_resp_valid = true;
   cycle(llc);
-
-  clear_inputs(llc);
-  cycle(llc);
-  if (!llc.io.table_out.data.write || !llc.io.table_out.meta.write ||
-      llc.io.table_out.data.way != 1 || llc.io.table_out.data.index != set ||
-      read_line_word(llc.io.table_out.data.payload, 0) != 0xB000) {
-    printf("FAIL: read miss refill did not preserve second way after victim wb\n");
-    return false;
-  }
 
   printf("PASS\n");
   return true;
@@ -2817,6 +2885,7 @@ bool test_pending_read_victim_blocks_victim_line_read() {
   llc.io.lookup_in.meta = make_resident_meta(
       victim0_tag, static_cast<uint8_t>(AXI_LLC_META_VALID),
       victim1_tag, static_cast<uint8_t>(AXI_LLC_META_VALID | AXI_LLC_META_DIRTY));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(1);
   cycle(llc);
 
@@ -3216,6 +3285,7 @@ bool test_same_master_multi_write_queue() {
   llc.io.lookup_in.data = make_data_set(config, 0, 0x1100);
   llc.io.lookup_in.meta = make_meta_set_with_flags(
       config, 0, tag0, static_cast<uint8_t>(AXI_LLC_META_VALID));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
@@ -3265,6 +3335,7 @@ bool test_same_master_multi_write_queue() {
   llc.io.lookup_in.data = make_data_set(config, 1, 0x2200);
   llc.io.lookup_in.meta = make_meta_set_with_flags(
       config, 1, tag1, static_cast<uint8_t>(AXI_LLC_META_VALID));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
@@ -3337,6 +3408,7 @@ bool test_same_master_queue_waits_for_resp_slot() {
   llc.io.lookup_in.data = make_data_set(config, 0, 0x1100);
   llc.io.lookup_in.meta = make_meta_set_with_flags(
       config, 0, tag0, static_cast<uint8_t>(AXI_LLC_META_VALID));
+  derive_lookup_valid_from_meta(llc, config);
   llc.io.lookup_in.repl = make_repl(0);
   cycle(llc);
 
