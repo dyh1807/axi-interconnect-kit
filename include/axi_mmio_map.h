@@ -10,6 +10,7 @@ struct AxiMmioRange {
 
 static constexpr AxiMmioRange kAxiMmioRanges[] = {
     {MMIO_BASE, MMIO_SIZE},
+    {XPS_INTC_ADDR_BASE, XPS_INTC_MMIO_SIZE},
 };
 
 #ifndef MMIO_RANGE_BASE
