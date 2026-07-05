@@ -20,6 +20,7 @@ public:
              uint32_t wstrb) override;
 
 private:
+  void reset_regs();
   void flush_tx_buffer(bool append_newline);
 
   uint32_t base;

@@ -4,19 +4,32 @@
  */
 
 #include "UART16550_Device.h"
+#include "PhysMemory.h"
 #include <cstring>
 #include <iostream>
 
 namespace mmio {
 
-static constexpr uint32_t UART_REG_THR = 0x0;
+static constexpr uint32_t UART_REG_RBR_THR_DLL = 0x0;
+static constexpr uint32_t UART_REG_IER_DLM = 0x1;
+static constexpr uint32_t UART_REG_IIR_FCR = 0x2;
+static constexpr uint32_t UART_REG_LCR = 0x3;
+static constexpr uint32_t UART_REG_MCR = 0x4;
 static constexpr uint32_t UART_REG_LSR = 0x5;
+static constexpr uint32_t UART_REG_MSR = 0x6;
+static constexpr uint32_t UART_REG_SCR = 0x7;
 
+static constexpr uint8_t UART_LCR_DLAB = 0x80;
 static constexpr uint8_t UART_LSR_THRE = 0x20; // Transmit-hold-register empty
 static constexpr uint8_t UART_LSR_TEMT = 0x40; // Transmitter empty
+static constexpr uint8_t UART_MSR_CTS = 0x10;
+static constexpr uint8_t UART_MSR_DSR = 0x20;
+static constexpr uint8_t UART_MSR_DCD = 0x80;
+static constexpr uint8_t UART_IIR_NO_INT = 0x01;
+static constexpr uint8_t UART_IIR_FIFO_ENABLED = 0xc0;
 
 UART16550_Device::UART16550_Device(uint32_t base_addr) : base(base_addr) {
-  std::memset(regs, 0, sizeof(regs));
+  reset_regs();
 }
 
 UART16550_Device::~UART16550_Device() { flush_tx_buffer(false); }
@@ -34,11 +47,9 @@ void UART16550_Device::flush_tx_buffer(bool append_newline) {
 }
 
 void UART16550_Device::sync_from_backing(const uint32_t *memory) {
-  if (memory == nullptr) {
-    return;
-  }
-  const uint32_t word0 = memory[base >> 2];
-  const uint32_t word1 = memory[(base >> 2) + 1u];
+  (void)memory;
+  const uint32_t word0 = pmem_read(base);
+  const uint32_t word1 = pmem_read(base + 4u);
   regs[0] = static_cast<uint8_t>(word0 & 0xFFu);
   regs[1] = static_cast<uint8_t>((word0 >> 8) & 0xFFu);
   regs[2] = static_cast<uint8_t>((word0 >> 16) & 0xFFu);
@@ -47,6 +58,14 @@ void UART16550_Device::sync_from_backing(const uint32_t *memory) {
   regs[5] = static_cast<uint8_t>((word1 >> 8) & 0xFFu);
   regs[6] = static_cast<uint8_t>((word1 >> 16) & 0xFFu);
   regs[7] = static_cast<uint8_t>((word1 >> 24) & 0xFFu);
+}
+
+void UART16550_Device::reset_regs() {
+  std::memset(regs, 0, sizeof(regs));
+  regs[UART_REG_IER_DLM] = 0x03u;
+  regs[UART_REG_IIR_FCR] = UART_IIR_NO_INT | UART_IIR_FIFO_ENABLED;
+  regs[UART_REG_LSR] = UART_LSR_THRE | UART_LSR_TEMT;
+  regs[UART_REG_MSR] = UART_MSR_CTS | UART_MSR_DSR | UART_MSR_DCD;
 }
 
 void UART16550_Device::read(uint32_t addr, uint8_t *data, uint32_t len) {
@@ -89,9 +108,10 @@ void UART16550_Device::write(uint32_t addr, const uint8_t *data, uint32_t len,
     if (off >= sizeof(regs)) {
       continue;
     }
-    regs[off] = data[i];
-    if (off == UART_REG_THR) {
-      const uint8_t ch = data[i];
+    const uint8_t value = data[i];
+    const bool dlab = (regs[UART_REG_LCR] & UART_LCR_DLAB) != 0;
+    if (off == UART_REG_RBR_THR_DLL && !dlab) {
+      const uint8_t ch = value;
       // Keep legacy behavior: do not print ESC (27).
       if (ch != 27) {
         if (ch == '\r') {
@@ -109,6 +129,16 @@ void UART16550_Device::write(uint32_t addr, const uint8_t *data, uint32_t len,
       // Match the legacy backing-memory model: TX writes do not remain readable
       // from THR once consumed by the device.
       regs[off] = 0;
+      regs[UART_REG_LSR] = UART_LSR_THRE | UART_LSR_TEMT;
+    } else if (off == UART_REG_IIR_FCR) {
+      regs[UART_REG_IIR_FCR] = UART_IIR_NO_INT | UART_IIR_FIFO_ENABLED;
+    } else if (off == UART_REG_LCR || off == UART_REG_MCR ||
+               off == UART_REG_SCR ||
+               (off == UART_REG_RBR_THR_DLL && dlab) ||
+               off == UART_REG_IER_DLM) {
+      regs[off] = value;
+    } else {
+      regs[off] = value;
     }
   }
 }

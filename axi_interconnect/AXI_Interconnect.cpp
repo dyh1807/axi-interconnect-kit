@@ -774,6 +774,23 @@ uint32_t AXI_Interconnect::translate_llc_addr(uint32_t addr,
 
 bool AXI_Interconnect::effective_llc_bypass(uint32_t addr, uint8_t total_size,
                                             bool upstream_bypass) const {
+  auto in_sd_dma_pool = [](uint32_t req_addr, uint8_t req_total_size) -> bool {
+#if AXI_KIT_HAS_PARENT_CONFIG
+    const uint64_t start = static_cast<uint64_t>(req_addr);
+    const uint64_t end = start + static_cast<uint64_t>(req_total_size) + 1u;
+    const uint64_t base = static_cast<uint64_t>(SD_DMA_POOL_BASE);
+    const uint64_t limit = base + static_cast<uint64_t>(SD_DMA_POOL_SIZE);
+    return start < limit && end > base;
+#else
+    (void)req_addr;
+    (void)req_total_size;
+    return false;
+#endif
+  };
+
+  if (in_sd_dma_pool(addr, total_size)) {
+    return true;
+  }
   if (request_uses_mmio_port(addr, total_size)) {
     return true;
   }

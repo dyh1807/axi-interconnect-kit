@@ -2050,6 +2050,64 @@ bool AXI_LLC::try_complete_lookup() {
                             tag, &hit_way, &first_invalid_way,
                             &hit_meta);
 
+  if (is_bypass_lookup) {
+    if (is_write_lookup) {
+      auto &ctx = io.reg_write.write_ctx[io.regs.lookup_master_r];
+      io.reg_write.lookup_valid_r = false;
+      io.reg_write.lookup_issued_r = false;
+      io.reg_write.lookup_is_prefetch_r = false;
+      io.reg_write.lookup_is_invalidate_r = false;
+      io.reg_write.lookup_is_write_r = false;
+      io.reg_write.lookup_is_bypass_r = false;
+      io.reg_write.lookup_is_direct_mapped_r = false;
+      io.reg_write.lookup_is_mode2_ddr_aligned_r = false;
+      ctx.cache_done = true;
+      io.reg_write.state = AXI_LLCState::kIdle;
+      return true;
+    }
+
+    const int free_slot = find_free_mshr(io.regs);
+    if (free_slot < 0) {
+      if (llc_focus_line(req_line_addr)) {
+        std::printf(
+            "[AXI-LLC][BYPASS-READ-MSHR-FULL] cyc=%lld addr=0x%08x "
+            "master=%u id=%u\n",
+            sim_time, io.regs.lookup_addr_r,
+            static_cast<unsigned>(io.regs.lookup_master_r),
+            static_cast<unsigned>(io.regs.lookup_id_r));
+      }
+      io.reg_write.lookup_issued_r = false;
+      io.reg_write.state = AXI_LLCState::kMiss;
+      return true;
+    }
+
+    auto &entry = io.reg_write.mshr[free_slot];
+    entry = {};
+    entry.valid = true;
+    entry.bypass = true;
+    entry.is_prefetch = false;
+    entry.prefetch_train = false;
+    entry.mode2_ddr_aligned = io.regs.lookup_is_mode2_ddr_aligned_r;
+    entry.addr = io.regs.lookup_addr_r;
+    entry.line_addr = io.regs.lookup_addr_r;
+    entry.total_size = io.regs.lookup_size_r;
+    entry.master = io.regs.lookup_master_r;
+    entry.id = io.regs.lookup_id_r;
+    entry.epoch = io.regs.invalidate_epoch_r;
+    io.reg_write.lookup_valid_r = false;
+    io.reg_write.lookup_issued_r = false;
+    io.reg_write.lookup_is_prefetch_r = false;
+    io.reg_write.lookup_is_invalidate_r = false;
+    io.reg_write.lookup_is_write_r = false;
+    io.reg_write.lookup_is_bypass_r = false;
+    io.reg_write.lookup_is_direct_mapped_r = false;
+    io.reg_write.lookup_is_mode2_ddr_aligned_r = false;
+    io.reg_write.state = AXI_LLCState::kMiss;
+    io.reg_write.perf.mshr_alloc++;
+    perf_count_read_miss(io.reg_write.perf, entry.master);
+    return true;
+  }
+
   if (hit_way >= 0) {
     if (is_write_lookup) {
       if (llc_focus_line(req_line_addr)) {
